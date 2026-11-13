@@ -38,6 +38,7 @@
   <span id="summary"></span>
   <span class="hint">Click a line to start there · Shift+click to end there</span>
   <span id="toast"></span>
+  <button id="copy-audio" title="The audio of this range as a .wav (last 7 days)">Copy audio</button>
   <button id="copy-text">Copy text</button>
   <button class="primary" id="copy-file" title="Ctrl+Enter">Copy as file</button>
 </footer>
@@ -217,11 +218,17 @@ async function copy(as) {
   const body = { from: state.from, to: state.to, exclude: [...state.excluded], as };
   const r = await (await fetch("/api/clip", { method: "POST", body: JSON.stringify(body) })).json();
   if (r.error) return toast(r.error);
+  if (as === "audio") return toast(`Copied ${duration(r.seconds).replace(/^0 min$/, r.seconds + " s")} of audio — paste anywhere`);
   if (as === "text") await navigator.clipboard.writeText(r.text);
   toast(`Copied ${r.lines} lines${as === "file" ? " as a file" : ""} — paste anywhere`);
 }
 $("copy-file").addEventListener("click", () => copy("file"));
 $("copy-text").addEventListener("click", () => copy("text"));
+$("copy-audio").addEventListener("click", e => {
+  e.target.disabled = true;
+  toast("Cutting the audio…");
+  copy("audio").finally(() => { e.target.disabled = false; });
+});
 document.addEventListener("keydown", e => { if (e.ctrlKey && e.key === "Enter") copy("file"); });
 
 // While the range runs to "now", pick up new lines as they are transcribed.
