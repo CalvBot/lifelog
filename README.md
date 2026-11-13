@@ -57,8 +57,11 @@ Tray icon (a speech bubble with sound bars): red = recording, grey = private mod
 **Daily summary.** At 21:00 (set in Settings) a notification asks whether the local AI may sum up the day, since it
 needs the graphics card for a minute or two: **Write it now**, **In an hour** or **Skip today**. Ignored, it asks again
 an hour later; while a game is running it waits to ask. While it writes, transcription steps aside so the two models
-never share the GPU, and the model is unloaded straight after. The result is a few bullets per part of the day plus
-"things you said you'd do" (only lines where you actually said "I'll…", "remind me…", "I need to…" and so on). Read
+never share the GPU, and the model is unloaded straight after. The summary is about what you said; other people and
+apps are only used as context (app audio is only given to the model when it is within a minute of you speaking).
+The result is a few bullets per part of the day, "To remember" (every moment you said "need to remember", always
+included, falling back to your own words if the model misses one), and "things you said you'd do" (only lines where
+you actually said "I'll…", "remind me…", "I need to…" and so on). Read
 it from the notification, or Settings → "Read your days"; it is also saved as `<data_dir>\summaries\YYYY-MM-DD.md`.
 The day runs 04:00 to 04:00, so a late night counts as the day before.
 
