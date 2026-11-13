@@ -132,3 +132,23 @@ input[type="time"] { background: var(--bg); border: 1px solid var(--line); borde
 .play:hover { color: var(--accent); background: none; }
 .play.on { color: var(--accent); background: none; }
 .l.picked { background: var(--sel); }
+
+/* Browser */
+.nav { margin-left: auto; font-size: 13px; }
+.nav a { color: var(--muted); }
+.l.inr { box-shadow: inset 3px 0 var(--accent); background: color-mix(in srgb, var(--sel) 55%, transparent); }
+.l.inr.picked { background: var(--sel); }
+.l.flash, .f.flash { background: var(--mark); transition: background 0s; }
+.l, .f { transition: background .6s; }
+.dayh { position: sticky; top: -6px; z-index: 1; padding: 6px 16px; font-size: 12px; font-weight: 600; color: var(--muted);
+  background: var(--bg); border-bottom: 1px solid var(--line); }
+.f { display: grid; grid-template-columns: 26px 76px minmax(60px, 250px) 1fr; align-items: baseline; gap: 10px; padding: 6px 16px; }
+.f .t, .f .w { color: var(--muted); }
+.f .w { font-style: italic; }
+.fname { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.fname small { color: var(--muted); margin-right: 4px; }
+.f img, .f video { display: block; max-width: min(100%, 560px); max-height: 420px; border-radius: 6px; border: 1px solid var(--line); }
+.f pre { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; font: 13px/1.4 Consolas, monospace; }
+#to-end { visibility: hidden; }
+button:disabled { opacity: .45; cursor: not-allowed; }

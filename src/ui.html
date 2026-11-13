@@ -3,31 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lifelog — clip</title>
+<title>lifelog</title>
 <link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header>
-  <div class="row" id="quick">
-    <span class="label">Last</span>
-    <button data-min="5">5 min</button><button data-min="15">15 min</button><button data-min="30">30 min</button>
-    <button data-min="60">1 h</button><button data-min="120">2 h</button><button data-min="240">4 h</button>
-    <button data-min="480">8 h</button>
-    <button data-day="0">Today</button><button data-day="1">Yesterday</button>
-    <input type="number" id="mins" min="1" placeholder="minutes" title="Last … minutes" style="width:96px">
-    <a class="nav" href="/settings">Settings</a>
-  </div>
   <div class="row">
-    <span class="label">From</span><input type="datetime-local" id="from">
-    <span class="label" style="min-width:0">to</span><input type="datetime-local" id="to">
-    <button class="small" id="to-now" title="End at the present moment">now</button>
-    <button class="small" data-extend="15">+15 min</button><button class="small" data-extend="60">+1 h</button>
+    <span class="label">Range</span><input type="datetime-local" id="from" title="Start of the range">
+    <span class="label" style="min-width:0">to</span><input type="datetime-local" id="to" title="End of the range (empty = now)">
+    <button class="small" id="clear" title="Clear the range (Esc)">Clear</button>
+    <span class="nav"><a href="/summary">Your days</a> · <a href="/settings">Settings</a></span>
   </div>
   <div class="row">
     <span class="label">Find</span>
     <div class="find">
-      <input type="search" id="q" placeholder="A word or phrase you remember from the start of the conversation…" autocomplete="off">
+      <input type="search" id="q" placeholder="A word or phrase you remember…" autocomplete="off">
       <div id="results"></div>
     </div>
   </div>
@@ -36,139 +27,260 @@
 <main id="lines"></main>
 <footer>
   <span id="summary"></span>
-  <span class="hint">Click a line to start there · Shift+click to end there</span>
   <span id="toast"></span>
-  <button id="copy-audio" title="The audio of this range as a .wav (last 7 days)">Copy audio</button>
+  <button class="small" id="to-end" title="Back to now">↓ Now</button>
+  <button id="copy-audio" title="The audio of the range as a .wav (last 7 days)">Copy audio</button>
   <button id="copy-text">Copy text</button>
   <button class="primary" id="copy-file" title="Ctrl+Enter">Copy as file</button>
 </footer>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const state = { from: Date.now() / 1000 - 900, to: null, excluded: new Set(), lines: [], preset: "15" };
 const pad = n => String(n).padStart(2, "0");
-const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const clock = ts => { const d = new Date(ts * 1000); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
 const midnight = daysAgo => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() / 1000 - daysAgo * 86400; };
+const nowTs = () => Date.now() / 1000;
 const inputValue = ts => {
   const d = new Date(ts * 1000);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
+const dayKey = ts => new Date(ts * 1000).toDateString();
 function day(ts) {
   const days = Math.round((midnight(0) - new Date(ts * 1000).setHours(0, 0, 0, 0) / 1000) / 86400);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
   return new Date(ts * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
+const longDay = ts => new Date(ts * 1000).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 function duration(secs) {
   const m = Math.round(secs / 60);
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
-async function get(url) {
-  const r = await fetch(url);
-  return r.json();
-}
+const size = b => b > 1e9 ? (b / 1e9).toFixed(1) + " GB" : b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.ceil(b / 1e3) + " KB";
+const get = async url => (await fetch(url)).json();
 
-function setRange(from, to, preset) {
-  state.from = from; state.to = to; state.preset = preset || "";
-  load();
-}
+// The loaded stretch of the timeline: lines and pasted files, oldest first.
+const view = { lines: [], files: [], moreBefore: true, moreAfter: false, busy: false };
+// range = { from, to } (to null = up to now) or null. anchor = the line Shift+click extends from.
+let range = null, anchor = null, selected = null, playing = null;
+const excluded = new Set();
+const AUDIO_DAYS = 7;
 
-let loading = 0;
-async function load() {
-  const ticket = ++loading;
-  const to = state.to ?? Date.now() / 1000;
-  const data = await get(`/api/lines?from=${state.from}&to=${to}`);
-  if (ticket !== loading) return; // a newer request is on its way
-  state.lines = data.lines || [];
-  render();
-}
+const items = () => [
+  ...view.lines.filter(l => !excluded.has(l.speaker)).map(l => ({ ts: l.start_ts, end: l.end_ts, line: l })),
+  ...view.files.map(f => ({ ts: f.ts, end: f.ts, file: f })),
+].sort((a, b) => a.ts - b.ts);
 
-function render() {
-  $("from").value = inputValue(state.from);
-  $("to").value = state.to === null ? "" : inputValue(state.to);
-  $("to-now").classList.toggle("on", state.to === null);
-  for (const b of $("quick").querySelectorAll("button")) {
-    b.classList.toggle("on", (b.dataset.min || "day" + b.dataset.day) === state.preset);
+function itemHtml(it, prev) {
+  let html = "";
+  if (!prev || dayKey(prev.ts) !== dayKey(it.ts)) html += `<div class="dayh" data-day="${dayKey(it.ts)}">${longDay(it.ts)}</div>`;
+  else if (it.ts - prev.end > 300) html += `<div class="gap">— ${duration(it.ts - prev.end)} of nothing —</div>`;
+  if (it.file) {
+    const f = it.file, src = `/api/file?id=${f.id}`;
+    const body = f.kind === "image" ? `<a href="${src}" target="_blank"><img src="${src}" loading="lazy" alt="${esc(f.name)}"></a>`
+      : f.kind === "video" ? `<video controls preload="metadata" src="${src}"></video>`
+      : f.kind === "audio" ? `<audio controls preload="none" src="${src}"></audio>`
+      : f.kind === "text" ? `<pre>${esc(f.text || "")}</pre>` : "";
+    return html + `<div class="f" data-ts="${f.ts}"><span></span><span class="t">${clock(f.ts)}</span><span class="w">pasted</span>` +
+      `<div><div class="fname">${esc(f.name)} <small>${size(f.size)}</small>` +
+      `<button class="small" data-open="${f.id}">Open</button><button class="small" data-folder="${f.id}">Show in folder</button></div>${body}</div></div>`;
   }
+  const l = it.line;
+  const who = l.source !== "mic" && l.title ? `${l.speaker} · ${l.title}` : l.speaker;
+  const playable = l.audio && l.start_ts > nowTs() - AUDIO_DAYS * 86400;
+  const play = playable ? `<button class="play" data-play="${l.id}" title="Play (Space)">▶</button>` : "";
+  return html + `<div class="l ${l.source === "mic" ? "me" : ""}" data-id="${l.id}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
+    `<span>${play}</span><span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
+}
+const chunkHtml = (list, prev) => list.map((it, i) => itemHtml(it, i ? list[i - 1] : prev)).join("");
 
-  const speakers = [...new Set(state.lines.map(l => l.speaker))];
-  $("speakers").innerHTML = speakers.length < 2 ? "" :
-    `<span class="label">Include</span>` + speakers.map(s =>
-      `<button class="small ${state.excluded.has(s) ? "off" : ""}" data-speaker="${esc(s)}">${esc(s)}</button>`).join("");
-
-  const shown = state.lines.filter(l => !state.excluded.has(l.speaker));
-  let html = "", last = null;
-  for (const l of shown) {
-    if (last !== null && l.start_ts - last > 300) html += `<div class="gap">— ${duration(l.start_ts - last)} of nothing —</div>`;
-    last = l.end_ts;
-    const who = l.source !== "mic" && l.title ? `${l.speaker} · ${l.title}` : l.speaker;
-    const playable = l.audio && l.start_ts > Date.now() / 1000 - AUDIO_DAYS * 86400;
-    const play = playable ? `<button class="play ${playing === l.id ? "on" : ""}" data-play="${l.id}" title="Play (Space)">${playing === l.id ? "■" : "▶"}</button>` : "";
-    html += `<div class="l ${l.source === "mic" ? "me" : ""} ${selected === l.id ? "picked" : ""}" data-id="${l.id}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
-      `<span>${play}</span><span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
-  }
-  $("lines").innerHTML = html || `<div class="empty">Nothing was transcribed in this time.</div>`;
-  $("lines").firstElementChild?.classList.add("first");
-
-  const to = state.to ?? Date.now() / 1000;
-  const sameDay = day(state.from) === day(to);
-  $("summary").textContent = `${shown.length} lines · ${day(state.from)} ${clock(state.from).slice(0, 5)} → ` +
-    (state.to === null ? "now" : `${sameDay ? "" : day(to) + " "}${clock(to).slice(0, 5)}`) +
-    (state.lines.length >= 20000 ? " · too long, showing the first 20,000 lines" : "");
+function renderAll() {
+  const all = items();
+  $("lines").innerHTML = chunkHtml(all, null) ||
+    `<div class="empty">${view.lines.length ? "Everything here is from speakers you switched off." : "Nothing transcribed yet."}</div>`;
+  marks();
+  speakers();
 }
 
-// Range controls
-$("quick").addEventListener("click", e => {
-  const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.min) setRange(Date.now() / 1000 - b.dataset.min * 60, null, b.dataset.min);
-  else if (b.dataset.day === "0") setRange(midnight(0), null, "day0");
-  else setRange(midnight(1), midnight(0), "day1");
+// Merges new lines/files in; returns the ones that were not loaded yet.
+function merge(r) {
+  const have = new Set(view.lines.map(l => l.id)), haveF = new Set(view.files.map(f => f.id));
+  const lines = (r.lines || []).filter(l => !have.has(l.id)), files = (r.files || []).filter(f => !haveF.has(f.id));
+  view.lines.push(...lines); view.files.push(...files);
+  view.lines.sort((a, b) => a.start_ts - b.start_ts || a.id - b.id);
+  view.files.sort((a, b) => a.ts - b.ts);
+  return [
+    ...lines.filter(l => !excluded.has(l.speaker)).map(l => ({ ts: l.start_ts, end: l.end_ts, line: l })),
+    ...files.map(f => ({ ts: f.ts, end: f.ts, file: f })),
+  ].sort((a, b) => a.ts - b.ts);
+}
+
+const main = $("lines");
+const atBottom = () => main.scrollHeight - main.scrollTop - main.clientHeight < 60;
+
+async function loadLatest() {
+  const r = await get(`/api/lines?before=${nowTs() + 1}&limit=300`);
+  view.lines = []; view.files = [];
+  merge(r);
+  view.moreBefore = r.more; view.moreAfter = false;
+  renderAll();
+  main.scrollTop = main.scrollHeight;
+}
+
+async function loadOlder() {
+  if (view.busy || !view.moreBefore || !view.lines.length) return;
+  view.busy = true;
+  try {
+    const r = await get(`/api/lines?before=${view.lines[0].start_ts}&limit=300`);
+    view.moreBefore = r.more;
+    const all = items(), first = all[0];
+    const added = merge(r).filter(it => !first || it.ts <= first.ts);
+    if (!added.length) return;
+    const height = main.scrollHeight;
+    // The old first item's day header goes if the new chunk ends on the same day.
+    const head = main.firstElementChild;
+    if (head?.classList.contains("dayh") && head.dataset.day === dayKey(added[added.length - 1].ts)) head.remove();
+    let html = chunkHtml(added, null);
+    if (first && dayKey(first.ts) === dayKey(added[added.length - 1].ts) && first.ts - added[added.length - 1].end > 300)
+      html += `<div class="gap">— ${duration(first.ts - added[added.length - 1].end)} of nothing —</div>`;
+    main.insertAdjacentHTML("afterbegin", html);
+    main.scrollTop += main.scrollHeight - height;
+    marks(); speakers();
+  } finally { view.busy = false; }
+}
+
+async function loadNewer() {
+  if (view.busy) return;
+  const last = view.lines[view.lines.length - 1];
+  if (!last) return loadLatest();
+  view.busy = true;
+  try {
+    const r = await get(`/api/lines?after=${last.start_ts}&limit=300`);
+    view.moreAfter = r.more;
+    const stick = atBottom() && !view.moreAfter;
+    const before = items().filter(it => it.ts <= last.start_ts);
+    const added = merge(r);
+    if (!added.length) return;
+    main.querySelector(".empty")?.remove();
+    main.insertAdjacentHTML("beforeend", chunkHtml(added, before[before.length - 1]));
+    if (stick) main.scrollTop = main.scrollHeight;
+    marks(); speakers();
+  } finally { view.busy = false; }
+}
+
+// Shows the timeline around `ts` (a search hit, or the start of a range).
+async function jumpTo(ts, pick) {
+  const [b, a] = await Promise.all([get(`/api/lines?before=${ts + 0.001}&limit=80`), get(`/api/lines?after=${ts}&limit=300`)]);
+  view.lines = []; view.files = [];
+  merge(b); merge(a);
+  view.moreBefore = b.more; view.moreAfter = a.more;
+  if (pick !== undefined) { selected = anchor = pick; }
+  renderAll();
+  const target = [...main.querySelectorAll(".l, .f")].find(e => +e.dataset.ts >= ts - 0.01);
+  target?.scrollIntoView({ block: "center" });
+  if (target) { target.classList.add("flash"); setTimeout(() => target.classList.remove("flash"), 1500); }
+}
+
+// Images and videos load after the scroll position was set; stay at the live end if we were there.
+let pinned = true;
+main.addEventListener("load", () => { if (pinned && !view.moreAfter) main.scrollTop = main.scrollHeight; }, true);
+main.addEventListener("loadedmetadata", () => { if (pinned && !view.moreAfter) main.scrollTop = main.scrollHeight; }, true);
+main.addEventListener("scroll", () => {
+  pinned = atBottom();
+  if (main.scrollTop < 400) loadOlder();
+  if (view.moreAfter && main.scrollHeight - main.scrollTop - main.clientHeight < 400) loadNewer();
+  $("to-end").style.visibility = view.moreAfter || !atBottom() ? "visible" : "hidden";
 });
-$("mins").addEventListener("change", e => {
-  const m = parseFloat(e.target.value);
-  if (m > 0) setRange(Date.now() / 1000 - m * 60, null);
-});
-$("from").addEventListener("change", e => { if (e.target.value) setRange(new Date(e.target.value).getTime() / 1000, state.to); });
-$("to").addEventListener("change", e => setRange(state.from, e.target.value ? new Date(e.target.value).getTime() / 1000 + 59 : null));
-$("to-now").addEventListener("click", () => setRange(state.from, null));
-document.querySelectorAll("[data-extend]").forEach(b => b.addEventListener("click", () => {
-  const end = (state.to ?? Date.now() / 1000) + b.dataset.extend * 60;
-  setRange(state.from, end >= Date.now() / 1000 ? null : end);
-}));
+$("to-end").addEventListener("click", () => view.moreAfter ? loadLatest() : (main.scrollTop = main.scrollHeight));
+
+// Selection, range and playing are shown with classes, so videos and scroll stay put.
+function marks() {
+  const to = range ? (range.to ?? Infinity) : 0;
+  main.querySelectorAll(".l").forEach(e => {
+    const id = +e.dataset.id;
+    e.classList.toggle("picked", id === selected);
+    e.classList.toggle("inr", !!range && +e.dataset.end >= range.from && +e.dataset.ts <= to);
+    const p = e.querySelector(".play");
+    if (p) { p.classList.toggle("on", id === playing); p.textContent = id === playing ? "■" : "▶"; }
+  });
+  $("from").value = range ? inputValue(range.from) : "";
+  $("to").value = range && range.to !== null ? inputValue(range.to) : "";
+  ["copy-audio", "copy-text", "copy-file"].forEach(id => { $(id).disabled = !range; });
+  if (!range) {
+    $("summary").textContent = "Click a line, then Shift+click another to pick a range to copy.";
+  } else {
+    const to = range.to ?? nowTs();
+    const n = view.lines.filter(l => !excluded.has(l.speaker) && l.end_ts >= range.from && l.start_ts <= to).length;
+    $("summary").textContent = `${n} lines · ${day(range.from)} ${clock(range.from).slice(0, 5)} → ` +
+      (range.to === null ? "now" : `${dayKey(range.from) === dayKey(to) ? "" : day(to) + " "}${clock(to).slice(0, 5)}`);
+  }
+}
+
+function speakers() {
+  const list = [...new Set(view.lines.map(l => l.speaker))];
+  $("speakers").innerHTML = list.length < 2 ? "" : `<span class="label">Show</span>` + list.map(s =>
+    `<button class="small ${excluded.has(s) ? "off" : ""}" data-speaker="${esc(s)}">${esc(s)}</button>`).join("");
+}
 $("speakers").addEventListener("click", e => {
   const s = e.target.closest("button")?.dataset.speaker; if (s === undefined) return;
-  state.excluded.has(s) ? state.excluded.delete(s) : state.excluded.add(s);
-  render();
+  excluded.has(s) ? excluded.delete(s) : excluded.add(s);
+  renderAll();
 });
-// Playing a line's audio (kept for a week). Clicking a line selects it; Space plays the selected line.
-const AUDIO_DAYS = 7;
+
+// Range
+function setRange(r) { range = r; marks(); }
+$("from").addEventListener("change", e => {
+  if (!e.target.value) return setRange(null);
+  const from = new Date(e.target.value).getTime() / 1000;
+  setRange({ from, to: range?.to ?? null });
+  jumpTo(from);
+});
+$("to").addEventListener("change", e => {
+  const to = e.target.value ? new Date(e.target.value).getTime() / 1000 + 59 : null;
+  setRange({ from: range?.from ?? (to ?? nowTs()) - 3600, to });
+});
+$("clear").addEventListener("click", () => { anchor = null; setRange(null); });
+
+// Clicking a line selects it (Space plays it); Shift+click makes a range from the selected line.
+main.addEventListener("click", e => {
+  const p = e.target.closest("[data-play]");
+  if (p) { selected = anchor = +p.dataset.play; play(selected); return; }
+  const o = e.target.closest("[data-open]"), f = e.target.closest("[data-folder]");
+  if (o || f) {
+    fetch(`/api/file-open?id=${(o || f).dataset[o ? "open" : "folder"]}${f ? "&folder=1" : ""}`, { method: "POST" })
+      .then(r => r.json()).then(r => { if (r.error) toast(r.error); });
+    return;
+  }
+  const l = e.target.closest(".l"); if (!l || getSelection().toString()) return;
+  const id = +l.dataset.id;
+  if (e.shiftKey && anchor !== null) {
+    const a = view.lines.find(x => x.id === anchor), b = view.lines.find(x => x.id === id);
+    if (a && b) setRange({ from: Math.min(a.start_ts, b.start_ts) - 0.5, to: Math.max(a.end_ts, b.end_ts) + 0.5 });
+    selected = id;
+  } else {
+    selected = anchor = id;
+  }
+  marks();
+});
+
+// Playing a line's audio (kept for a week).
 const player = new Audio();
-let playing = null, selected = null;
 function play(id) {
-  if (playing === id) { player.pause(); playing = null; render(); return; }
+  if (playing === id) { player.pause(); playing = null; marks(); return; }
   player.src = `/api/audio?id=${id}`;
   player.play().catch(() => toast("That audio is gone (kept for a week)."));
-  playing = id; render();
+  playing = id; marks();
 }
-player.addEventListener("ended", () => { playing = null; render(); });
-player.addEventListener("error", () => { if (playing !== null) { toast("That audio is gone (kept for a week)."); playing = null; render(); } });
+player.addEventListener("ended", () => { playing = null; marks(); });
+player.addEventListener("error", () => { if (playing !== null) { toast("That audio is gone (kept for a week)."); playing = null; marks(); } });
 document.addEventListener("keydown", e => {
-  if (e.key !== " " || e.target.matches("input, textarea") || selected === null) return;
-  e.preventDefault();
-  play(selected);
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === " " && selected !== null) { e.preventDefault(); play(selected); }
+  if (e.key === "Escape") { anchor = null; setRange(null); }
 });
 
-$("lines").addEventListener("click", e => {
-  const p = e.target.closest("[data-play]");
-  if (p) { selected = +p.dataset.play; play(selected); return; }
-  const l = e.target.closest(".l"); if (!l || getSelection().toString()) return;
-  selected = +l.dataset.id;
-  if (e.shiftKey) setRange(Math.min(state.from, +l.dataset.ts - 0.5), +l.dataset.end + 0.5);
-  else setRange(+l.dataset.ts - 0.5, state.to !== null && state.to <= +l.dataset.ts ? null : state.to);
-});
-
-// Find a phrase → start the clip there
+// Find a phrase → jump there
 let hits = [], active = 0, searching = 0;
 function showHits(q) {
   const words = q.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
@@ -190,10 +302,7 @@ $("q").addEventListener("input", async e => {
 function pick(i) {
   const l = hits[i]; if (!l) return;
   $("results").innerHTML = "";
-  // Recent: run up to now. Older: show an hour from there; extend with +15 min / +1 h or Shift+click.
-  const recent = Date.now() / 1000 - l.start_ts < 6 * 3600;
-  setRange(l.start_ts - 0.5, recent ? null : l.start_ts + 3600);
-  $("lines").scrollTop = 0;
+  jumpTo(l.start_ts, l.id);
 }
 $("results").addEventListener("mousedown", e => { const h = e.target.closest(".hit"); if (h) pick(+h.dataset.i); });
 $("q").addEventListener("keydown", e => {
@@ -208,17 +317,18 @@ $("q").addEventListener("keydown", e => {
 $("q").addEventListener("blur", () => setTimeout(() => { $("results").innerHTML = ""; }, 150));
 $("q").addEventListener("focus", e => { if (hits.length && e.target.value.trim()) showHits(e.target.value); });
 
-// Copy
+// Copy the range
 function toast(text) {
   $("toast").textContent = text;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { $("toast").textContent = ""; }, 4000);
 }
 async function copy(as) {
-  const body = { from: state.from, to: state.to, exclude: [...state.excluded], as };
+  if (!range) return toast("Pick a range first.");
+  const body = { from: range.from, to: range.to, exclude: [...excluded], as };
   const r = await (await fetch("/api/clip", { method: "POST", body: JSON.stringify(body) })).json();
   if (r.error) return toast(r.error);
-  if (as === "audio") return toast(`Copied ${duration(r.seconds).replace(/^0 min$/, r.seconds + " s")} of audio — paste anywhere`);
+  if (as === "audio") return toast(`Copied ${r.seconds < 60 ? r.seconds + " s" : duration(r.seconds)} of audio — paste anywhere`);
   if (as === "text") await navigator.clipboard.writeText(r.text);
   toast(`Copied ${r.lines} lines${as === "file" ? " as a file" : ""} — paste anywhere`);
 }
@@ -227,14 +337,13 @@ $("copy-text").addEventListener("click", () => copy("text"));
 $("copy-audio").addEventListener("click", e => {
   e.target.disabled = true;
   toast("Cutting the audio…");
-  copy("audio").finally(() => { e.target.disabled = false; });
+  copy("audio").finally(() => { e.target.disabled = !range; });
 });
 document.addEventListener("keydown", e => { if (e.ctrlKey && e.key === "Enter") copy("file"); });
 
-// While the range runs to "now", pick up new lines as they are transcribed.
-setInterval(() => { if (state.to === null && !document.hidden && !getSelection().toString()) load(); }, 5000);
-load();
-$("q").focus();
+// At the live end, new lines (and pastes) appear as they come in.
+setInterval(() => { if (!view.moreAfter && !document.hidden) loadNewer(); }, 5000);
+loadLatest();
 </script>
 </body>
 </html>

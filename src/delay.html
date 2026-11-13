@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifelog — delay the summary</title>
+<link rel="icon" href="/logo.svg">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<form class="center" id="form">
+  <strong>Ask about the summary at</strong>
+  <input type="time" id="at" required style="min-width:150px">
+  <div class="row"><button type="button" data-h="2">+2 h</button><button type="button" data-h="3">+3 h</button><button type="button" data-t="23:30">23:30</button></div>
+  <button class="primary" type="submit">Delay</button>
+  <span class="hint" id="msg"></span>
+</form>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, "0");
+const day = new URLSearchParams(location.search).get("day") || "";
+const set = d => { $("at").value = `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const inHours = h => { const d = new Date(Date.now() + h * 3600e3); d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15); return d; };
+set(inHours(2));
+document.querySelectorAll("[data-h]").forEach(b => b.addEventListener("click", () => set(inHours(+b.dataset.h))));
+document.querySelectorAll("[data-t]").forEach(b => b.addEventListener("click", () => { $("at").value = b.dataset.t; }));
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const r = await (await fetch(`/summary?do=until&at=${encodeURIComponent($("at").value)}&day=${day}`, { method: "POST" })).json();
+  if (r.error) { $("msg").textContent = r.error; return; }
+  $("msg").textContent = r.result;
+  setTimeout(() => window.close(), 900);
+});
+</script>
+</body>
+</html>

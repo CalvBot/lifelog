@@ -38,14 +38,19 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 Tray icon (a speech bubble with sound bars): red = recording, grey = private mode.
 
-- **Left click** opens the clip window: pick any range (presets, or exact from/to times), or type a word or phrase
-  you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
-  previewed live; click a line to start there, Shift+click to end there, toggle speakers off, then "Copy as file"
-  (a .txt lands on the clipboard, ready to paste) or "Copy text".
-  Lines from the last 7 days have a ▶ button to hear them (or click a line and press Space).
+- **Left click** (or "Open browser") opens the browser: the whole transcript as one timeline, starting at now and
+  loading more as you scroll up (new lines appear live at the bottom). Find a word or phrase to jump there. Pasted
+  files sit in the timeline at the moment they were pasted: images show as images, videos and audio play in place,
+  text shows as text, with "Open" (default app) and "Show in folder" buttons.
+  To copy, pick a range: click a line, Shift+click another (or type exact from/to times); "Clear" (or Esc) drops it.
+  Toggle speakers off, then "Copy as file" (a .txt lands on the clipboard, ready to paste), "Copy text" or
+  "Copy audio" (a .wav of the range, last 7 days). Lines from the last 7 days have a ▶ button to hear them (or
+  click a line and press Space).
 - **Right click** gives a short menu:
-  - **Copy last…** → 10 minutes, 30 minutes, 1 hour, "Input time (minutes)" (a small box to type any number),
-    and "Advanced" (the clip window above).
+  - **Open browser** → the browser above.
+  - **Paste here** → saves a copy of whatever is on the clipboard (copied files, an image, or text) at this
+    moment in the timeline, under `files/` in the data folder.
+  - **Copy last…** → 10 minutes, 30 minutes, 1 hour, or "Input time (minutes)" (a small box to type any number).
   - **Add game** → the apps that are open now; tick one to mark it as a game. While a game is running lifelog
     only records, and transcribes after it closes.
   - **Add exclusion** → the same list; tick an app to never record it.
@@ -57,9 +62,10 @@ Tray icon (a speech bubble with sound bars): red = recording, grey = private mod
     are saved.
   - **Quit**
 
-**Daily summary.** At 21:00 (set in Settings) a notification asks whether the local AI may sum up the day, since it
-needs the graphics card for a minute or two: **Write it now**, **In an hour** or **Skip today**. Ignored, it asks again
-an hour later; while a game is running it waits to ask. While it writes, transcription steps aside so the two models
+**Daily summary.** At 21:00 (set in Settings) a notification says the summary starts in 5 minutes, since the local
+AI needs the graphics card for a minute or two: **Start now**, **In an hour**, **Delay until…** (a small window to
+pick a time) or **Skip today**. Ignored, it starts by itself after 5 minutes. It never asks during a game: it waits
+until no game has run for 10 minutes, and a game starting during the 5 minutes puts it off the same way. While it writes, transcription steps aside so the two models
 never share the GPU, and the model is unloaded straight after. The summary is about what you said; other people and
 apps are only used as context (app audio is only given to the model when it is within a minute of you speaking).
 The result is a few bullets per part of the day, "To remember" (every moment you said "need to remember", always

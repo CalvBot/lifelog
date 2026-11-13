@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS summaries (
     reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}
 );
 
+-- Files pasted into the timeline from the tray ("Paste here"); copies kept under <data_dir>/files.
+CREATE TABLE IF NOT EXISTS files (
+    id    INTEGER PRIMARY KEY,
+    ts    REAL NOT NULL,      -- unix seconds: the moment it was pasted
+    name  TEXT NOT NULL,      -- original file name
+    path  TEXT NOT NULL,      -- 'YYYY-MM-DD/<file>' under <data_dir>/files
+    kind  TEXT NOT NULL,      -- 'image' | 'video' | 'audio' | 'text' | 'file'
+    size  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS files_ts ON files (ts);
+
 -- Topics the daily summary must never mention again (set from the summaries window).
 CREATE TABLE IF NOT EXISTS summary_never (
     id         INTEGER PRIMARY KEY,
