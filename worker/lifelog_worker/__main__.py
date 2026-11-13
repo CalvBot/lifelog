@@ -117,6 +117,8 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="empty the queue, then exit")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(message)s", datefmt="%H:%M:%S")
+    for noisy in ("faster_whisper", "httpx"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     cfg = load_config(args.config)
     data_dir = Path(cfg["data_dir"])
