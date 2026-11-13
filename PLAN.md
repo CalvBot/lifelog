@@ -6,7 +6,7 @@ meeting recordings, with a quick "clip the last N minutes" button and a short da
 ## What it does
 - Listens all the time to: my mic, and each app that plays audio (Discord, browser, games, video players), as **separate streams**.
 - Transcribes locally, labels each line with: time, speaker, app (exe + PID + window title), source device.
-- Skips excluded apps (list of exe names) and has a "private mode" pause (hotkey + Stream Deck + tray).
+- Skips excluded apps (list of exe names) and has a "private mode" pause (Stream Deck + tray).
 - Stores text forever on this PC; raw audio optional with a retention window.
 - Stream Deck: "clip last 15m / 1h / today / custom" → a .txt file is put on the clipboard (as a file, so it pastes straight into Discord).
 - End of day: a local AI writes a short summary (word limit set in settings), including things I said I'd do.

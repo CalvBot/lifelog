@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lifelog — delay the summary</title>
+<title>lifelog delay summary</title>
 <link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
+<script src="/icons.js"></script>
 </head>
-<body>
+<body class="pop">
+<div class="pop-head"><strong>Delay summary until</strong><button class="icon" id="close" title="Esc"><i data-icon="x"></i></button></div>
 <form class="center" id="form">
-  <strong>Ask about the summary at</strong>
   <input type="time" id="at" required style="min-width:150px">
   <div class="row"><button type="button" data-h="2">+2 h</button><button type="button" data-h="3">+3 h</button><button type="button" data-t="23:30">23:30</button></div>
   <button class="primary" type="submit">Delay</button>
@@ -19,6 +20,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, "0");
+const closeWin = () => window.ipc ? window.ipc.postMessage("close") : window.close();
 const day = new URLSearchParams(location.search).get("day") || "";
 const set = d => { $("at").value = `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const inHours = h => { const d = new Date(Date.now() + h * 3600e3); d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15); return d; };
@@ -30,8 +32,10 @@ $("form").addEventListener("submit", async e => {
   const r = await (await fetch(`/summary?do=until&at=${encodeURIComponent($("at").value)}&day=${day}`, { method: "POST" })).json();
   if (r.error) { $("msg").textContent = r.error; return; }
   $("msg").textContent = r.result;
-  setTimeout(() => window.close(), 900);
+  setTimeout(closeWin, 900);
 });
+$("close").addEventListener("click", closeWin);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeWin(); });
 </script>
 </body>
 </html>

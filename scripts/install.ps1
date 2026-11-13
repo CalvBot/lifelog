@@ -14,7 +14,7 @@ function Stop-Lifelog {
         & $cli quit 2>$null | Out-Null   # clean stop: lets the worker finish its file
         Start-Sleep 3
     }
-    Get-Process lifelogw, lifelog -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 
 if ($Uninstall) {
@@ -31,14 +31,14 @@ if ($Uninstall) {
 }
 
 Push-Location $repo
-try { the build build --release; if ($LASTEXITCODE) { throw 'build failed' } } finally { Pop-Location }
+try { the build build --release --workspace; if ($LASTEXITCODE) { throw 'build failed' } } finally { Pop-Location }
 if (-not (Test-Path (Join-Path $repo 'worker\.venv\Scripts\python.exe'))) {
     throw 'worker\.venv is missing: see Setup in README.md'
 }
 
 Stop-Lifelog
 New-Item -ItemType Directory -Force $dest | Out-Null
-Copy-Item (Join-Path $repo 'target\release\lifelog.exe'), (Join-Path $repo 'target\release\lifelogw.exe') $dest -Force
+Copy-Item (Join-Path $repo 'target\release\lifelog.exe'), (Join-Path $repo 'target\release\lifelogw.exe'), (Join-Path $repo 'target\release\lifelog-ui.exe') $dest -Force
 # The worker (Python + its 2 GB of libraries) stays in the repo; the app just links to it.
 $link = Join-Path $dest 'worker'
 if (-not (Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target (Join-Path $repo 'worker') | Out-Null }

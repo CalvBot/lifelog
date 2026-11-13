@@ -3,43 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lifelog — settings</title>
+<title>lifelog settings</title>
 <link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
+<script src="/icons.js"></script>
 </head>
 <body>
-<header>
-  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>Settings</strong>
-    <span class="nav"><a href="/ui">Transcript</a> · <a href="/summary">Your days</a></span></div>
-</header>
 <div class="page">
   <section class="card">
-    <div class="set"><span>Recording <small id="hotkey"></small></span><input type="checkbox" class="switch" id="rec"></div>
+    <div class="set"><span>Recording</span><input type="checkbox" class="switch" id="rec"></div>
   </section>
 
   <section class="card">
-    <h2>Apps</h2>
-    <p class="note">Off = never recorded, and its history is deleted. 🔒 = always recorded, can't be switched off.</p>
+    <h2>Apps <span class="right"><a href="#" id="show-dismissed" hidden></a> &nbsp; <a href="#" id="edit-apps">Edit list</a></span></h2>
     <div id="apps"></div>
-    <form class="add" id="add-app"><input type="text" id="app-name" placeholder="Exclude an app, e.g. vlc.exe"><button>Exclude</button></form>
+    <div class="pager" id="apps-pager"></div>
   </section>
 
   <section class="card">
     <h2>Games <a href="#" id="edit-games" class="right">Edit list</a></h2>
-    <p class="note">On = no transcribing while it runs (still records). ✕ = not a game, stop suggesting it.</p>
     <div id="games"></div>
-    <form class="add" id="add-game"><input type="text" id="game-name" placeholder="Add a game, e.g. eldenring.exe"><button>Add</button></form>
+    <form class="add" id="add-game"><input type="text" id="game-name" placeholder="eldenring.exe"><button>Add game</button></form>
   </section>
 
   <section class="card">
     <h2>Transcription <small id="tr-state"></small></h2>
     <div class="seg" id="mode">
-      <label><input type="radio" name="mode" value="auto"><span>Auto</span></label>
+      <label title="Waits during games"><input type="radio" name="mode" value="auto"><span>Auto</span></label>
       <label><input type="radio" name="mode" value="always"><span>Always</span></label>
       <label><input type="radio" name="mode" value="paused"><span>Paused</span></label>
     </div>
-    <p class="note" id="mode-note"></p>
-    <div class="set"><span>Count GPU load above this as a game <small id="gpu-now"></small></span>
+    <div class="set"><span>GPU load that counts as gaming <small id="gpu-now"></small></span>
       <span><input type="number" id="limit" min="1" max="100"> %</span></div>
   </section>
 
@@ -50,12 +44,16 @@
     <div class="set"><span>Max words</span><input type="number" id="sum-words" min="50" max="2000" step="10"></div>
     <div class="set" style="border:0;padding-bottom:2px"><span>Never mention</span></div>
     <div id="never"></div>
-    <div class="row" style="margin-top:10px"><button id="sum-now">Write today's now</button><a href="/summary">Read your days</a></div>
+    <div class="row" style="margin-top:10px"><button id="sum-now">Write today's now</button></div>
   </section>
 
   <section class="card">
     <h2>Files</h2>
-    <div class="row"><button data-open="data">Data folder</button><button data-open="log">Log</button><button data-open="config">Config file</button></div>
+    <div class="row">
+      <button data-open="data"><i data-icon="folder-open"></i>Data</button>
+      <button data-open="log"><i data-icon="file-text"></i>Log</button>
+      <button data-open="config"><i data-icon="file-text"></i>Config</button>
+    </div>
   </section>
 </div>
 <script>
@@ -63,52 +61,84 @@
 const $ = id => document.getElementById(id);
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const name = exe => exe.replace(/\.exe$/i, "");
+const enc = encodeURIComponent;
 const post = async url => show(await (await fetch(url, { method: "POST" })).json());
 const typing = el => document.activeElement === el;
-const MODE_NOTES = {
-  auto: "Waits during games, then catches up.",
-  always: "Transcribes even during games.",
-  paused: "Records only. Nothing becomes searchable until you switch back.",
+const ago = ts => {
+  if (!ts) return "";
+  const m = (Date.now() / 1000 - ts) / 60;
+  return m < 2 ? "now" : m < 60 ? `${Math.round(m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago`
+    : new Date(ts * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 };
-
-const row = (label, attrs, on, extra = "", acts = "", disabled = false) =>
-  `<div class="set"><span>${esc(label)}${extra}</span><span class="acts">${acts}` +
-  `<input type="checkbox" class="switch" ${attrs} ${on ? "checked" : ""} ${disabled ? "disabled" : ""}></span></div>`;
+const btn = (icon_, attrs, title, on = false) => `<button class="icon ${on ? "on" : ""}" ${attrs} title="${title}">${icon(icon_)}</button>`;
+const set = (label, extra, acts) => `<div class="set"><span>${esc(label)}${extra}</span><span class="acts">${acts}</span></div>`;
+const row = (label, attrs, on, extra = "", acts = "") =>
+  set(label, extra, acts + `<input type="checkbox" class="switch" ${attrs} ${on ? "checked" : ""}>`);
 let editGames = false, last = null;
+
+// Apps: normally the ones playing now. "Edit list" pages through every app heard, 10 at a time;
+// dismissing one stops recording it and hides it (what it already has stays).
+const apps = { edit: false, dismissed: false, page: 0 };
+const appActs = (a, locked) => a.dismissed
+  ? btn("rotate-ccw", `data-restore-app="${esc(a.exe)}"`, "Record again")
+  : btn(locked ? "lock" : "lock-open", `data-lock="${esc(a.exe)}"`, locked ? "Locked: always recorded" : "Lock", locked) +
+    (locked ? "" : btn("x", `data-dismiss-app="${esc(a.exe)}"`, "Dismiss"));
+function showApps() {
+  if (apps.edit || !last) return;
+  const s = last, locked = s.locked_apps;
+  const playing = [...new Set(s.streams.map(x => x.exe).filter(Boolean).map(e => e.toLowerCase()))].filter(e => !s.excluded_apps.includes(e));
+  $("apps").innerHTML = playing.map(e => set(name(e), ` <small>playing</small>`, appActs({ exe: e }, locked.includes(e)))).join("") ||
+    `<p class="note">Nothing playing</p>`;
+  $("apps-pager").innerHTML = "";
+}
+async function loadApps() {
+  if (!apps.edit) return showApps();
+  const r = await (await fetch(`/api/apps?page=${apps.page}&dismissed=${apps.dismissed ? 1 : 0}`)).json();
+  if (r.page >= r.pages && apps.page > 0) { apps.page = r.pages - 1; return loadApps(); }
+  $("apps").innerHTML = r.apps.map(a => set(name(a.exe),
+    ` <small>${a.playing ? "playing" : ago(a.last_ts)}</small>`, appActs({ ...a, dismissed: apps.dismissed }, a.locked))).join("") ||
+    `<p class="note">${apps.dismissed ? "None dismissed" : "None"}</p>`;
+  $("apps-pager").innerHTML = r.pages > 1
+    ? btn("chevron-left", `data-page="-1" ${r.page === 0 ? "disabled" : ""}`, "Previous") + `${r.page + 1} / ${r.pages}` +
+      btn("chevron-right", `data-page="1" ${r.page + 1 >= r.pages ? "disabled" : ""}`, "Next")
+    : "";
+  $("show-dismissed").textContent = apps.dismissed ? "Show heard" : `Show dismissed (${r.dismissed_count})`;
+}
+function setAppsMode() {
+  $("edit-apps").textContent = apps.edit ? "Done" : "Edit list";
+  $("show-dismissed").hidden = !apps.edit;
+  loadApps();
+}
+$("edit-apps").addEventListener("click", e => { e.preventDefault(); apps.edit = !apps.edit; apps.dismissed = false; apps.page = 0; setAppsMode(); });
+$("show-dismissed").addEventListener("click", e => { e.preventDefault(); apps.dismissed = !apps.dismissed; apps.page = 0; loadApps(); });
+$("apps-pager").addEventListener("click", e => { const b = e.target.closest("[data-page]"); if (b) { apps.page += +b.dataset.page; loadApps(); } });
+$("apps").addEventListener("click", async e => {
+  const l = e.target.closest("[data-lock]"), d = e.target.closest("[data-dismiss-app]"), r = e.target.closest("[data-restore-app]");
+  if (l) await post(`/lock?app=${enc(l.dataset.lock)}&on=${l.classList.contains("on") ? 0 : 1}`);
+  if (d) await post(`/exclude?app=${enc(d.dataset.dismissApp)}`);
+  if (r) await post(`/include?app=${enc(r.dataset.restoreApp)}`);
+  if (l || d || r) loadApps();
+});
 
 function show(s) {
   if (s.error) return alert(s.error);
   last = s;
   $("rec").checked = !s.paused;
-  $("hotkey").textContent = s.paused ? "off (private mode)" : s.hotkey ? `pause: ${s.hotkey}` : "";
-
-  // Apps: locked ones, then playing now (on), then excluded (off).
-  const nowPlaying = new Set(s.streams.map(x => x.exe).filter(Boolean));
-  const locked = s.locked_apps;
-  const others = [...nowPlaying].filter(e => !s.excluded_apps.includes(e) && !locked.includes(e));
-  const apps = [...locked.map(e => [e, true]), ...others.map(e => [e, true]), ...s.excluded_apps.map(e => [e, false])];
-  $("apps").innerHTML = apps.map(([e, on]) => {
-    const isLocked = locked.includes(e);
-    const lock = `<button class="icon ${isLocked ? "on" : ""}" data-lock="${esc(e)}" title="${isLocked ? "Unlock" : "Lock as always recorded"}">${isLocked ? "🔒" : "🔓"}</button>`;
-    return row(name(e), `data-app="${esc(e)}"`, on, nowPlaying.has(e) ? ` <small>playing</small>` : "", lock, isLocked);
-  }).join("") || `<p class="note">Nothing playing right now.</p>`;
+  showApps();
 
   // Games: marked ones, then open apps not dismissed. "Edit list" also shows the dismissed ones.
   const candidates = s.running_apps.filter(e => !s.games.includes(e) && !s.not_games.includes(e));
   const tag = e => s.game_running === e ? ` <small>running</small>` : "";
   let html = s.games.map(e => row(name(e), `data-game="${esc(e)}"`, true, tag(e))).join("") +
-    candidates.map(e => row(name(e), `data-game="${esc(e)}"`, false, "",
-      `<button class="icon" data-dismiss="${esc(e)}" title="Not a game: stop suggesting it">✕</button>`)).join("");
+    candidates.map(e => row(name(e), `data-game="${esc(e)}"`, false, "", btn("x", `data-dismiss="${esc(e)}"`, "Not a game"))).join("");
   if (editGames) {
-    html += s.not_games.map(e => row(name(e), `data-game="${esc(e)}"`, false, ` <small>dismissed</small>`,
-      `<button class="icon" data-restore="${esc(e)}" title="Suggest it again">↺</button>`)).join("");
+    html += s.not_games.map(e => set(name(e), ` <small>dismissed</small>`, btn("rotate-ccw", `data-restore="${esc(e)}"`, "Suggest again"))).join("");
   }
-  $("games").innerHTML = html || `<p class="note">No new apps open.</p>`;
+  $("games").innerHTML = html || `<p class="note">No new apps open</p>`;
   $("edit-games").textContent = editGames ? "Done" : "Edit list";
 
   const t = s.transcription;
   document.querySelectorAll('input[name="mode"]').forEach(r => { r.checked = r.value === t.mode; });
-  $("mode-note").textContent = MODE_NOTES[t.mode] || "";
   const queue = s.queued_minutes >= 1 ? `${Math.round(s.queued_minutes)} min queued` : "up to date";
   $("tr-state").textContent = `${t.state} · ${queue}`;
   if (!typing($("limit"))) $("limit").value = s.gpu_busy_percent;
@@ -123,48 +153,35 @@ function show(s) {
 }
 
 $("rec").addEventListener("change", e => post(e.target.checked ? "/resume" : "/pause"));
-$("apps").addEventListener("change", e => {
-  const app = e.target.dataset.app; if (!app) return;
-  if (!e.target.checked && !confirm(`Stop recording ${name(app)} and delete everything recorded from it?`)) {
-    e.target.checked = true;
-    return;
-  }
-  post(`/${e.target.checked ? "include" : "exclude"}?app=${encodeURIComponent(app)}`);
-});
-const addForm = (form, input, confirmText, url) => $(form).addEventListener("submit", e => {
+$("add-game").addEventListener("submit", e => {
   e.preventDefault();
-  let app = $(input).value.trim(); if (!app) return;
+  let app = $("game-name").value.trim(); if (!app) return;
   if (!/\.[a-z0-9]+$/i.test(app)) app += ".exe";
-  if (confirmText && !confirm(confirmText(app))) return;
-  $(input).value = "";
-  post(url(app));
-});
-addForm("add-app", "app-name", a => `Never record ${name(a)}, and delete everything recorded from it?`, a => `/exclude?app=${encodeURIComponent(a)}`);
-addForm("add-game", "game-name", null, a => `/game?app=${encodeURIComponent(a)}`);
-$("apps").addEventListener("click", e => {
-  const b = e.target.closest("[data-lock]"); if (!b) return;
-  post(`/lock?app=${encodeURIComponent(b.dataset.lock)}&on=${b.classList.contains("on") ? 0 : 1}`);
+  $("game-name").value = "";
+  post(`/game?app=${enc(app)}`);
 });
 $("games").addEventListener("click", e => {
   const d = e.target.closest("[data-dismiss]"), r = e.target.closest("[data-restore]");
-  if (d) post(`/dismiss-game?app=${encodeURIComponent(d.dataset.dismiss)}`);
-  if (r) post(`/dismiss-game?app=${encodeURIComponent(r.dataset.restore)}&on=0`);
+  if (d) post(`/dismiss-game?app=${enc(d.dataset.dismiss)}`);
+  if (r) post(`/dismiss-game?app=${enc(r.dataset.restore)}&on=0`);
+});
+$("games").addEventListener("change", e => {
+  const app = e.target.dataset.game; if (!app) return;
+  post(`/${e.target.checked ? "game" : "not-game"}?app=${enc(app)}`);
 });
 $("edit-games").addEventListener("click", e => { e.preventDefault(); editGames = !editGames; if (last) show(last); });
+
 const showNever = r => {
   $("never").innerHTML = (r.never || []).map(n =>
-    `<span class="chip">${esc(n.topic)}<button data-never="${n.id}" title="Allow again">✕</button></span>`).join("") ||
-    `<p class="note">Nothing. Hide a point with ✕ in Your days.</p>`;
+    `<span class="chip">${esc(n.topic)}<button data-never="${n.id}" title="Allow again">${icon("x")}</button></span>`).join("") ||
+    `<p class="note">None</p>`;
 };
 $("never").addEventListener("click", async e => {
   const b = e.target.closest("[data-never]"); if (!b) return;
   showNever(await (await fetch(`/api/summary-never?remove=${b.dataset.never}`, { method: "POST" })).json());
 });
 fetch("/api/summary-never").then(r => r.json()).then(showNever);
-$("games").addEventListener("change", e => {
-  const app = e.target.dataset.game; if (!app) return;
-  post(`/${e.target.checked ? "game" : "not-game"}?app=${encodeURIComponent(app)}`);
-});
+
 document.querySelectorAll('input[name="mode"]').forEach(r =>
   r.addEventListener("change", () => post(`/transcription?mode=${r.value}`)));
 $("limit").addEventListener("change", e => {
@@ -173,7 +190,7 @@ $("limit").addEventListener("change", e => {
 });
 const sumSet = q => post(`/api/summary-settings?${q}`);
 $("sum-on").addEventListener("change", e => sumSet(`enabled=${e.target.checked ? 1 : 0}`));
-$("sum-at").addEventListener("change", e => { if (e.target.value) sumSet(`ask_at=${encodeURIComponent(e.target.value)}`); });
+$("sum-at").addEventListener("change", e => { if (e.target.value) sumSet(`ask_at=${enc(e.target.value)}`); });
 $("sum-words").addEventListener("change", e => { const v = Math.round(+e.target.value); if (v >= 50) sumSet(`max_words=${v}`); });
 $("sum-now").addEventListener("click", () => fetch("/summary?do=now", { method: "POST" }));
 document.querySelectorAll("[data-open]").forEach(b =>

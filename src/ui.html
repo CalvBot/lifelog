@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lifelog</title>
+<title>lifelog browser</title>
 <link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
+<script src="/icons.js"></script>
 </head>
 <body>
 <header>
   <div class="row">
     <span class="label">Range</span><input type="datetime-local" id="from" title="Start of the range">
     <span class="label" style="min-width:0">to</span><input type="datetime-local" id="to" title="End of the range (empty = now)">
-    <button class="small" id="clear" title="Clear the range (Esc)">Clear</button>
-    <span class="nav"><a href="/summary">Your days</a> · <a href="/settings">Settings</a></span>
+    <button class="small" id="clear" title="Esc">Clear</button>
   </div>
   <div class="row">
     <span class="label">Find</span>
     <div class="find">
-      <input type="search" id="q" placeholder="A word or phrase you remember…" autocomplete="off">
+      <input type="search" id="q" placeholder="Search" autocomplete="off">
       <div id="results"></div>
     </div>
   </div>
@@ -28,8 +28,8 @@
 <footer>
   <span id="summary"></span>
   <span id="toast"></span>
-  <button class="small" id="to-end" title="Back to now">↓ Now</button>
-  <button id="copy-audio" title="The audio of the range as a .wav (last 7 days)">Copy audio</button>
+  <button class="small" id="to-end" title="Back to now"><i data-icon="arrow-down"></i>Now</button>
+  <button id="copy-audio" title=".wav, last 7 days">Copy audio</button>
   <button id="copy-text">Copy text</button>
   <button class="primary" id="copy-file" title="Ctrl+Enter">Copy as file</button>
 </footer>
@@ -75,21 +75,21 @@ const items = () => [
 function itemHtml(it, prev) {
   let html = "";
   if (!prev || dayKey(prev.ts) !== dayKey(it.ts)) html += `<div class="dayh" data-day="${dayKey(it.ts)}">${longDay(it.ts)}</div>`;
-  else if (it.ts - prev.end > 300) html += `<div class="gap">— ${duration(it.ts - prev.end)} of nothing —</div>`;
+  else if (it.ts - prev.end > 300) html += `<div class="gap">${duration(it.ts - prev.end)}</div>`;
   if (it.file) {
     const f = it.file, src = `/api/file?id=${f.id}`;
-    const body = f.kind === "image" ? `<a href="${src}" target="_blank"><img src="${src}" loading="lazy" alt="${esc(f.name)}"></a>`
+    const body = f.kind === "image" ? `<img src="${src}" loading="lazy" alt="${esc(f.name)}" data-open="${f.id}" style="cursor:zoom-in">`
       : f.kind === "video" ? `<video controls preload="metadata" src="${src}"></video>`
       : f.kind === "audio" ? `<audio controls preload="none" src="${src}"></audio>`
       : f.kind === "text" ? `<pre>${esc(f.text || "")}</pre>` : "";
     return html + `<div class="f" data-ts="${f.ts}"><span></span><span class="t">${clock(f.ts)}</span><span class="w">pasted</span>` +
       `<div><div class="fname">${esc(f.name)} <small>${size(f.size)}</small>` +
-      `<button class="small" data-open="${f.id}">Open</button><button class="small" data-folder="${f.id}">Show in folder</button></div>${body}</div></div>`;
+      `<button class="small" data-open="${f.id}">${icon("external-link")}Open</button><button class="small" data-folder="${f.id}">${icon("folder-open")}Show in folder</button></div>${body}</div></div>`;
   }
   const l = it.line;
   const who = l.source !== "mic" && l.title ? `${l.speaker} · ${l.title}` : l.speaker;
   const playable = l.audio && l.start_ts > nowTs() - AUDIO_DAYS * 86400;
-  const play = playable ? `<button class="play" data-play="${l.id}" title="Play (Space)">▶</button>` : "";
+  const play = playable ? `<button class="play" data-play="${l.id}" title="Space">${icon("play")}</button>` : "";
   return html + `<div class="l ${l.source === "mic" ? "me" : ""}" data-id="${l.id}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
     `<span>${play}</span><span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
 }
@@ -98,7 +98,7 @@ const chunkHtml = (list, prev) => list.map((it, i) => itemHtml(it, i ? list[i - 
 function renderAll() {
   const all = items();
   $("lines").innerHTML = chunkHtml(all, null) ||
-    `<div class="empty">${view.lines.length ? "Everything here is from speakers you switched off." : "Nothing transcribed yet."}</div>`;
+    `<div class="empty">${view.lines.length ? "All hidden" : "Nothing yet"}</div>`;
   marks();
   speakers();
 }
@@ -143,7 +143,7 @@ async function loadOlder() {
     if (head?.classList.contains("dayh") && head.dataset.day === dayKey(added[added.length - 1].ts)) head.remove();
     let html = chunkHtml(added, null);
     if (first && dayKey(first.ts) === dayKey(added[added.length - 1].ts) && first.ts - added[added.length - 1].end > 300)
-      html += `<div class="gap">— ${duration(first.ts - added[added.length - 1].end)} of nothing —</div>`;
+      html += `<div class="gap">${duration(first.ts - added[added.length - 1].end)}</div>`;
     main.insertAdjacentHTML("afterbegin", html);
     main.scrollTop += main.scrollHeight - height;
     marks(); speakers();
@@ -202,13 +202,13 @@ function marks() {
     e.classList.toggle("picked", id === selected);
     e.classList.toggle("inr", !!range && +e.dataset.end >= range.from && +e.dataset.ts <= to);
     const p = e.querySelector(".play");
-    if (p) { p.classList.toggle("on", id === playing); p.textContent = id === playing ? "■" : "▶"; }
+    if (p && p.classList.contains("on") !== (id === playing)) { p.classList.toggle("on", id === playing); p.innerHTML = icon(id === playing ? "square" : "play"); }
   });
   $("from").value = range ? inputValue(range.from) : "";
   $("to").value = range && range.to !== null ? inputValue(range.to) : "";
   ["copy-audio", "copy-text", "copy-file"].forEach(id => { $(id).disabled = !range; });
   if (!range) {
-    $("summary").textContent = "Click a line, then Shift+click another to pick a range to copy.";
+    $("summary").textContent = "";
   } else {
     const to = range.to ?? nowTs();
     const n = view.lines.filter(l => !excluded.has(l.speaker) && l.end_ts >= range.from && l.start_ts <= to).length;
@@ -269,11 +269,11 @@ const player = new Audio();
 function play(id) {
   if (playing === id) { player.pause(); playing = null; marks(); return; }
   player.src = `/api/audio?id=${id}`;
-  player.play().catch(() => toast("That audio is gone (kept for a week)."));
+  player.play().catch(() => toast("Audio is gone (kept 7 days)"));
   playing = id; marks();
 }
 player.addEventListener("ended", () => { playing = null; marks(); });
-player.addEventListener("error", () => { if (playing !== null) { toast("That audio is gone (kept for a week)."); playing = null; marks(); } });
+player.addEventListener("error", () => { if (playing !== null) { toast("Audio is gone (kept 7 days)"); playing = null; marks(); } });
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, textarea")) return;
   if (e.key === " " && selected !== null) { e.preventDefault(); play(selected); }
@@ -289,7 +289,7 @@ function showHits(q) {
     ? hits.map((l, i) => `<div class="hit ${i === active ? "active" : ""}" data-i="${i}">` +
         `<div class="when">${day(l.start_ts)} ${clock(l.start_ts)} · ${esc(l.speaker)}${l.source !== "mic" && l.title ? " · " + esc(l.title) : ""}</div>` +
         `<div>${re ? esc(l.text).replace(re, "<mark>$1</mark>") : esc(l.text)}</div></div>`).join("")
-    : `<div class="none">No line contains that phrase.</div>`;
+    : `<div class="none">No match</div>`;
 }
 $("q").addEventListener("input", async e => {
   const q = e.target.value, ticket = ++searching;
@@ -324,19 +324,19 @@ function toast(text) {
   toast.timer = setTimeout(() => { $("toast").textContent = ""; }, 4000);
 }
 async function copy(as) {
-  if (!range) return toast("Pick a range first.");
+  if (!range) return;
   const body = { from: range.from, to: range.to, exclude: [...excluded], as };
   const r = await (await fetch("/api/clip", { method: "POST", body: JSON.stringify(body) })).json();
   if (r.error) return toast(r.error);
-  if (as === "audio") return toast(`Copied ${r.seconds < 60 ? r.seconds + " s" : duration(r.seconds)} of audio — paste anywhere`);
+  if (as === "audio") return toast(`Copied ${r.seconds < 60 ? r.seconds + " s" : duration(r.seconds)} of audio`);
   if (as === "text") await navigator.clipboard.writeText(r.text);
-  toast(`Copied ${r.lines} lines${as === "file" ? " as a file" : ""} — paste anywhere`);
+  toast(`Copied ${r.lines} lines`);
 }
 $("copy-file").addEventListener("click", () => copy("file"));
 $("copy-text").addEventListener("click", () => copy("text"));
 $("copy-audio").addEventListener("click", e => {
   e.target.disabled = true;
-  toast("Cutting the audio…");
+  toast("Cutting…");
   copy("audio").finally(() => { e.target.disabled = !range; });
 });
 document.addEventListener("keydown", e => { if (e.ctrlKey && e.key === "Enter") copy("file"); });

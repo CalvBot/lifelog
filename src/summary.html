@@ -3,18 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lifelog — your days</title>
+<title>lifelog days</title>
 <link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
+<script src="/icons.js"></script>
 </head>
 <body>
-<header>
-  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>Your days</strong>
-    <span class="hint" id="state"></span>
-    <a class="nav" href="/settings">Settings →</a></div>
-</header>
 <div class="split">
-  <nav class="days" id="days"></nav>
+  <div class="days"><div class="hint" id="state" style="padding:0 14px"></div><nav id="days"></nav></div>
   <article class="read" id="read"></article>
 </div>
 <script>
@@ -35,7 +31,7 @@ function markdown(text) {
     const item = line.match(/^[-*•]\s+(.*)/);
     if (item && !list) { html += "<ul>"; list = true; }
     if (!item && list) { html += "</ul>"; list = false; }
-    if (item) html += `<li data-b="${esc(item[1].trim())}">${inline(item[1])}<button class="nev" title="Never mention this again">✕</button></li>`;
+    if (item) html += `<li data-b="${esc(item[1].trim())}">${inline(item[1])}<button class="nev" title="Never mention again">${icon("x")}</button></li>`;
     else if (line.startsWith("#")) html += `<p><strong>${inline(line.replace(/^#+\s*/, ""))}</strong></p>`;
     else if (line) html += `<p>${inline(line)}</p>`;
   }
@@ -49,7 +45,7 @@ async function loadDays() {
   if (!days.some(d => d.day === today)) days.unshift({ day: today, status: "none" });
   if (!selected) selected = today;
   $("days").innerHTML = days.map(d => {
-    const note = d.status === "done" ? (d.reminders ? `${d.reminders} ✓` : "") : d.status === "skipped" ? "skipped" : "—";
+    const note = d.status === "done" ? (d.reminders ? `${d.reminders} ${icon("check")}` : "") : d.status === "skipped" ? "skipped" : "—";
     return `<div class="day ${d.day === selected ? "sel" : ""}" data-day="${d.day}">` +
       `<span>${d.day === today ? "Today" : shortDate(d.day)}</span><small>${note}</small></div>`;
   }).join("");
@@ -68,11 +64,11 @@ async function show(day) {
       html += `<h2 style="font-size:15px;margin:18px 0 6px">Things you said you'd do</h2>` +
         reminders.map(r => `<div class="todo" title="You said: ${esc(r.said || "")}"><span class="t">${esc(r.time || "")}</span><span>${esc(r.text || "")}</span></div>`).join("");
     }
-    html += `<p class="hint" style="margin-top:20px">Written ${new Date(s.created_ts * 1000).toLocaleString()} by ${esc(s.model || "")}. ` +
-      `<a href="#" id="again">Write it again</a></p>`;
+    html += `<p class="hint" style="margin-top:20px">${new Date(s.created_ts * 1000).toLocaleString()} · ${esc(s.model || "")} · ` +
+      `<a href="#" id="again">Rewrite</a></p>`;
   } else {
-    html += `<p class="hint">${s ? "You skipped this day." : day === today ? "Not written yet. lifelog asks you in the evening." : "No summary for this day."}</p>` +
-      `<button class="primary" id="write">Write it now</button> <span class="hint">Uses the graphics card for a few minutes.</span>`;
+    html += `<p class="hint">${s ? "Skipped" : day === today ? "Not written yet" : "No summary"}</p>` +
+      `<button class="primary" id="write">Write it now</button>`;
   }
   $("read").innerHTML = html;
   const write = async e => {
@@ -82,7 +78,7 @@ async function show(day) {
   };
   $("read").querySelectorAll(".nev").forEach(b => b.addEventListener("click", async () => {
     const bullet = b.parentElement.dataset.b;
-    const topic = prompt("Never mention this again. Shorten it to the topic to leave out from now on:", bullet.replace(/\*\*/g, ""));
+    const topic = prompt("Topic to never mention:", bullet.replace(/\*\*/g, ""));
     if (!topic || !topic.trim()) return;
     const r = await (await fetch("/api/summary-never", { method: "POST", body: JSON.stringify({ topic, day, bullet }) })).json();
     if (r.error) return alert(r.error);
@@ -96,7 +92,7 @@ async function poll() {
   const s = await (await fetch("/status")).json();
   const state = s.summary.state;
   const busy = /reading|writing|waiting|starting/.test(state);
-  $("state").textContent = busy ? `· ${state}…` : state.startsWith("failed") ? `· ${state}` : "";
+  $("state").textContent = busy ? `${state}…` : state.startsWith("failed") ? state : "";
   if (writing && !busy) { writing = false; await loadDays(); show(selected); }
   if (busy) writing = true;
 }
