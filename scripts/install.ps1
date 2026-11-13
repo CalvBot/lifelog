@@ -15,6 +15,8 @@ function Stop-Lifelog {
         Start-Sleep 3
     }
     Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue | Stop-Process -Force
+    # Killed processes let go of their exe a moment later.
+    Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 }
 
 if ($Uninstall) {

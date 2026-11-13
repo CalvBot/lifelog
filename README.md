@@ -10,11 +10,13 @@ AI sums up the day. Speakers and the phone app are later phases.
 
 - `src/` — native. `lifelogw.exe` is the recorder: a tray icon, no window. It captures the Windows default mic
   (following it when it changes) and one stream per app (WASAPI process loopback), cuts the audio into short 16 kHz
-  WAV files in `<data_dir>\spool`, serves a local API and the app's pages, and runs the worker. `lifelog.exe` is the
+  WAV files in `<data_dir>\spool`, serves a local API, and runs the worker. Every few hours it also scans installed
+  software (Steam, Epic, GOG, EA, Ubisoft, Battle.net, Riot, Xbox, Start menu) to fill the Games and Apps lists. `lifelog.exe` is the
   command line for the same thing.
-- `ui/` — `lifelog-ui.exe`, the window (WebView2): one window with tabs (Browser, Your days, Settings), and small
-  popups by the tray. It is a separate program that only runs while a window is open, so closing or ending it never
-  stops recording. Icons are [Lucide](https://lucide.dev), vendored in `src/icons.js`.
+- `ui/` — `lifelog-ui.exe`, the window, native ([immediate-mode](https://github.com/emilk/immediate-mode)): one window with tabs
+  (Browser, Your days, Settings), and small popups by the tray. It is a separate program that only runs while a
+  window is open, so closing or ending it never stops recording. Icons are [Lucide](https://lucide.dev) as a font,
+  vendored in `ui/assets/`; apps show their own exe icons.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
   writes lines to `<data_dir>\lifelog.db`, then keeps the audio for a week (for playback).
 - `schema.sql` — database schema, used by both.
@@ -40,33 +42,30 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 ## Use
 
-Tray icon (a speech bubble with sound bars): red = recording, grey = private mode.
+Tray icon (a speech bubble with sound bars): red = listening, grey with a pause badge = not listening.
 
-- **Left click** (or "Open browser") opens lifelog's window on the Browser tab: the whole transcript as one timeline, starting at now and
-  loading more as you scroll up (new lines appear live at the bottom). Find a word or phrase to jump there. Pasted
-  files sit in the timeline at the moment they were pasted: images show as images, videos and audio play in place,
-  text shows as text, with "Open" (default app) and "Show in folder" (your default file manager) buttons.
-  To copy, pick a range: click a line, Shift+click another (or type exact from/to times); "Clear" (or Esc) drops it.
-  Toggle speakers off, then "Copy as file" (a .txt lands on the clipboard, ready to paste), "Copy text" or
-  "Copy audio" (a .wav of the range, last 7 days). Lines from the last 7 days have a play button (or click a line
-  and press Space).
-- **Right click** gives a short menu:
-  - **Open browser** → the browser above.
-  - **Paste here** → saves a copy of whatever is on the clipboard (copied files, an image, or text) at this
-    moment in the timeline, under `files/` in the data folder.
-  - **Copy last…** → 10 minutes, 30 minutes, 1 hour, or "Input time…": a small box by the tray to type a number of
-    minutes or hours, previewing the conversation where the copy would start as you type.
-  - **Add game** → the apps that are open now; tick one to mark it as a game. While a game is running lifelog
-    only records, and transcribes after it closes.
-  - **Dismiss app** → the same list; tick an app to stop recording it (what it already has stays).
-  - **Settings** → the window's Settings tab: recording on/off (private mode), apps (the ones playing now; "Edit
-    list" pages through every app heard, 10 at a time; dismiss one to stop recording it and hide it, "Show
-    dismissed" brings it back; the lock keeps an app from being dismissed), games (dismiss an open app as "not a
-    game" so it stops being suggested here and in the tray; "Edit list" brings dismissed ones back), when to transcribe
-    (automatic / always / paused, and the GPU load that also counts as "a game is running" for games not on the
-    list), the daily summary, and buttons to open the data folder, log and config file. Changes apply at once and
-    are saved.
-  - **Quit**
+- **Left click** (or "Open browser") opens lifelog's window on the Browser tab: the whole transcript as one timeline, newest at the
+  top, loading further back as you scroll down (new lines appear live at the top). Find a word or phrase to jump there. Pasted
+  files sit in the timeline at the moment they were pasted: images show inline, videos and audio open in your
+  player, text shows as text, with "Open" (default app) and "Show in folder" (your default file manager) buttons.
+  **Show** lists the apps heard in what is loaded; click one to hide its lines. Excluded apps (no longer listened
+  to) are hidden unless "Excluded apps" is ticked; "All apps…" opens a window listing every app ever heard.
+  To copy, pick a range: click a line, Shift+click another; Esc drops it. Then "Copy as file" (a .txt lands on the
+  clipboard, ready to paste; also Ctrl+Enter), "Copy text" or "Copy audio" (a .wav of the range, last 7 days), all
+  leaving out hidden apps. Lines from the last 7 days have a play button (or pick a line and press Space):
+  click = that line; Shift = everything heard at that moment, mixed; Ctrl = that app keeps playing past the line;
+  Ctrl+Shift = everything, mixed, playing on. Hidden apps are left out of the mixes.
+- **Right click** opens lifelog's own small menu by the tray:
+  - **Listening** on/off.
+  - **Copy the last** 10 min / 30 min / 1 h, or type a number of minutes or hours, previewing where the copy starts;
+    copy as a file, as text or as audio.
+  - **Open browser**, **Paste here** (saves whatever is on the clipboard — files, an image, or text — at this moment
+    in the timeline, under `files/` in the data folder), **Settings**, **Restart**, **Quit**.
+- **Settings**: listening on/off, apps (every app heard plus installed ones, 10 at a time; exclude one to stop
+  recording it, "Excluded" brings it back; the lock keeps an app from being excluded), games (installed games are
+  found and marked automatically; switch one off and it stays a not-game; running programs can be marked by hand),
+  when to transcribe (automatic / always / paused, and the GPU load that also counts as "a game is running"), the
+  daily summary, and buttons to open the data folder, log and config file. Changes apply at once and are saved.
 
 **Daily summary.** At 21:00 (set in Settings) a notification says the summary starts in 5 minutes, since the local
 AI needs the graphics card for a minute or two: **Start now**, **In an hour**, **Delay until…** (a small window to
