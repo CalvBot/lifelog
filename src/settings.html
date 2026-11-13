@@ -57,6 +57,22 @@
   </section>
 
   <section class="card">
+    <h2>Daily summary</h2>
+    <p>Each evening a notification asks if the local AI may sum up your day (it needs the graphics card for a few
+      minutes): write it now, in an hour, or skip today. It waits to ask while a game is running.
+      <a href="/summary">Read your days →</a></p>
+    <label class="opt"><input type="checkbox" id="sum-on"><span>Ask me each evening</span></label>
+    <div class="row" style="margin-top:4px">
+      <span>Ask at</span><input type="time" id="sum-at" style="width:110px">
+      <span style="margin-left:12px">At most</span><input type="number" id="sum-words" min="50" max="2000" step="10" style="width:80px"><span>words</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="sum-now">Write today's now</button>
+      <span class="hint" id="sum-state"></span>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>Files</h2>
     <div class="path"><span class="label">Data</span><code id="p-data"></code><button data-open="data">Open</button></div>
     <div class="path"><span class="label">Log</span><code id="p-log"></code><button data-open="log">Open</button></div>
@@ -98,6 +114,12 @@ function show(s) {
   $("tr-state").textContent = `Now: ${t.state}${t.mode === "paused" && s.queued_minutes < 1 ? "" : waiting}`;
   if (document.activeElement !== $("limit")) $("limit").value = s.gpu_busy_percent;
   $("gpu-now").textContent = `(now ${s.gpu_3d_percent} %)`;
+  const sum = s.summary;
+  $("sum-on").checked = sum.enabled;
+  if (document.activeElement !== $("sum-at")) $("sum-at").value = sum.ask_at;
+  if (document.activeElement !== $("sum-words")) $("sum-words").value = sum.max_words;
+  const done = { done: "Today's is written.", skipped: "Skipped today." }[sum.today_status] || "";
+  $("sum-state").textContent = `${sum.state === "idle" ? "" : sum.state + ". "}${done} Model: ${sum.model}`;
   $("p-data").textContent = s.paths.data; $("p-log").textContent = s.paths.log; $("p-config").textContent = s.paths.config;
 }
 
@@ -136,6 +158,11 @@ $("limit").addEventListener("change", e => {
   const v = Math.round(+e.target.value);
   if (v >= 1 && v <= 100) post(`/api/gpu-limit?percent=${v}`);
 });
+const sumSet = q => post(`/api/summary-settings?${q}`);
+$("sum-on").addEventListener("change", e => sumSet(`enabled=${e.target.checked ? 1 : 0}`));
+$("sum-at").addEventListener("change", e => { if (e.target.value) sumSet(`ask_at=${encodeURIComponent(e.target.value)}`); });
+$("sum-words").addEventListener("change", e => { const v = Math.round(+e.target.value); if (v >= 50) sumSet(`max_words=${v}`); });
+$("sum-now").addEventListener("click", () => fetch("/summary?do=now", { method: "POST" }));
 document.querySelectorAll("[data-open]").forEach(b =>
   b.addEventListener("click", () => fetch(`/api/open?what=${b.dataset.open}`, { method: "POST" })));
 

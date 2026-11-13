@@ -23,6 +23,16 @@ END;
 CREATE TRIGGER IF NOT EXISTS segments_ad AFTER DELETE ON segments BEGIN
     INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
+-- One row per day (the day runs 04:00 to 04:00 local time, so late nights count as the day before).
+CREATE TABLE IF NOT EXISTS summaries (
+    day        TEXT PRIMARY KEY,  -- 'YYYY-MM-DD'
+    status     TEXT NOT NULL,     -- 'done' | 'skipped'
+    created_ts REAL NOT NULL,
+    model      TEXT,
+    summary    TEXT,              -- markdown
+    reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}
+);
+
 CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE OF text ON segments BEGIN
     INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);

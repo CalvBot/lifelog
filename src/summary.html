@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifelog — your days</title>
+<link rel="icon" href="/logo.svg">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>Your days</strong>
+    <span class="hint" id="state"></span>
+    <a class="nav" href="/settings">Settings →</a></div>
+</header>
+<div class="split">
+  <nav class="days" id="days"></nav>
+  <article class="read" id="read"></article>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const longDate = d => new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const shortDate = d => new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+let selected = new URLSearchParams(location.search).get("day");
+let today = null, writing = false;
+
+// The model writes simple Markdown: bold labels, bullet points, paragraphs.
+function markdown(text) {
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>");
+  let html = "", list = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const item = line.match(/^[-*•]\s+(.*)/);
+    if (item && !list) { html += "<ul>"; list = true; }
+    if (!item && list) { html += "</ul>"; list = false; }
+    if (item) html += `<li>${inline(item[1])}</li>`;
+    else if (line.startsWith("#")) html += `<p><strong>${inline(line.replace(/^#+\s*/, ""))}</strong></p>`;
+    else if (line) html += `<p>${inline(line)}</p>`;
+  }
+  return html + (list ? "</ul>" : "");
+}
+
+async function loadDays() {
+  const r = await (await fetch("/api/summaries")).json();
+  today = r.today;
+  const days = r.days || [];
+  if (!days.some(d => d.day === today)) days.unshift({ day: today, status: "none" });
+  if (!selected) selected = today;
+  $("days").innerHTML = days.map(d => {
+    const note = d.status === "done" ? (d.reminders ? `${d.reminders} ✓` : "") : d.status === "skipped" ? "skipped" : "—";
+    return `<div class="day ${d.day === selected ? "sel" : ""}" data-day="${d.day}">` +
+      `<span>${d.day === today ? "Today" : shortDate(d.day)}</span><small>${note}</small></div>`;
+  }).join("");
+}
+
+async function show(day) {
+  selected = day;
+  history.replaceState(null, "", `/summary?day=${day}`);
+  document.querySelectorAll(".day").forEach(e => e.classList.toggle("sel", e.dataset.day === day));
+  const { summary: s } = await (await fetch(`/api/summary?day=${day}`)).json();
+  let html = `<h1>${longDate(day)}</h1>`;
+  if (s && s.status === "done") {
+    html += markdown(s.summary || "");
+    const reminders = s.reminders || [];
+    if (reminders.length) {
+      html += `<h2 style="font-size:15px;margin:18px 0 6px">Things you said you'd do</h2>` +
+        reminders.map(r => `<div class="todo" title="You said: ${esc(r.said || "")}"><span class="t">${esc(r.time || "")}</span><span>${esc(r.text || "")}</span></div>`).join("");
+    }
+    html += `<p class="hint" style="margin-top:20px">Written ${new Date(s.created_ts * 1000).toLocaleString()} by ${esc(s.model || "")}. ` +
+      `<a href="#" id="again">Write it again</a></p>`;
+  } else {
+    html += `<p class="hint">${s ? "You skipped this day." : day === today ? "Not written yet. lifelog asks you in the evening." : "No summary for this day."}</p>` +
+      `<button class="primary" id="write">Write it now</button> <span class="hint">Uses the graphics card for a few minutes.</span>`;
+  }
+  $("read").innerHTML = html;
+  const write = async e => {
+    e.preventDefault();
+    await fetch(`/summary?do=now&day=${day}`, { method: "POST" });
+    writing = true; poll();
+  };
+  $("write")?.addEventListener("click", write);
+  $("again")?.addEventListener("click", write);
+}
+
+async function poll() {
+  const s = await (await fetch("/status")).json();
+  const state = s.summary.state;
+  const busy = /reading|writing|waiting|starting/.test(state);
+  $("state").textContent = busy ? `· ${state}…` : state.startsWith("failed") ? `· ${state}` : "";
+  if (writing && !busy) { writing = false; await loadDays(); show(selected); }
+  if (busy) writing = true;
+}
+
+$("days").addEventListener("click", e => { const d = e.target.closest(".day"); if (d) show(d.dataset.day); });
+loadDays().then(() => show(selected));
+setInterval(() => { if (!document.hidden) poll(); }, 2000);
+poll();
+</script>
+</body>
+</html>
