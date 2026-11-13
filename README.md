@@ -40,7 +40,8 @@ Tray icon: red dot = recording, grey dot = private mode.
   you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
   previewed live; click a line to start there, Shift+click to end there, toggle speakers off, then "Copy as file"
   (a .txt lands on the clipboard, ready to paste) or "Copy text".
-- **Right click** gives the menu: private mode, quick "copy last 15 minutes / hour / today", transcription mode
+- **Right click** gives the menu: private mode, "Apps to record" (untick an app to never capture it again; it
+  applies within a second and is saved to the config), quick "copy last 15 minutes / hour / today", transcription mode
   (auto / always / paused), log, settings and quit.
 
 Private mode also has a hotkey, Ctrl+Alt+P by default.
@@ -50,6 +51,7 @@ The same from a terminal or a Stream Deck "System → Open" button, using `%LOCA
 ```powershell
 lifelog clip 15m                 # or 1h, 2d, today
 lifelog toggle                   # private mode; also pause, resume
+lifelog exclude spotify.exe      # never capture an app; "include" allows it again
 lifelog transcription paused     # or auto, always
 lifelog status
 ```
