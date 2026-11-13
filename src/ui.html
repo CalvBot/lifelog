@@ -102,8 +102,10 @@ function render() {
     if (last !== null && l.start_ts - last > 300) html += `<div class="gap">— ${duration(l.start_ts - last)} of nothing —</div>`;
     last = l.end_ts;
     const who = l.source !== "mic" && l.title ? `${l.speaker} · ${l.title}` : l.speaker;
-    html += `<div class="l ${l.source === "mic" ? "me" : ""}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
-      `<span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
+    const playable = l.audio && l.start_ts > Date.now() / 1000 - AUDIO_DAYS * 86400;
+    const play = playable ? `<button class="play ${playing === l.id ? "on" : ""}" data-play="${l.id}" title="Play (Space)">${playing === l.id ? "■" : "▶"}</button>` : "";
+    html += `<div class="l ${l.source === "mic" ? "me" : ""} ${selected === l.id ? "picked" : ""}" data-id="${l.id}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
+      `<span>${play}</span><span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
   }
   $("lines").innerHTML = html || `<div class="empty">Nothing was transcribed in this time.</div>`;
   $("lines").firstElementChild?.classList.add("first");
@@ -138,8 +140,29 @@ $("speakers").addEventListener("click", e => {
   state.excluded.has(s) ? state.excluded.delete(s) : state.excluded.add(s);
   render();
 });
+// Playing a line's audio (kept for a week). Clicking a line selects it; Space plays the selected line.
+const AUDIO_DAYS = 7;
+const player = new Audio();
+let playing = null, selected = null;
+function play(id) {
+  if (playing === id) { player.pause(); playing = null; render(); return; }
+  player.src = `/api/audio?id=${id}`;
+  player.play().catch(() => toast("That audio is gone (kept for a week)."));
+  playing = id; render();
+}
+player.addEventListener("ended", () => { playing = null; render(); });
+player.addEventListener("error", () => { if (playing !== null) { toast("That audio is gone (kept for a week)."); playing = null; render(); } });
+document.addEventListener("keydown", e => {
+  if (e.key !== " " || e.target.matches("input, textarea") || selected === null) return;
+  e.preventDefault();
+  play(selected);
+});
+
 $("lines").addEventListener("click", e => {
+  const p = e.target.closest("[data-play]");
+  if (p) { selected = +p.dataset.play; play(selected); return; }
   const l = e.target.closest(".l"); if (!l || getSelection().toString()) return;
+  selected = +l.dataset.id;
   if (e.shiftKey) setRange(Math.min(state.from, +l.dataset.ts - 0.5), +l.dataset.end + 0.5);
   else setRange(+l.dataset.ts - 0.5, state.to !== null && state.to <= +l.dataset.ts ? null : state.to);
 });

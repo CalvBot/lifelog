@@ -12,7 +12,7 @@ AI sums up the day. Speakers and the phone app are later phases.
   (WASAPI process loopback), cuts the audio into short 16 kHz WAV files in `<data_dir>\spool`, serves a local API,
   and runs the worker. `lifelog.exe` is the command line for the same thing.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
-  writes lines to `<data_dir>\lifelog.db`, then deletes the audio.
+  writes lines to `<data_dir>\lifelog.db`, then keeps the audio for a week (for playback).
 - `schema.sql` — database schema, used by both.
 - Daily summary — [Ollama](https://ollama.com) with `qwen3:14b`, called by the app (`src/summary`).
 
@@ -42,6 +42,7 @@ Tray icon (a speech bubble with sound bars): red = recording, grey = private mod
   you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
   previewed live; click a line to start there, Shift+click to end there, toggle speakers off, then "Copy as file"
   (a .txt lands on the clipboard, ready to paste) or "Copy text".
+  Lines from the last 7 days have a ▶ button to hear them (or click a line and press Space).
 - **Right click** gives a short menu:
   - **Copy last…** → 10 minutes, 30 minutes, 1 hour, "Input time (minutes)" (a small box to type any number),
     and "Advanced" (the clip window above).
@@ -85,4 +86,6 @@ registered (per user) to `lifelogw.exe`, which passes them to the running app.
   over time). Everyone recorded knows and
   consents.
 - Private mode drops audio immediately, including the sentence in progress.
-- Audio is deleted once transcribed; nothing leaves the PC. The summary model runs locally too.
+- Audio with speech is kept for 7 days (`keep_audio_days`) in `<data_dir>\audio\YYYY-MM-DD\` so lines can be
+  played back, then deleted; the text stays. Clips without speech are deleted at once. Nothing leaves the PC; the
+  summary model runs locally too.

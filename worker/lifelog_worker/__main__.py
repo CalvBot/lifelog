@@ -1,5 +1,7 @@
 """Transcription worker: takes WAV files from the spool folder (oldest first), transcribes them
-with faster-whisper and writes the lines to SQLite. A file is deleted only after its text is saved.
+with faster-whisper and writes the lines to SQLite. Once its text is saved, a clip with speech moves
+to <data_dir>/audio/YYYY-MM-DD/ so the line can be played back (the app deletes it after a week);
+a clip without speech is deleted.
 
 Started by the lifelog service, or by hand:  python -m lifelog_worker [--config PATH] [--once]
 """
@@ -92,20 +94,34 @@ def transcribe(model, audio: np.ndarray, language: str | None) -> list[tuple[flo
     return lines
 
 
-def process(model, db: sqlite3.Connection, wav: Path, language: str | None) -> int:
+def migrate(db: sqlite3.Connection) -> None:
+    """Columns added after the first release (the app does the same at start)."""
+    have = {row[1] for row in db.execute("PRAGMA table_info(segments)")}
+    for column, kind in (("audio", "TEXT"), ("audio_offset", "REAL")):
+        if column not in have:
+            db.execute(f"ALTER TABLE segments ADD COLUMN {column} {kind}")
+    db.commit()
+
+
+def process(model, db: sqlite3.Connection, wav: Path, language: str | None, audio_dir: Path) -> int:
     meta = json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
     lines = transcribe(model, read_wav(wav), language)
     speaker = "me" if meta["source"] == "mic" else (meta.get("exe") or "unknown")
+    kept = f"{time.strftime('%Y-%m-%d', time.localtime(meta['start_ts']))}/{wav.name}" if lines else None
     with db:  # one transaction per file
         db.executemany(
-            "INSERT INTO segments (start_ts, end_ts, source, speaker, exe, pid, title, device, text)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO segments (start_ts, end_ts, source, speaker, exe, pid, title, device, text, audio, audio_offset)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (meta["start_ts"] + start, meta["start_ts"] + end, meta["source"], speaker,
-                 meta.get("exe"), meta.get("pid"), meta.get("title"), meta.get("device"), text)
+                 meta.get("exe"), meta.get("pid"), meta.get("title"), meta.get("device"), text, kept, start)
                 for start, end, text in lines
             ],
         )
+    if kept:
+        dest = audio_dir / kept
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        wav.replace(dest)
     return len(lines)
 
 
@@ -133,6 +149,8 @@ def main() -> int:
 
     db = sqlite3.connect(data_dir / "lifelog.db", timeout=30)
     db.executescript((REPO / "schema.sql").read_text(encoding="utf-8"))
+    migrate(db)
+    audio_dir = data_dir / "audio"
 
     stop = threading.Event()
     if not args.once and not sys.stdin.isatty():
@@ -160,7 +178,7 @@ def main() -> int:
                 break
             started = time.monotonic()
             try:
-                n = process(model, db, wav, language)
+                n = process(model, db, wav, language, audio_dir)
             except Exception:
                 log.exception("failed on %s; moved to %s", wav.name, failed)
                 failed.mkdir(exist_ok=True)

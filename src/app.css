@@ -47,7 +47,7 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
 .none { padding: 10px; color: var(--muted); }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
 main { flex: 1; overflow: auto; padding: 6px 0; }
-.l { display: grid; grid-template-columns: 76px minmax(60px, 250px) 1fr; gap: 10px; padding: 3px 16px; cursor: pointer; }
+.l { display: grid; grid-template-columns: 26px 76px minmax(60px, 250px) 1fr; align-items: baseline; gap: 10px; padding: 3px 16px; cursor: pointer; }
 .l:hover { background: var(--hover); }
 .l.first { box-shadow: inset 3px 0 var(--accent); }
 .l .t { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -96,3 +96,9 @@ input[type="number"], input[type="text"] {
 .read p { margin: 8px 0; }
 .todo { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
 .todo .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; }
+
+/* Play a line */
+.play { border: 0; background: none; padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 1; }
+.play:hover { color: var(--accent); background: none; }
+.play.on { color: var(--accent); background: none; }
+.l.picked { background: var(--sel); }
