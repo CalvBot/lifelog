@@ -126,12 +126,6 @@ function show(s) {
 $("private").addEventListener("click", () => post("/toggle"));
 $("apps").addEventListener("change", e => {
   const app = e.target.dataset.app; if (!app) return;
-  if (app === "discord.exe" && e.target.checked && !confirm(
-      "Record Discord?\n\nRecording a private call needs the consent of everyone in it (WA law). " +
-      "Only turn this on if the people you talk to know.")) {
-    e.target.checked = false;
-    return;
-  }
   post(`/${e.target.checked ? "include" : "exclude"}?app=${encodeURIComponent(app)}`);
 });
 $("add-app").addEventListener("submit", e => {
