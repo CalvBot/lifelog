@@ -16,8 +16,8 @@ phone app are later phases.
 - `schema.sql` — database schema, used by both.
 
 Capturing costs almost nothing and never stops. Transcribing uses the GPU (about 2.3 GB of VRAM), so by default
-("auto") the worker is shut down while a game is loading the GPU and starts again a minute after the GPU goes
-quiet; the audio waits in the queue and is caught up much faster than real time.
+("auto") the worker is shut down while an app you marked as a game is running, or while anything is loading the
+GPU's 3D engine, and starts again afterwards; the audio waits in the queue and is caught up much faster than real time.
 
 ## Setup
 
@@ -34,7 +34,7 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 ## Use
 
-Tray icon: red dot = recording, grey dot = private mode.
+Tray icon (a speech bubble with sound bars): red = recording, grey = private mode.
 
 - **Left click** opens the clip window: pick any range (presets, or exact from/to times), or type a word or phrase
   you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
@@ -43,9 +43,12 @@ Tray icon: red dot = recording, grey dot = private mode.
 - **Right click** gives a short menu:
   - **Copy last…** → 10 minutes, 30 minutes, 1 hour, "Input time (minutes)" (a small box to type any number),
     and "Advanced" (the clip window above).
-  - **Settings** → the settings window: private mode, which apps to record (untick one to never capture it; it
-    applies within a second), when to transcribe (automatic / always / paused, and the GPU load that counts as
-    "a game is running"), and buttons to open the data folder, log and config file. Changes are saved.
+  - **Add game** → the apps that are open now; tick one to mark it as a game. While a game is running lifelog
+    only records, and transcribes after it closes.
+  - **Add exclusion** → the same list; tick an app to never record it.
+  - **Settings** → the settings window: private mode, apps to record, games, when to transcribe (automatic /
+    always / paused, and the GPU load that also counts as "a game is running" for games not on the list), and
+    buttons to open the data folder, log and config file. Changes apply at once and are saved.
   - **Quit**
 
 Private mode also has a hotkey, Ctrl+Alt+P by default.
@@ -56,6 +59,7 @@ The same from a terminal or a Stream Deck "System → Open" button, using `%LOCA
 lifelog clip 15m                 # or 1h, 2d, today
 lifelog toggle                   # private mode; also pause, resume
 lifelog exclude spotify.exe      # never capture an app; "include" allows it again
+lifelog game eldenring.exe       # only record while it runs; "not-game" undoes it
 lifelog transcription paused     # or auto, always
 lifelog status
 ```

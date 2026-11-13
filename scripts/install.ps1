@@ -46,4 +46,4 @@ if (-not (Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target (J
 $app = Join-Path $dest 'lifelogw.exe'
 Set-ItemProperty -Path $runKey -Name lifelog -Value ('"' + $app + '"')
 Start-Process $app
-"lifelog installed in $dest and started; it will start at every login. Look for the red dot in the tray."
+"lifelog installed in $dest and started; it will start at every login. Look for the red speech bubble in the tray."

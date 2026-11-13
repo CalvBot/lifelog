@@ -4,11 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lifelog — settings</title>
+<link rel="icon" href="/logo.svg">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header>
-  <div class="row"><strong>Settings</strong><a class="nav" href="/ui">Clip a transcript →</a></div>
+  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>lifelog settings</strong><a class="nav" href="/ui">Clip a transcript →</a></div>
 </header>
 <div class="page">
   <section class="card">
@@ -29,16 +30,27 @@
   </section>
 
   <section class="card">
+    <h2>Games</h2>
+    <p>While a ticked app is running, lifelog keeps recording but leaves the graphics card alone, and transcribes
+      once it closes. <span id="game-now"></span></p>
+    <div id="games"></div>
+    <form class="row" id="add-game" style="margin-top:10px">
+      <input type="text" id="game-name" placeholder="another game, e.g. eldenring.exe" style="flex:1;max-width:280px">
+      <button type="submit">Add game</button>
+    </form>
+  </section>
+
+  <section class="card">
     <h2>Transcription</h2>
     <p id="tr-state"></p>
     <label class="opt"><input type="radio" name="mode" value="auto">
-      <span>Automatic<small>Waits while a game is using the graphics card, then catches up. Recording continues meanwhile.</small></span></label>
+      <span>Automatic<small>Waits while a game from the list above is running, or anything else is loading the graphics card, then catches up. Recording continues meanwhile.</small></span></label>
     <label class="opt"><input type="radio" name="mode" value="always">
       <span>Always<small>Transcribes straight away, even during games.</small></span></label>
     <label class="opt"><input type="radio" name="mode" value="paused">
       <span>Paused<small>Only records. Nothing is transcribed (or searchable) until you switch back.</small></span></label>
     <div class="row" style="margin-top:8px">
-      <span>A game is running when 3D load is above</span>
+      <span>Also wait for unlisted games: when 3D load is above</span>
       <input type="number" id="limit" min="1" max="100" style="width:72px"><span>%</span>
       <span class="hint" id="gpu-now"></span>
     </div>
@@ -73,6 +85,13 @@ function show(s) {
     `<label class="opt"><input type="checkbox" data-app="${esc(exe)}" ${on ? "checked" : ""}><span>${esc(exe)}</span></label>`).join("")
     : `<span class="hint">No app is playing audio right now.</span>`;
 
+  const games = [...new Set([...s.games, ...s.running_apps])];
+  $("games").innerHTML = games.length ? games.map(exe =>
+    `<label class="opt"><input type="checkbox" data-game="${esc(exe)}" ${s.games.includes(exe) ? "checked" : ""}>` +
+    `<span>${esc(exe)}${s.running_apps.includes(exe) ? "" : " <small style='display:inline'>(not open)</small>"}</span></label>`).join("")
+    : `<span class="hint">No apps are open.</span>`;
+  $("game-now").textContent = s.game_running ? `Running now: ${s.game_running}.` : "";
+
   const t = s.transcription;
   document.querySelectorAll('input[name="mode"]').forEach(r => { r.checked = r.value === t.mode; });
   const waiting = s.queued_minutes >= 1 ? ` · ${Math.round(s.queued_minutes)} min of audio waiting` : " · up to date";
@@ -102,6 +121,17 @@ $("add-app").addEventListener("submit", e => {
 });
 document.querySelectorAll('input[name="mode"]').forEach(r =>
   r.addEventListener("change", () => post(`/transcription?mode=${r.value}`)));
+$("games").addEventListener("change", e => {
+  const app = e.target.dataset.game; if (!app) return;
+  post(`/${e.target.checked ? "game" : "not-game"}?app=${encodeURIComponent(app)}`);
+});
+$("add-game").addEventListener("submit", e => {
+  e.preventDefault();
+  let app = $("game-name").value.trim(); if (!app) return;
+  if (!/\.[a-z0-9]+$/i.test(app)) app += ".exe";
+  $("game-name").value = "";
+  post(`/game?app=${encodeURIComponent(app)}`);
+});
 $("limit").addEventListener("change", e => {
   const v = Math.round(+e.target.value);
   if (v >= 1 && v <= 100) post(`/api/gpu-limit?percent=${v}`);
