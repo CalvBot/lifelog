@@ -81,7 +81,7 @@ registered (per user) to `lifelogw.exe`, which passes them to the running app.
 
 ## Privacy rules built in
 
-- Apps in `excluded_apps` are never captured. **Discord is excluded by default** and should stay that way until the
-  consent-based bot from phase 2 exists (see "Legal" in the plan).
+- Every app that makes a sound is recorded by default; apps in `excluded_apps` never are (add them from the tray
+  over time). Recording a private Discord call needs everyone's consent in WA (see "Legal" in the plan).
 - Private mode drops audio immediately, including the sentence in progress.
 - Audio is deleted once transcribed; nothing leaves the PC. The summary model runs locally too.
