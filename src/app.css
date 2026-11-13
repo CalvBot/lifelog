@@ -78,6 +78,24 @@ input[type="number"], input[type="text"] {
 .opt input { accent-color: var(--accent); }
 .path { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
 .path code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.card h2 small, .set small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.card .note { font-size: 12px; margin: 0 0 6px; }
+.set { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.set:last-child { border-bottom: 0; }
+.set input[type="number"] { width: 72px; }
+input[type="time"] { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font: inherit; color: inherit; }
+.switch { appearance: none; width: 36px; height: 20px; border-radius: 10px; background: var(--line); position: relative; cursor: pointer; margin: 0; flex: none; transition: background .15s; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { left: 18px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; margin: 6px 0 4px; }
+.seg label { cursor: pointer; }
+.seg input { display: none; }
+.seg span { display: block; padding: 4px 14px; }
+.seg label + label span { border-left: 1px solid var(--line); }
+.seg input:checked + span { background: var(--accent); color: var(--accent-text); }
+.add { display: flex; gap: 6px; margin-top: 8px; }
+.add input { flex: 1; }
 .big { font-size: 15px; font-weight: 600; padding: 8px 18px; }
 .center { flex: 1; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; padding: 16px; }
 .center input { font-size: 22px; width: 130px; text-align: center; padding: 6px; }

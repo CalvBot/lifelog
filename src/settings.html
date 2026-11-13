@@ -9,145 +9,126 @@
 </head>
 <body>
 <header>
-  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>lifelog settings</strong><a class="nav" href="/ui">Clip a transcript →</a></div>
+  <div class="row"><img src="/logo.svg" alt="" width="22" height="22"><strong>Settings</strong>
+    <span class="nav"><a href="/ui">Transcript</a> · <a href="/summary">Your days</a></span></div>
 </header>
 <div class="page">
   <section class="card">
-    <h2>Recording</h2>
-    <p id="rec-hint"></p>
-    <button class="big" id="private"></button>
+    <div class="set"><span>Recording <small id="hotkey"></small></span><input type="checkbox" class="switch" id="rec"></div>
   </section>
 
   <section class="card">
-    <h2>Apps to record</h2>
-    <p>Apps playing audio right now, and apps you have excluded. Unticked apps are never recorded, and everything
-      already recorded from them is deleted; a change applies within a second.</p>
+    <h2>Apps</h2>
+    <p class="note">Off = never recorded, and its history is deleted.</p>
     <div id="apps"></div>
-    <form class="row" id="add-app" style="margin-top:10px">
-      <input type="text" id="app-name" placeholder="another app, e.g. vlc.exe" style="flex:1;max-width:280px">
-      <button type="submit">Never record it</button>
-    </form>
+    <form class="add" id="add-app"><input type="text" id="app-name" placeholder="Exclude an app, e.g. vlc.exe"><button>Exclude</button></form>
   </section>
 
   <section class="card">
     <h2>Games</h2>
-    <p>While a ticked app is running, lifelog keeps recording but leaves the graphics card alone, and transcribes
-      once it closes. <span id="game-now"></span></p>
+    <p class="note">On = no transcribing while it runs (still records).</p>
     <div id="games"></div>
-    <form class="row" id="add-game" style="margin-top:10px">
-      <input type="text" id="game-name" placeholder="another game, e.g. eldenring.exe" style="flex:1;max-width:280px">
-      <button type="submit">Add game</button>
-    </form>
+    <form class="add" id="add-game"><input type="text" id="game-name" placeholder="Add a game, e.g. eldenring.exe"><button>Add</button></form>
   </section>
 
   <section class="card">
-    <h2>Transcription</h2>
-    <p id="tr-state"></p>
-    <label class="opt"><input type="radio" name="mode" value="auto">
-      <span>Automatic<small>Waits while a game from the list above is running, or anything else is loading the graphics card, then catches up. Recording continues meanwhile.</small></span></label>
-    <label class="opt"><input type="radio" name="mode" value="always">
-      <span>Always<small>Transcribes straight away, even during games.</small></span></label>
-    <label class="opt"><input type="radio" name="mode" value="paused">
-      <span>Paused<small>Only records. Nothing is transcribed (or searchable) until you switch back.</small></span></label>
-    <div class="row" style="margin-top:8px">
-      <span>Also wait for unlisted games: when 3D load is above</span>
-      <input type="number" id="limit" min="1" max="100" style="width:72px"><span>%</span>
-      <span class="hint" id="gpu-now"></span>
+    <h2>Transcription <small id="tr-state"></small></h2>
+    <div class="seg" id="mode">
+      <label><input type="radio" name="mode" value="auto"><span>Auto</span></label>
+      <label><input type="radio" name="mode" value="always"><span>Always</span></label>
+      <label><input type="radio" name="mode" value="paused"><span>Paused</span></label>
     </div>
+    <p class="note" id="mode-note"></p>
+    <div class="set"><span>Count GPU load above this as a game <small id="gpu-now"></small></span>
+      <span><input type="number" id="limit" min="1" max="100"> %</span></div>
   </section>
 
   <section class="card">
-    <h2>Daily summary</h2>
-    <p>Each evening a notification asks if the local AI may sum up your day (it needs the graphics card for a few
-      minutes): write it now, in an hour, or skip today. It waits to ask while a game is running.
-      <a href="/summary">Read your days →</a></p>
-    <label class="opt"><input type="checkbox" id="sum-on"><span>Ask me each evening</span></label>
-    <div class="row" style="margin-top:4px">
-      <span>Ask at</span><input type="time" id="sum-at" style="width:110px">
-      <span style="margin-left:12px">At most</span><input type="number" id="sum-words" min="50" max="2000" step="10" style="width:80px"><span>words</span>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button id="sum-now">Write today's now</button>
-      <span class="hint" id="sum-state"></span>
-    </div>
+    <h2>Daily summary <small id="sum-state"></small></h2>
+    <div class="set"><span>Ask each evening</span><input type="checkbox" class="switch" id="sum-on"></div>
+    <div class="set"><span>Time</span><input type="time" id="sum-at"></div>
+    <div class="set"><span>Max words</span><input type="number" id="sum-words" min="50" max="2000" step="10"></div>
+    <div class="row" style="margin-top:10px"><button id="sum-now">Write today's now</button><a href="/summary">Read your days</a></div>
   </section>
 
   <section class="card">
     <h2>Files</h2>
-    <div class="path"><span class="label">Data</span><code id="p-data"></code><button data-open="data">Open</button></div>
-    <div class="path"><span class="label">Log</span><code id="p-log"></code><button data-open="log">Open</button></div>
-    <div class="path"><span class="label">Config</span><code id="p-config"></code><button data-open="config">Open</button></div>
-    <p style="margin:8px 0 0">The hotkey, data folder and Whisper model are changed in the config file; restart lifelog afterwards.</p>
+    <div class="row"><button data-open="data">Data folder</button><button data-open="log">Log</button><button data-open="config">Config file</button></div>
   </section>
 </div>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const name = exe => exe.replace(/\.exe$/i, "");
 const post = async url => show(await (await fetch(url, { method: "POST" })).json());
-let status = null;
+const typing = el => document.activeElement === el;
+const MODE_NOTES = {
+  auto: "Waits during games, then catches up.",
+  always: "Transcribes even during games.",
+  paused: "Records only. Nothing becomes searchable until you switch back.",
+};
+
+const row = (label, attrs, on, extra = "") =>
+  `<div class="set"><span>${esc(label)}${extra}</span><input type="checkbox" class="switch" ${attrs} ${on ? "checked" : ""}></div>`;
 
 function show(s) {
   if (s.error) return;
-  status = s;
-  $("private").textContent = s.paused ? "Private mode is on — click to record again" : "Recording — click for private mode";
-  $("private").classList.toggle("on", !s.paused);
-  $("rec-hint").textContent = (s.paused ? "Nothing is being recorded." : "The microphone and the apps below are being recorded.") +
-    (s.hotkey ? ` Hotkey: ${s.hotkey}.` : "");
+  $("rec").checked = !s.paused;
+  $("hotkey").textContent = s.paused ? "off (private mode)" : s.hotkey ? `pause: ${s.hotkey}` : "";
 
-  const playing = [...new Set(s.streams.map(x => x.exe).filter(Boolean))];
-  const apps = [...playing.map(exe => [exe, true]), ...s.excluded_apps.map(exe => [exe, false])];
-  $("apps").innerHTML = apps.length ? apps.map(([exe, on]) =>
-    `<label class="opt"><input type="checkbox" data-app="${esc(exe)}" ${on ? "checked" : ""}><span>${esc(exe)}</span></label>`).join("")
-    : `<span class="hint">No app is playing audio right now.</span>`;
+  // Apps: playing now (on) and excluded (off).
+  const playing = [...new Set(s.streams.map(x => x.exe).filter(Boolean))].filter(e => !s.excluded_apps.includes(e));
+  const apps = [...playing.map(e => [e, true]), ...s.excluded_apps.map(e => [e, false])];
+  $("apps").innerHTML = apps.map(([e, on]) => row(name(e), `data-app="${esc(e)}"`, on, on ? ` <small>playing</small>` : "")).join("") ||
+    `<p class="note">Nothing playing right now.</p>`;
 
-  const games = [...new Set([...s.games, ...s.running_apps])];
-  $("games").innerHTML = games.length ? games.map(exe =>
-    `<label class="opt"><input type="checkbox" data-game="${esc(exe)}" ${s.games.includes(exe) ? "checked" : ""}>` +
-    `<span>${esc(exe)}${s.running_apps.includes(exe) ? "" : " <small style='display:inline'>(not open)</small>"}</span></label>`).join("")
-    : `<span class="hint">No apps are open.</span>`;
-  $("game-now").textContent = s.game_running ? `Running now: ${s.game_running}.` : "";
+  // Games: marked ones first, then other open apps.
+  const games = [...s.games, ...s.running_apps.filter(e => !s.games.includes(e))];
+  $("games").innerHTML = games.map(e =>
+    row(name(e), `data-game="${esc(e)}"`, s.games.includes(e), s.game_running === e ? ` <small>running</small>` : "")).join("");
 
   const t = s.transcription;
   document.querySelectorAll('input[name="mode"]').forEach(r => { r.checked = r.value === t.mode; });
-  const waiting = s.queued_minutes >= 1 ? ` · ${Math.round(s.queued_minutes)} min of audio waiting` : " · up to date";
-  $("tr-state").textContent = `Now: ${t.state}${t.mode === "paused" && s.queued_minutes < 1 ? "" : waiting}`;
-  if (document.activeElement !== $("limit")) $("limit").value = s.gpu_busy_percent;
-  $("gpu-now").textContent = `(now ${s.gpu_3d_percent} %)`;
+  $("mode-note").textContent = MODE_NOTES[t.mode] || "";
+  const queue = s.queued_minutes >= 1 ? `${Math.round(s.queued_minutes)} min queued` : "up to date";
+  $("tr-state").textContent = `${t.state} · ${queue}`;
+  if (!typing($("limit"))) $("limit").value = s.gpu_busy_percent;
+  $("gpu-now").textContent = `now ${s.gpu_3d_percent} %`;
+
   const sum = s.summary;
   $("sum-on").checked = sum.enabled;
-  if (document.activeElement !== $("sum-at")) $("sum-at").value = sum.ask_at;
-  if (document.activeElement !== $("sum-words")) $("sum-words").value = sum.max_words;
-  const done = { done: "Today's is written.", skipped: "Skipped today." }[sum.today_status] || "";
-  $("sum-state").textContent = `${sum.state === "idle" ? "" : sum.state + ". "}${done} Model: ${sum.model}`;
-  $("p-data").textContent = s.paths.data; $("p-log").textContent = s.paths.log; $("p-config").textContent = s.paths.config;
+  if (!typing($("sum-at"))) $("sum-at").value = sum.ask_at;
+  if (!typing($("sum-words"))) $("sum-words").value = sum.max_words;
+  const busy = /reading|writing|waiting|starting/.test(sum.state);
+  $("sum-state").textContent = busy ? sum.state + "…" : ({ done: "today's done", skipped: "skipped today" }[sum.today_status] || "");
 }
 
-$("private").addEventListener("click", () => post("/toggle"));
+$("rec").addEventListener("change", e => post(e.target.checked ? "/resume" : "/pause"));
 $("apps").addEventListener("change", e => {
   const app = e.target.dataset.app; if (!app) return;
+  if (!e.target.checked && !confirm(`Stop recording ${name(app)} and delete everything recorded from it?`)) {
+    e.target.checked = true;
+    return;
+  }
   post(`/${e.target.checked ? "include" : "exclude"}?app=${encodeURIComponent(app)}`);
 });
-$("add-app").addEventListener("submit", e => {
+const addForm = (form, input, confirmText, url) => $(form).addEventListener("submit", e => {
   e.preventDefault();
-  let app = $("app-name").value.trim(); if (!app) return;
+  let app = $(input).value.trim(); if (!app) return;
   if (!/\.[a-z0-9]+$/i.test(app)) app += ".exe";
-  $("app-name").value = "";
-  post(`/exclude?app=${encodeURIComponent(app)}`);
+  if (confirmText && !confirm(confirmText(app))) return;
+  $(input).value = "";
+  post(url(app));
 });
-document.querySelectorAll('input[name="mode"]').forEach(r =>
-  r.addEventListener("change", () => post(`/transcription?mode=${r.value}`)));
+addForm("add-app", "app-name", a => `Never record ${name(a)}, and delete everything recorded from it?`, a => `/exclude?app=${encodeURIComponent(a)}`);
+addForm("add-game", "game-name", null, a => `/game?app=${encodeURIComponent(a)}`);
 $("games").addEventListener("change", e => {
   const app = e.target.dataset.game; if (!app) return;
   post(`/${e.target.checked ? "game" : "not-game"}?app=${encodeURIComponent(app)}`);
 });
-$("add-game").addEventListener("submit", e => {
-  e.preventDefault();
-  let app = $("game-name").value.trim(); if (!app) return;
-  if (!/\.[a-z0-9]+$/i.test(app)) app += ".exe";
-  $("game-name").value = "";
-  post(`/game?app=${encodeURIComponent(app)}`);
-});
+document.querySelectorAll('input[name="mode"]').forEach(r =>
+  r.addEventListener("change", () => post(`/transcription?mode=${r.value}`)));
 $("limit").addEventListener("change", e => {
   const v = Math.round(+e.target.value);
   if (v >= 1 && v <= 100) post(`/api/gpu-limit?percent=${v}`);
