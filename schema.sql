@@ -1,0 +1,29 @@
+-- Shared by the old service (built in) and the Python worker. Must stay idempotent.
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS segments (
+    id       INTEGER PRIMARY KEY,
+    start_ts REAL NOT NULL,   -- unix seconds (UTC)
+    end_ts   REAL NOT NULL,
+    source   TEXT NOT NULL,   -- 'mic' | 'app'
+    speaker  TEXT NOT NULL,   -- 'me' for the mic; exe name for apps until phase 2 adds real speakers
+    exe      TEXT,
+    pid      INTEGER,
+    title    TEXT,            -- window title when the audio started
+    device   TEXT,            -- capture device name (mic only)
+    text     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS segments_start ON segments (start_ts);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5 (text, content = 'segments', content_rowid = 'id');
+
+CREATE TRIGGER IF NOT EXISTS segments_ai AFTER INSERT ON segments BEGIN
+    INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_ad AFTER DELETE ON segments BEGIN
+    INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE OF text ON segments BEGIN
+    INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+END;
