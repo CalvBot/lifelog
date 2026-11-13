@@ -50,7 +50,11 @@ def load_model(worker_cfg: dict):
     device = worker_cfg.get("device", "cuda")
     compute = worker_cfg.get("compute_type", "float16")
     try:
-        model = WhisperModel(name, device=device, compute_type=compute)
+        try:
+            # Once the model is downloaded, load it without contacting Hugging Face at all.
+            model = WhisperModel(name, device=device, compute_type=compute, local_files_only=True)
+        except Exception:
+            model = WhisperModel(name, device=device, compute_type=compute)
         log.info("model %s on %s (%s)", name, device, compute)
         return model
     except Exception as e:  # no GPU, missing DLLs, out of memory…
