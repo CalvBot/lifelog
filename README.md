@@ -34,6 +34,9 @@ target\release\lifelog.exe pause        # private mode (also: resume, toggle, or
 target\release\lifelog.exe status
 ```
 
+Start hidden at every login: `scripts\autostart.ps1` (undo with `-Off`). When hidden, the log is
+`%LOCALAPPDATA%\lifelog\lifelog.log`. If the data drive is not plugged in at start, the service waits for it.
+
 Stream Deck, until there is a proper plugin: a "System → Open" button running `lifelog.exe clip 15m` (or `toggle`).
 
 Local API on `127.0.0.1:47800`: `GET /status`, `POST /pause`, `/resume`, `/toggle`, `/clip?range=15m`.
