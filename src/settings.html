@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifelog — settings</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <div class="row"><strong>Settings</strong><a class="nav" href="/ui">Clip a transcript →</a></div>
+</header>
+<div class="page">
+  <section class="card">
+    <h2>Recording</h2>
+    <p id="rec-hint"></p>
+    <button class="big" id="private"></button>
+  </section>
+
+  <section class="card">
+    <h2>Apps to record</h2>
+    <p>Apps playing audio right now, and apps you have excluded. Unticked apps are never recorded; a change applies
+      within a second. Lines already transcribed are kept.</p>
+    <div id="apps"></div>
+    <form class="row" id="add-app" style="margin-top:10px">
+      <input type="text" id="app-name" placeholder="another app, e.g. vlc.exe" style="flex:1;max-width:280px">
+      <button type="submit">Never record it</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Transcription</h2>
+    <p id="tr-state"></p>
+    <label class="opt"><input type="radio" name="mode" value="auto">
+      <span>Automatic<small>Waits while a game is using the graphics card, then catches up. Recording continues meanwhile.</small></span></label>
+    <label class="opt"><input type="radio" name="mode" value="always">
+      <span>Always<small>Transcribes straight away, even during games.</small></span></label>
+    <label class="opt"><input type="radio" name="mode" value="paused">
+      <span>Paused<small>Only records. Nothing is transcribed (or searchable) until you switch back.</small></span></label>
+    <div class="row" style="margin-top:8px">
+      <span>A game is running when 3D load is above</span>
+      <input type="number" id="limit" min="1" max="100" style="width:72px"><span>%</span>
+      <span class="hint" id="gpu-now"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Files</h2>
+    <div class="path"><span class="label">Data</span><code id="p-data"></code><button data-open="data">Open</button></div>
+    <div class="path"><span class="label">Log</span><code id="p-log"></code><button data-open="log">Open</button></div>
+    <div class="path"><span class="label">Config</span><code id="p-config"></code><button data-open="config">Open</button></div>
+    <p style="margin:8px 0 0">The hotkey, data folder and Whisper model are changed in the config file; restart lifelog afterwards.</p>
+  </section>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const post = async url => show(await (await fetch(url, { method: "POST" })).json());
+let status = null;
+
+function show(s) {
+  if (s.error) return;
+  status = s;
+  $("private").textContent = s.paused ? "Private mode is on — click to record again" : "Recording — click for private mode";
+  $("private").classList.toggle("on", !s.paused);
+  $("rec-hint").textContent = (s.paused ? "Nothing is being recorded." : "The microphone and the apps below are being recorded.") +
+    (s.hotkey ? ` Hotkey: ${s.hotkey}.` : "");
+
+  const playing = [...new Set(s.streams.map(x => x.exe).filter(Boolean))];
+  const apps = [...playing.map(exe => [exe, true]), ...s.excluded_apps.map(exe => [exe, false])];
+  $("apps").innerHTML = apps.length ? apps.map(([exe, on]) =>
+    `<label class="opt"><input type="checkbox" data-app="${esc(exe)}" ${on ? "checked" : ""}><span>${esc(exe)}</span></label>`).join("")
+    : `<span class="hint">No app is playing audio right now.</span>`;
+
+  const t = s.transcription;
+  document.querySelectorAll('input[name="mode"]').forEach(r => { r.checked = r.value === t.mode; });
+  const waiting = s.queued_minutes >= 1 ? ` · ${Math.round(s.queued_minutes)} min of audio waiting` : " · up to date";
+  $("tr-state").textContent = `Now: ${t.state}${t.mode === "paused" && s.queued_minutes < 1 ? "" : waiting}`;
+  if (document.activeElement !== $("limit")) $("limit").value = s.gpu_busy_percent;
+  $("gpu-now").textContent = `(now ${s.gpu_3d_percent} %)`;
+  $("p-data").textContent = s.paths.data; $("p-log").textContent = s.paths.log; $("p-config").textContent = s.paths.config;
+}
+
+$("private").addEventListener("click", () => post("/toggle"));
+$("apps").addEventListener("change", e => {
+  const app = e.target.dataset.app; if (!app) return;
+  if (app === "discord.exe" && e.target.checked && !confirm(
+      "Record Discord?\n\nRecording a private call needs the consent of everyone in it (WA law). " +
+      "Only turn this on if the people you talk to know.")) {
+    e.target.checked = false;
+    return;
+  }
+  post(`/${e.target.checked ? "include" : "exclude"}?app=${encodeURIComponent(app)}`);
+});
+$("add-app").addEventListener("submit", e => {
+  e.preventDefault();
+  let app = $("app-name").value.trim(); if (!app) return;
+  if (!/\.[a-z0-9]+$/i.test(app)) app += ".exe";
+  $("app-name").value = "";
+  post(`/exclude?app=${encodeURIComponent(app)}`);
+});
+document.querySelectorAll('input[name="mode"]').forEach(r =>
+  r.addEventListener("change", () => post(`/transcription?mode=${r.value}`)));
+$("limit").addEventListener("change", e => {
+  const v = Math.round(+e.target.value);
+  if (v >= 1 && v <= 100) post(`/api/gpu-limit?percent=${v}`);
+});
+document.querySelectorAll("[data-open]").forEach(b =>
+  b.addEventListener("click", () => fetch(`/api/open?what=${b.dataset.open}`, { method: "POST" })));
+
+const refresh = async () => { if (!document.hidden) show(await (await fetch("/status")).json()); };
+setInterval(refresh, 2000);
+refresh();
+</script>
+</body>
+</html>

@@ -4,71 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lifelog — clip</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f6f5f2; --panel: #ffffff; --line: #dddad3; --text: #1d1c1a; --muted: #6d6a63;
-    --accent: #c0392b; --accent-text: #ffffff; --me: #a5281b; --mark: #ffe08a; --hover: #efede8; --sel: #fbe9e6;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #17171a; --panel: #1f1f23; --line: #34343a; --text: #e9e7e2; --muted: #9a978f;
-      --accent: #e0574a; --accent-text: #17171a; --me: #f08a7f; --mark: #6b5514; --hover: #28282d; --sel: #3a2422;
-    }
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-    display: flex; flex-direction: column;
-  }
-  header { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .row + .row { margin-top: 10px; }
-  .label { color: var(--muted); font-size: 12px; min-width: 44px; }
-  button, input { font: inherit; color: inherit; }
-  button {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer;
-  }
-  button:hover { background: var(--hover); }
-  button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-  button.off { color: var(--muted); text-decoration: line-through; }
-  button.small { padding: 2px 7px; font-size: 12px; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; padding: 7px 16px; }
-  button.primary:hover { filter: brightness(1.08); }
-  input[type="datetime-local"], input[type="search"] {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
-  }
-  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .find { position: relative; flex: 1; min-width: 240px; }
-  .find input { width: 100%; padding: 6px 10px; }
-  #results {
-    position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); max-height: 50vh; overflow: auto;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .25);
-  }
-  #results:empty { display: none; }
-  .hit { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
-  .hit:last-child { border-bottom: 0; }
-  .hit:hover, .hit.active { background: var(--hover); }
-  .hit .when { color: var(--muted); font-size: 12px; }
-  .none { padding: 10px; color: var(--muted); }
-  mark { background: var(--mark); color: inherit; border-radius: 2px; }
-  main { flex: 1; overflow: auto; padding: 6px 0; }
-  .l { display: grid; grid-template-columns: 76px minmax(60px, 250px) 1fr; gap: 10px; padding: 3px 16px; cursor: pointer; }
-  .l:hover { background: var(--hover); }
-  .l.first { box-shadow: inset 3px 0 var(--accent); }
-  .l .t { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .l .w { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .l.me .w { color: var(--me); font-weight: 600; }
-  .gap { text-align: center; color: var(--muted); font-size: 12px; padding: 6px; }
-  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
-  footer {
-    display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel);
-  }
-  #summary { flex: 1; color: var(--muted); }
-  #toast { color: var(--accent); font-weight: 600; }
-  .hint { color: var(--muted); font-size: 12px; }
-</style>
+<link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header>
@@ -78,6 +14,8 @@
     <button data-min="60">1 h</button><button data-min="120">2 h</button><button data-min="240">4 h</button>
     <button data-min="480">8 h</button>
     <button data-day="0">Today</button><button data-day="1">Yesterday</button>
+    <input type="number" id="mins" min="1" placeholder="minutes" title="Last … minutes" style="width:96px">
+    <a class="nav" href="/settings">Settings</a>
   </div>
   <div class="row">
     <span class="label">From</span><input type="datetime-local" id="from">
@@ -182,6 +120,10 @@ $("quick").addEventListener("click", e => {
   if (b.dataset.min) setRange(Date.now() / 1000 - b.dataset.min * 60, null, b.dataset.min);
   else if (b.dataset.day === "0") setRange(midnight(0), null, "day0");
   else setRange(midnight(1), midnight(0), "day1");
+});
+$("mins").addEventListener("change", e => {
+  const m = parseFloat(e.target.value);
+  if (m > 0) setRange(Date.now() / 1000 - m * 60, null);
 });
 $("from").addEventListener("change", e => { if (e.target.value) setRange(new Date(e.target.value).getTime() / 1000, state.to); });
 $("to").addEventListener("change", e => setRange(state.from, e.target.value ? new Date(e.target.value).getTime() / 1000 + 59 : null));

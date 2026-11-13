@@ -40,9 +40,13 @@ Tray icon: red dot = recording, grey dot = private mode.
   you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
   previewed live; click a line to start there, Shift+click to end there, toggle speakers off, then "Copy as file"
   (a .txt lands on the clipboard, ready to paste) or "Copy text".
-- **Right click** gives the menu: private mode, "Apps to record" (untick an app to never capture it again; it
-  applies within a second and is saved to the config), quick "copy last 15 minutes / hour / today", transcription mode
-  (auto / always / paused), log, settings and quit.
+- **Right click** gives a short menu:
+  - **Copy last…** → 10 minutes, 30 minutes, 1 hour, "Input time (minutes)" (a small box to type any number),
+    and "Advanced" (the clip window above).
+  - **Settings** → the settings window: private mode, which apps to record (untick one to never capture it; it
+    applies within a second), when to transcribe (automatic / always / paused, and the GPU load that counts as
+    "a game is running"), and buttons to open the data folder, log and config file. Changes are saved.
+  - **Quit**
 
 Private mode also has a hotkey, Ctrl+Alt+P by default.
 
