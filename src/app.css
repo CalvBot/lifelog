@@ -78,6 +78,8 @@ input[type="number"], input[type="text"] {
 .opt input { accent-color: var(--accent); }
 .path { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
 .path code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.card h2 { display: flex; align-items: baseline; }
+.card h2 .right { margin-left: auto; font-size: 12px; font-weight: 400; }
 .card h2 small, .set small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
 .card .note { font-size: 12px; margin: 0 0 6px; }
 .set { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
@@ -111,6 +113,16 @@ input[type="time"] { background: var(--bg); border: 1px solid var(--line); borde
 .read h1 { font-size: 20px; margin: 0 0 12px; }
 .read ul { margin: 4px 0 12px; padding-left: 20px; }
 .read li { margin: 3px 0; }
+.nev { border: 0; background: none; padding: 0 6px; color: var(--muted); font-size: 11px; visibility: hidden; }
+.read li:hover .nev { visibility: visible; }
+.nev:hover { color: var(--accent); background: none; }
+.chip { display: inline-flex; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 1px 4px 1px 10px; margin: 0 6px 6px 0; font-size: 12px; }
+.chip button { border: 0; background: none; padding: 0 4px; color: var(--muted); }
+.set .acts { display: flex; gap: 8px; align-items: center; }
+.icon { border: 0; background: none; padding: 0 4px; color: var(--muted); font-size: 13px; }
+.icon:hover { color: var(--accent); background: none; }
+.icon.on, .icon.on:hover { color: var(--accent); background: none; border: 0; }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
 .read p { margin: 8px 0; }
 .todo { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
 .todo .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; }

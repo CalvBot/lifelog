@@ -19,14 +19,14 @@
 
   <section class="card">
     <h2>Apps</h2>
-    <p class="note">Off = never recorded, and its history is deleted.</p>
+    <p class="note">Off = never recorded, and its history is deleted. 🔒 = always recorded, can't be switched off.</p>
     <div id="apps"></div>
     <form class="add" id="add-app"><input type="text" id="app-name" placeholder="Exclude an app, e.g. vlc.exe"><button>Exclude</button></form>
   </section>
 
   <section class="card">
-    <h2>Games</h2>
-    <p class="note">On = no transcribing while it runs (still records).</p>
+    <h2>Games <a href="#" id="edit-games" class="right">Edit list</a></h2>
+    <p class="note">On = no transcribing while it runs (still records). ✕ = not a game, stop suggesting it.</p>
     <div id="games"></div>
     <form class="add" id="add-game"><input type="text" id="game-name" placeholder="Add a game, e.g. eldenring.exe"><button>Add</button></form>
   </section>
@@ -48,6 +48,8 @@
     <div class="set"><span>Ask each evening</span><input type="checkbox" class="switch" id="sum-on"></div>
     <div class="set"><span>Time</span><input type="time" id="sum-at"></div>
     <div class="set"><span>Max words</span><input type="number" id="sum-words" min="50" max="2000" step="10"></div>
+    <div class="set" style="border:0;padding-bottom:2px"><span>Never mention</span></div>
+    <div id="never"></div>
     <div class="row" style="margin-top:10px"><button id="sum-now">Write today's now</button><a href="/summary">Read your days</a></div>
   </section>
 
@@ -69,24 +71,40 @@ const MODE_NOTES = {
   paused: "Records only. Nothing becomes searchable until you switch back.",
 };
 
-const row = (label, attrs, on, extra = "") =>
-  `<div class="set"><span>${esc(label)}${extra}</span><input type="checkbox" class="switch" ${attrs} ${on ? "checked" : ""}></div>`;
+const row = (label, attrs, on, extra = "", acts = "", disabled = false) =>
+  `<div class="set"><span>${esc(label)}${extra}</span><span class="acts">${acts}` +
+  `<input type="checkbox" class="switch" ${attrs} ${on ? "checked" : ""} ${disabled ? "disabled" : ""}></span></div>`;
+let editGames = false, last = null;
 
 function show(s) {
-  if (s.error) return;
+  if (s.error) return alert(s.error);
+  last = s;
   $("rec").checked = !s.paused;
   $("hotkey").textContent = s.paused ? "off (private mode)" : s.hotkey ? `pause: ${s.hotkey}` : "";
 
-  // Apps: playing now (on) and excluded (off).
-  const playing = [...new Set(s.streams.map(x => x.exe).filter(Boolean))].filter(e => !s.excluded_apps.includes(e));
-  const apps = [...playing.map(e => [e, true]), ...s.excluded_apps.map(e => [e, false])];
-  $("apps").innerHTML = apps.map(([e, on]) => row(name(e), `data-app="${esc(e)}"`, on, on ? ` <small>playing</small>` : "")).join("") ||
-    `<p class="note">Nothing playing right now.</p>`;
+  // Apps: locked ones, then playing now (on), then excluded (off).
+  const nowPlaying = new Set(s.streams.map(x => x.exe).filter(Boolean));
+  const locked = s.locked_apps;
+  const others = [...nowPlaying].filter(e => !s.excluded_apps.includes(e) && !locked.includes(e));
+  const apps = [...locked.map(e => [e, true]), ...others.map(e => [e, true]), ...s.excluded_apps.map(e => [e, false])];
+  $("apps").innerHTML = apps.map(([e, on]) => {
+    const isLocked = locked.includes(e);
+    const lock = `<button class="icon ${isLocked ? "on" : ""}" data-lock="${esc(e)}" title="${isLocked ? "Unlock" : "Lock as always recorded"}">${isLocked ? "🔒" : "🔓"}</button>`;
+    return row(name(e), `data-app="${esc(e)}"`, on, nowPlaying.has(e) ? ` <small>playing</small>` : "", lock, isLocked);
+  }).join("") || `<p class="note">Nothing playing right now.</p>`;
 
-  // Games: marked ones first, then other open apps.
-  const games = [...s.games, ...s.running_apps.filter(e => !s.games.includes(e))];
-  $("games").innerHTML = games.map(e =>
-    row(name(e), `data-game="${esc(e)}"`, s.games.includes(e), s.game_running === e ? ` <small>running</small>` : "")).join("");
+  // Games: marked ones, then open apps not dismissed. "Edit list" also shows the dismissed ones.
+  const candidates = s.running_apps.filter(e => !s.games.includes(e) && !s.not_games.includes(e));
+  const tag = e => s.game_running === e ? ` <small>running</small>` : "";
+  let html = s.games.map(e => row(name(e), `data-game="${esc(e)}"`, true, tag(e))).join("") +
+    candidates.map(e => row(name(e), `data-game="${esc(e)}"`, false, "",
+      `<button class="icon" data-dismiss="${esc(e)}" title="Not a game: stop suggesting it">✕</button>`)).join("");
+  if (editGames) {
+    html += s.not_games.map(e => row(name(e), `data-game="${esc(e)}"`, false, ` <small>dismissed</small>`,
+      `<button class="icon" data-restore="${esc(e)}" title="Suggest it again">↺</button>`)).join("");
+  }
+  $("games").innerHTML = html || `<p class="note">No new apps open.</p>`;
+  $("edit-games").textContent = editGames ? "Done" : "Edit list";
 
   const t = s.transcription;
   document.querySelectorAll('input[name="mode"]').forEach(r => { r.checked = r.value === t.mode; });
@@ -123,6 +141,26 @@ const addForm = (form, input, confirmText, url) => $(form).addEventListener("sub
 });
 addForm("add-app", "app-name", a => `Never record ${name(a)}, and delete everything recorded from it?`, a => `/exclude?app=${encodeURIComponent(a)}`);
 addForm("add-game", "game-name", null, a => `/game?app=${encodeURIComponent(a)}`);
+$("apps").addEventListener("click", e => {
+  const b = e.target.closest("[data-lock]"); if (!b) return;
+  post(`/lock?app=${encodeURIComponent(b.dataset.lock)}&on=${b.classList.contains("on") ? 0 : 1}`);
+});
+$("games").addEventListener("click", e => {
+  const d = e.target.closest("[data-dismiss]"), r = e.target.closest("[data-restore]");
+  if (d) post(`/dismiss-game?app=${encodeURIComponent(d.dataset.dismiss)}`);
+  if (r) post(`/dismiss-game?app=${encodeURIComponent(r.dataset.restore)}&on=0`);
+});
+$("edit-games").addEventListener("click", e => { e.preventDefault(); editGames = !editGames; if (last) show(last); });
+const showNever = r => {
+  $("never").innerHTML = (r.never || []).map(n =>
+    `<span class="chip">${esc(n.topic)}<button data-never="${n.id}" title="Allow again">✕</button></span>`).join("") ||
+    `<p class="note">Nothing. Hide a point with ✕ in Your days.</p>`;
+};
+$("never").addEventListener("click", async e => {
+  const b = e.target.closest("[data-never]"); if (!b) return;
+  showNever(await (await fetch(`/api/summary-never?remove=${b.dataset.never}`, { method: "POST" })).json());
+});
+fetch("/api/summary-never").then(r => r.json()).then(showNever);
 $("games").addEventListener("change", e => {
   const app = e.target.dataset.game; if (!app) return;
   post(`/${e.target.checked ? "game" : "not-game"}?app=${encodeURIComponent(app)}`);

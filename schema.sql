@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS summaries (
     reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}
 );
 
+-- Topics the daily summary must never mention again (set from the summaries window).
+CREATE TABLE IF NOT EXISTS summary_never (
+    id         INTEGER PRIMARY KEY,
+    topic      TEXT NOT NULL,
+    created_ts REAL NOT NULL
+);
+
 CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE OF text ON segments BEGIN
     INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);

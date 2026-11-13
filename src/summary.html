@@ -35,7 +35,7 @@ function markdown(text) {
     const item = line.match(/^[-*•]\s+(.*)/);
     if (item && !list) { html += "<ul>"; list = true; }
     if (!item && list) { html += "</ul>"; list = false; }
-    if (item) html += `<li>${inline(item[1])}</li>`;
+    if (item) html += `<li data-b="${esc(item[1].trim())}">${inline(item[1])}<button class="nev" title="Never mention this again">✕</button></li>`;
     else if (line.startsWith("#")) html += `<p><strong>${inline(line.replace(/^#+\s*/, ""))}</strong></p>`;
     else if (line) html += `<p>${inline(line)}</p>`;
   }
@@ -80,6 +80,14 @@ async function show(day) {
     await fetch(`/summary?do=now&day=${day}`, { method: "POST" });
     writing = true; poll();
   };
+  $("read").querySelectorAll(".nev").forEach(b => b.addEventListener("click", async () => {
+    const bullet = b.parentElement.dataset.b;
+    const topic = prompt("Never mention this again. Shorten it to the topic to leave out from now on:", bullet.replace(/\*\*/g, ""));
+    if (!topic || !topic.trim()) return;
+    const r = await (await fetch("/api/summary-never", { method: "POST", body: JSON.stringify({ topic, day, bullet }) })).json();
+    if (r.error) return alert(r.error);
+    show(day);
+  }));
   $("write")?.addEventListener("click", write);
   $("again")?.addEventListener("click", write);
 }

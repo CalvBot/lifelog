@@ -49,9 +49,12 @@ Tray icon (a speech bubble with sound bars): red = recording, grey = private mod
   - **Add game** → the apps that are open now; tick one to mark it as a game. While a game is running lifelog
     only records, and transcribes after it closes.
   - **Add exclusion** → the same list; tick an app to never record it.
-  - **Settings** → the settings window: private mode, apps to record, games, when to transcribe (automatic /
-    always / paused, and the GPU load that also counts as "a game is running" for games not on the list), and
-    buttons to open the data folder, log and config file. Changes apply at once and are saved.
+  - **Settings** → the settings window: private mode, apps to record (🔒 locks an app as always recorded, so a
+    misclick can never exclude it and delete its history), games (✕ dismisses an open app as "not a game" so it
+    stops being suggested here and in the tray; "Edit list" brings dismissed ones back), when to transcribe
+    (automatic / always / paused, and the GPU load that also counts as "a game is running" for games not on the
+    list), the daily summary, and buttons to open the data folder, log and config file. Changes apply at once and
+    are saved.
   - **Quit**
 
 **Daily summary.** At 21:00 (set in Settings) a notification asks whether the local AI may sum up the day, since it
@@ -63,7 +66,9 @@ The result is a few bullets per part of the day, "To remember" (every moment you
 included, falling back to your own words if the model misses one), and "things you said you'd do" (only lines where
 you actually said "I'll…", "remind me…", "I need to…" and so on). Read
 it from the notification, or Settings → "Read your days"; it is also saved as `<data_dir>\summaries\YYYY-MM-DD.md`.
-The day runs 04:00 to 04:00, so a late night counts as the day before.
+The day runs 04:00 to 04:00, so a late night counts as the day before. The model also gets the last month's
+summaries (the last week in full, older days as one line) to recognise recurring people and follow-ups. Hover a
+point in "Your days" and press ✕ to remove it and never mention that topic again (the list is in Settings).
 
 Private mode also has a hotkey, Ctrl+Alt+P by default.
 
