@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifelog — clip</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f5f2; --panel: #ffffff; --line: #dddad3; --text: #1d1c1a; --muted: #6d6a63;
+    --accent: #c0392b; --accent-text: #ffffff; --me: #a5281b; --mark: #ffe08a; --hover: #efede8; --sel: #fbe9e6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --panel: #1f1f23; --line: #34343a; --text: #e9e7e2; --muted: #9a978f;
+      --accent: #e0574a; --accent-text: #17171a; --me: #f08a7f; --mark: #6b5514; --hover: #28282d; --sel: #3a2422;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .label { color: var(--muted); font-size: 12px; min-width: 44px; }
+  button, input { font: inherit; color: inherit; }
+  button {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.off { color: var(--muted); text-decoration: line-through; }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; padding: 7px 16px; }
+  button.primary:hover { filter: brightness(1.08); }
+  input[type="datetime-local"], input[type="search"] {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .find { position: relative; flex: 1; min-width: 240px; }
+  .find input { width: 100%; padding: 6px 10px; }
+  #results {
+    position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); max-height: 50vh; overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .25);
+  }
+  #results:empty { display: none; }
+  .hit { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  .hit:last-child { border-bottom: 0; }
+  .hit:hover, .hit.active { background: var(--hover); }
+  .hit .when { color: var(--muted); font-size: 12px; }
+  .none { padding: 10px; color: var(--muted); }
+  mark { background: var(--mark); color: inherit; border-radius: 2px; }
+  main { flex: 1; overflow: auto; padding: 6px 0; }
+  .l { display: grid; grid-template-columns: 76px minmax(60px, 250px) 1fr; gap: 10px; padding: 3px 16px; cursor: pointer; }
+  .l:hover { background: var(--hover); }
+  .l.first { box-shadow: inset 3px 0 var(--accent); }
+  .l .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .l .w { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .l.me .w { color: var(--me); font-weight: 600; }
+  .gap { text-align: center; color: var(--muted); font-size: 12px; padding: 6px; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+  footer {
+    display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel);
+  }
+  #summary { flex: 1; color: var(--muted); }
+  #toast { color: var(--accent); font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row" id="quick">
+    <span class="label">Last</span>
+    <button data-min="5">5 min</button><button data-min="15">15 min</button><button data-min="30">30 min</button>
+    <button data-min="60">1 h</button><button data-min="120">2 h</button><button data-min="240">4 h</button>
+    <button data-min="480">8 h</button>
+    <button data-day="0">Today</button><button data-day="1">Yesterday</button>
+  </div>
+  <div class="row">
+    <span class="label">From</span><input type="datetime-local" id="from">
+    <span class="label" style="min-width:0">to</span><input type="datetime-local" id="to">
+    <button class="small" id="to-now" title="End at the present moment">now</button>
+    <button class="small" data-extend="15">+15 min</button><button class="small" data-extend="60">+1 h</button>
+  </div>
+  <div class="row">
+    <span class="label">Find</span>
+    <div class="find">
+      <input type="search" id="q" placeholder="A word or phrase you remember from the start of the conversation…" autocomplete="off">
+      <div id="results"></div>
+    </div>
+  </div>
+  <div class="row" id="speakers"></div>
+</header>
+<main id="lines"></main>
+<footer>
+  <span id="summary"></span>
+  <span class="hint">Click a line to start there · Shift+click to end there</span>
+  <span id="toast"></span>
+  <button id="copy-text">Copy text</button>
+  <button class="primary" id="copy-file" title="Ctrl+Enter">Copy as file</button>
+</footer>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { from: Date.now() / 1000 - 900, to: null, excluded: new Set(), lines: [], preset: "15" };
+const pad = n => String(n).padStart(2, "0");
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clock = ts => { const d = new Date(ts * 1000); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+const midnight = daysAgo => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() / 1000 - daysAgo * 86400; };
+const inputValue = ts => {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+function day(ts) {
+  const days = Math.round((midnight(0) - new Date(ts * 1000).setHours(0, 0, 0, 0) / 1000) / 86400);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return new Date(ts * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+function duration(secs) {
+  const m = Math.round(secs / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+async function get(url) {
+  const r = await fetch(url);
+  return r.json();
+}
+
+function setRange(from, to, preset) {
+  state.from = from; state.to = to; state.preset = preset || "";
+  load();
+}
+
+let loading = 0;
+async function load() {
+  const ticket = ++loading;
+  const to = state.to ?? Date.now() / 1000;
+  const data = await get(`/api/lines?from=${state.from}&to=${to}`);
+  if (ticket !== loading) return; // a newer request is on its way
+  state.lines = data.lines || [];
+  render();
+}
+
+function render() {
+  $("from").value = inputValue(state.from);
+  $("to").value = state.to === null ? "" : inputValue(state.to);
+  $("to-now").classList.toggle("on", state.to === null);
+  for (const b of $("quick").querySelectorAll("button")) {
+    b.classList.toggle("on", (b.dataset.min || "day" + b.dataset.day) === state.preset);
+  }
+
+  const speakers = [...new Set(state.lines.map(l => l.speaker))];
+  $("speakers").innerHTML = speakers.length < 2 ? "" :
+    `<span class="label">Include</span>` + speakers.map(s =>
+      `<button class="small ${state.excluded.has(s) ? "off" : ""}" data-speaker="${esc(s)}">${esc(s)}</button>`).join("");
+
+  const shown = state.lines.filter(l => !state.excluded.has(l.speaker));
+  let html = "", last = null;
+  for (const l of shown) {
+    if (last !== null && l.start_ts - last > 300) html += `<div class="gap">— ${duration(l.start_ts - last)} of nothing —</div>`;
+    last = l.end_ts;
+    const who = l.source !== "mic" && l.title ? `${l.speaker} · ${l.title}` : l.speaker;
+    html += `<div class="l ${l.source === "mic" ? "me" : ""}" data-ts="${l.start_ts}" data-end="${l.end_ts}">` +
+      `<span class="t">${clock(l.start_ts)}</span><span class="w" title="${esc(who)}">${esc(who)}</span><span>${esc(l.text)}</span></div>`;
+  }
+  $("lines").innerHTML = html || `<div class="empty">Nothing was transcribed in this time.</div>`;
+  $("lines").firstElementChild?.classList.add("first");
+
+  const to = state.to ?? Date.now() / 1000;
+  const sameDay = day(state.from) === day(to);
+  $("summary").textContent = `${shown.length} lines · ${day(state.from)} ${clock(state.from).slice(0, 5)} → ` +
+    (state.to === null ? "now" : `${sameDay ? "" : day(to) + " "}${clock(to).slice(0, 5)}`) +
+    (state.lines.length >= 20000 ? " · too long, showing the first 20,000 lines" : "");
+}
+
+// Range controls
+$("quick").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.min) setRange(Date.now() / 1000 - b.dataset.min * 60, null, b.dataset.min);
+  else if (b.dataset.day === "0") setRange(midnight(0), null, "day0");
+  else setRange(midnight(1), midnight(0), "day1");
+});
+$("from").addEventListener("change", e => { if (e.target.value) setRange(new Date(e.target.value).getTime() / 1000, state.to); });
+$("to").addEventListener("change", e => setRange(state.from, e.target.value ? new Date(e.target.value).getTime() / 1000 + 59 : null));
+$("to-now").addEventListener("click", () => setRange(state.from, null));
+document.querySelectorAll("[data-extend]").forEach(b => b.addEventListener("click", () => {
+  const end = (state.to ?? Date.now() / 1000) + b.dataset.extend * 60;
+  setRange(state.from, end >= Date.now() / 1000 ? null : end);
+}));
+$("speakers").addEventListener("click", e => {
+  const s = e.target.closest("button")?.dataset.speaker; if (s === undefined) return;
+  state.excluded.has(s) ? state.excluded.delete(s) : state.excluded.add(s);
+  render();
+});
+$("lines").addEventListener("click", e => {
+  const l = e.target.closest(".l"); if (!l || getSelection().toString()) return;
+  if (e.shiftKey) setRange(Math.min(state.from, +l.dataset.ts - 0.5), +l.dataset.end + 0.5);
+  else setRange(+l.dataset.ts - 0.5, state.to !== null && state.to <= +l.dataset.ts ? null : state.to);
+});
+
+// Find a phrase → start the clip there
+let hits = [], active = 0, searching = 0;
+function showHits(q) {
+  const words = q.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = words.length ? new RegExp("(" + words.join("[^\\p{L}\\p{N}]+") + ")", "giu") : null;
+  $("results").innerHTML = hits.length
+    ? hits.map((l, i) => `<div class="hit ${i === active ? "active" : ""}" data-i="${i}">` +
+        `<div class="when">${day(l.start_ts)} ${clock(l.start_ts)} · ${esc(l.speaker)}${l.source !== "mic" && l.title ? " · " + esc(l.title) : ""}</div>` +
+        `<div>${re ? esc(l.text).replace(re, "<mark>$1</mark>") : esc(l.text)}</div></div>`).join("")
+    : `<div class="none">No line contains that phrase.</div>`;
+}
+$("q").addEventListener("input", async e => {
+  const q = e.target.value, ticket = ++searching;
+  if (!q.trim()) { hits = []; $("results").innerHTML = ""; return; }
+  const data = await get(`/api/search?q=${encodeURIComponent(q)}`);
+  if (ticket !== searching) return;
+  hits = data.lines || []; active = 0;
+  showHits(q);
+});
+function pick(i) {
+  const l = hits[i]; if (!l) return;
+  $("results").innerHTML = "";
+  // Recent: run up to now. Older: show an hour from there; extend with +15 min / +1 h or Shift+click.
+  const recent = Date.now() / 1000 - l.start_ts < 6 * 3600;
+  setRange(l.start_ts - 0.5, recent ? null : l.start_ts + 3600);
+  $("lines").scrollTop = 0;
+}
+$("results").addEventListener("mousedown", e => { const h = e.target.closest(".hit"); if (h) pick(+h.dataset.i); });
+$("q").addEventListener("keydown", e => {
+  if (e.key === "Enter") { pick(active); e.preventDefault(); }
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    active = Math.max(0, Math.min(hits.length - 1, active + (e.key === "ArrowDown" ? 1 : -1)));
+    showHits($("q").value);
+    $("results").querySelector(".active")?.scrollIntoView({ block: "nearest" });
+    e.preventDefault();
+  } else if (e.key === "Escape") $("results").innerHTML = "";
+});
+$("q").addEventListener("blur", () => setTimeout(() => { $("results").innerHTML = ""; }, 150));
+$("q").addEventListener("focus", e => { if (hits.length && e.target.value.trim()) showHits(e.target.value); });
+
+// Copy
+function toast(text) {
+  $("toast").textContent = text;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { $("toast").textContent = ""; }, 4000);
+}
+async function copy(as) {
+  const body = { from: state.from, to: state.to, exclude: [...state.excluded], as };
+  const r = await (await fetch("/api/clip", { method: "POST", body: JSON.stringify(body) })).json();
+  if (r.error) return toast(r.error);
+  if (as === "text") await navigator.clipboard.writeText(r.text);
+  toast(`Copied ${r.lines} lines${as === "file" ? " as a file" : ""} — paste anywhere`);
+}
+$("copy-file").addEventListener("click", () => copy("file"));
+$("copy-text").addEventListener("click", () => copy("text"));
+document.addEventListener("keydown", e => { if (e.ctrlKey && e.key === "Enter") copy("file"); });
+
+// While the range runs to "now", pick up new lines as they are transcribed.
+setInterval(() => { if (state.to === null && !document.hidden && !getSelection().toString()) load(); }, 5000);
+load();
+$("q").focus();
+</script>
+</body>
+</html>

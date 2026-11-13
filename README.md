@@ -34,8 +34,15 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 ## Use
 
-Tray icon: red dot = recording, grey dot = private mode. Click it for private mode, "copy last 15 minutes / hour /
-today" (a .txt file lands on the clipboard, ready to paste), transcription mode (auto / always / paused), log and quit.
+Tray icon: red dot = recording, grey dot = private mode.
+
+- **Left click** opens the clip window: pick any range (presets, or exact from/to times), or type a word or phrase
+  you remember from the start of a conversation and pick the hit to start the clip there. The transcript is
+  previewed live; click a line to start there, Shift+click to end there, toggle speakers off, then "Copy as file"
+  (a .txt lands on the clipboard, ready to paste) or "Copy text".
+- **Right click** gives the menu: private mode, quick "copy last 15 minutes / hour / today", transcription mode
+  (auto / always / paused), log, settings and quit.
+
 Private mode also has a hotkey, Ctrl+Alt+P by default.
 
 The same from a terminal or a Stream Deck "System → Open" button, using `%LOCALAPPDATA%\Programs\lifelog\lifelog.exe`:
