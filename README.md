@@ -8,38 +8,47 @@ phone app are later phases.
 
 ## How it fits together
 
-- `src/` — native service (`lifelog.exe`). Captures the mic and one stream per app (WASAPI process loopback), cuts the
-  audio into short 16 kHz WAV files in `<data_dir>\spool`, serves a local API, and runs the worker.
+- `src/` — native. `lifelogw.exe` is the app: a tray icon, no window. It captures the mic and one stream per app
+  (WASAPI process loopback), cuts the audio into short 16 kHz WAV files in `<data_dir>\spool`, serves a local API,
+  and runs the worker. `lifelog.exe` is the command line for the same thing.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
-  writes lines to `<data_dir>\lifelog.db`, then deletes the audio. If the GPU is busy it just falls behind and catches up.
+  writes lines to `<data_dir>\lifelog.db`, then deletes the audio.
 - `schema.sql` — database schema, used by both.
+
+Capturing costs almost nothing and never stops. Transcribing uses the GPU (about 2.3 GB of VRAM), so by default
+("auto") the worker is shut down while a game is loading the GPU and starts again a minute after the GPU goes
+quiet; the audio waits in the queue and is caught up much faster than real time.
 
 ## Setup
 
 ```powershell
-the build build --release
 python -m venv worker\.venv
 worker\.venv\Scripts\python.exe -m pip install -e worker
+scripts\install.ps1        # builds, installs to %LOCALAPPDATA%\Programs\lifelog, starts it, starts at every login
 ```
 
+Run `scripts\install.ps1` again after changing the code to update; `-Uninstall` removes the app (not the data).
 The first run downloads the Whisper model (~1.6 GB) and writes a default config to `%APPDATA%\lifelog\config.toml`
-(data folder, excluded apps, hotkey, model).
+(data folder, excluded apps, hotkey, model, when to transcribe). If the data drive is not plugged in at start, the
+app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 ## Use
 
+Tray icon: red dot = recording, grey dot = private mode. Click it for private mode, "copy last 15 minutes / hour /
+today" (a .txt file lands on the clipboard, ready to paste), transcription mode (auto / always / paused), log and quit.
+Private mode also has a hotkey, Ctrl+Alt+P by default.
+
+The same from a terminal or a Stream Deck "System → Open" button, using `%LOCALAPPDATA%\Programs\lifelog\lifelog.exe`:
+
 ```powershell
-target\release\lifelog.exe run          # start capturing; Ctrl+C to stop
-target\release\lifelog.exe clip 15m     # transcript of the last 15m / 1h / 2d / today → .txt file on the clipboard
-target\release\lifelog.exe pause        # private mode (also: resume, toggle, or the hotkey, default Ctrl+Alt+P)
-target\release\lifelog.exe status
+lifelog clip 15m                 # or 1h, 2d, today
+lifelog toggle                   # private mode; also pause, resume
+lifelog transcription paused     # or auto, always
+lifelog status
 ```
 
-Start hidden at every login: `scripts\autostart.ps1` (undo with `-Off`). When hidden, the log is
-`%LOCALAPPDATA%\lifelog\lifelog.log`. If the data drive is not plugged in at start, the service waits for it.
-
-Stream Deck, until there is a proper plugin: a "System → Open" button running `lifelog.exe clip 15m` (or `toggle`).
-
-Local API on `127.0.0.1:47800`: `GET /status`, `POST /pause`, `/resume`, `/toggle`, `/clip?range=15m`.
+Local API on `127.0.0.1:47800`: `GET /status`, `POST /pause`, `/resume`, `/toggle`, `/clip?range=15m`,
+`/transcription?mode=auto`, `/quit`.
 
 ## Privacy rules built in
 
