@@ -61,11 +61,12 @@ Tray icon (a speech bubble with sound bars): blue = listening, grey with a pause
   were pasted: images show inline, other files have "Open" and "Show in folder" buttons.
   **Show** lists the apps heard on the page; click one to hide its lines. Excluded apps (no longer listened
   to) are hidden unless "Excluded apps" is ticked; "All apps…" opens a window listing every app ever heard.
-  To copy, pick a range: click a line, Shift+click another; Esc drops it. Then "Copy as file" (also Ctrl+Enter),
-  "Copy text" or "Copy audio" (last 7 days), all leaving out hidden apps; or right-click a line for "Copy selected
-  line" / "Copy selected audio". Lines from the last 7 days have a play button (or pick a line and press Space):
-  click = that line; Shift = everything heard at that moment, mixed; Ctrl = that app keeps playing past the line;
-  Ctrl+Shift = everything, mixed, playing on. While playing, the words being heard light up.
+  Right-click a line to copy it (text or its audio). To copy several, click a line and Shift+click another (Esc
+  drops the pick); right-clicking inside the pick copies all of it as text, audio or a file (also Ctrl+Enter),
+  leaving out hidden apps. Lines from the last 7 days have a play button (or pick a line and press Space):
+  click = everything from there on, mixed; Shift = just that moment, every app; Ctrl = only that app, from there on;
+  Ctrl+Shift = just that line. Hovering the button marks the lines it would play (hold Shift/Ctrl to see the
+  difference), and while playing, the words being heard light up.
 - **Settings**: listening on/off, apps (every app heard plus installed ones, 10 at a time; exclude one to stop
   recording it, "Excluded" brings it back; the lock keeps an app from being excluded), games (installed games are
   found and marked automatically; switch one off and it stays a not-game; running programs can be marked by hand),
