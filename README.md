@@ -14,7 +14,7 @@ AI sums up the day. Speakers and the phone app are later phases.
   software (Steam, Epic, GOG, EA, Ubisoft, Battle.net, Riot, Xbox, Start menu) to fill the Games and Apps lists. `lifelog.exe` is the
   command line for the same thing.
 - `ui/` — `lifelog-ui.exe`, the window, native ([immediate-mode](https://github.com/emilk/immediate-mode)): one window with tabs
-  (Browser, Journal, Settings), and small popups by the tray. It is a separate program that only runs while a
+  (Timeline, Journal, Settings), and small popups by the tray. It is a separate program that only runs while a
   window is open, so closing or ending it never stops recording. Icons are [Lucide](https://lucide.dev) as a font,
   vendored in `ui/assets/`; apps show their own exe icons.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
@@ -47,23 +47,25 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 Tray icon (a speech bubble with sound bars): blue = listening, grey with a pause badge = not listening.
 
-- **Left click** (or "Open browser") opens lifelog's window on the Browser tab: the whole transcript as one timeline, newest at the
-  top, loading further back as you scroll down (new lines appear live at the top). Find a word or phrase to jump there. Pasted
-  files sit in the timeline at the moment they were pasted: images show inline, videos and audio open in your
-  player, text shows as text, with "Open" (default app) and "Show in folder" (your default file manager) buttons.
-  **Show** lists the apps heard in what is loaded; click one to hide its lines. Excluded apps (no longer listened
-  to) are hidden unless "Excluded apps" is ticked; "All apps…" opens a window listing every app ever heard.
-  To copy, pick a range: click a line, Shift+click another; Esc drops it. Then "Copy as file" (a .txt lands on the
-  clipboard, ready to paste; also Ctrl+Enter), "Copy text" or "Copy audio" (a .wav of the range, last 7 days), all
-  leaving out hidden apps. Lines from the last 7 days have a play button (or pick a line and press Space):
-  click = that line; Shift = everything heard at that moment, mixed; Ctrl = that app keeps playing past the line;
-  Ctrl+Shift = everything, mixed, playing on. Hidden apps are left out of the mixes.
-- **Right click** opens lifelog's own small menu by the tray:
+- **Left click** opens lifelog's own small menu by the tray (click again to close it):
   - **Listening** on/off.
-  - **Copy the last** 10 min / 30 min / 1 h, or type a number of minutes or hours, previewing where the copy starts;
-    copy as a file, as text or as audio.
-  - **Open browser**, **Paste here** (saves whatever is on the clipboard — files, an image, or text — at this moment
+  - **Copy the last** few minutes or hours (type a number, pick min or h), previewing where the copy starts;
+    then **File** (a .txt on the clipboard, ready to paste), **Text** or **Audio** (a .wav).
+  - **Timeline**, **Paste here** (saves whatever is on the clipboard — files, an image, or text — at this moment
     in the timeline, under `files/` in the data folder), **Settings**, **Restart**, **Quit**.
+- **Right click**: Pause/Resume, Restart, Quit.
+- **Timeline** tab: one page per day (a day runs 04:00 to 04:00), oldest at the top. Today opens at the bottom and new
+  lines write themselves in as they are transcribed. ◀ ▶ (or the arrow keys) go a day back or forward; the day's name
+  opens a calendar to jump weeks or months back. Search works like Ctrl+F: matches are marked, Enter goes to the most
+  recent one, then older ones (Shift+Enter goes back), switching days as needed. Pasted files sit at the moment they
+  were pasted: images show inline, other files have "Open" and "Show in folder" buttons.
+  **Show** lists the apps heard on the page; click one to hide its lines. Excluded apps (no longer listened
+  to) are hidden unless "Excluded apps" is ticked; "All apps…" opens a window listing every app ever heard.
+  To copy, pick a range: click a line, Shift+click another; Esc drops it. Then "Copy as file" (also Ctrl+Enter),
+  "Copy text" or "Copy audio" (last 7 days), all leaving out hidden apps; or right-click a line for "Copy selected
+  line" / "Copy selected audio". Lines from the last 7 days have a play button (or pick a line and press Space):
+  click = that line; Shift = everything heard at that moment, mixed; Ctrl = that app keeps playing past the line;
+  Ctrl+Shift = everything, mixed, playing on. While playing, the words being heard light up.
 - **Settings**: listening on/off, apps (every app heard plus installed ones, 10 at a time; exclude one to stop
   recording it, "Excluded" brings it back; the lock keeps an app from being excluded), games (installed games are
   found and marked automatically; switch one off and it stays a not-game; running programs can be marked by hand),
