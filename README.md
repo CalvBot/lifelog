@@ -14,7 +14,7 @@ AI sums up the day. Speakers and the phone app are later phases.
   software (Steam, Epic, GOG, EA, Ubisoft, Battle.net, Riot, Xbox, Start menu) to fill the Games and Apps lists. `lifelog.exe` is the
   command line for the same thing.
 - `ui/` — `lifelog-ui.exe`, the window, native ([immediate-mode](https://github.com/emilk/immediate-mode)): one window with tabs
-  (Browser, Your days, Settings), and small popups by the tray. It is a separate program that only runs while a
+  (Browser, Journal, Settings), and small popups by the tray. It is a separate program that only runs while a
   window is open, so closing or ending it never stops recording. Icons are [Lucide](https://lucide.dev) as a font,
   vendored in `ui/assets/`; apps show their own exe icons.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
@@ -79,10 +79,10 @@ apps are only used as context (app audio is only given to the model when it is w
 The result is a few bullets per part of the day, "To remember" (every moment you said "need to remember", always
 included, falling back to your own words if the model misses one), and "things you said you'd do" (only lines where
 you actually said "I'll…", "remind me…", "I need to…" and so on). Read
-it from the notification, or the "Your days" tab; it is also saved as `<data_dir>\summaries\YYYY-MM-DD.md`.
+it from the notification, or the Journal tab; it is also saved as `<data_dir>\summaries\YYYY-MM-DD.md`.
 The day runs 04:00 to 04:00, so a late night counts as the day before. The model also gets the last month's
 summaries (the last week in full, older days as one line) to recognise recurring people and follow-ups. Hover a
-point in "Your days" and press its x to remove it and never mention that topic again (the list is in Settings).
+point in the Journal and press its x to remove it and never mention that topic again (the list is in Settings).
 
 The same from a terminal or a Stream Deck "System → Open" button, using `%LOCALAPPDATA%\Programs\lifelog\lifelog.exe`:
 
