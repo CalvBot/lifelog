@@ -40,6 +40,9 @@ if (-not (Test-Path (Join-Path $repo 'worker\.venv\Scripts\python.exe'))) {
     throw 'worker\.venv is missing: see Setup in README.md'
 }
 
+# The summary AI (fetched once; quick when it is already there).
+& (Join-Path $PSScriptRoot 'get-llm.ps1')
+
 Stop-Lifelog
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item (Join-Path $repo 'target\release\lifelog.exe'), (Join-Path $repo 'target\release\lifelogw.exe'), (Join-Path $repo 'target\release\lifelog-ui.exe') $dest -Force

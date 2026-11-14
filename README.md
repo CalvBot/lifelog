@@ -20,7 +20,9 @@ AI sums up the day. Speakers and the phone app are later phases.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
   writes lines to `<data_dir>\lifelog.db`, then keeps the audio for a week (for playback).
 - `schema.sql` — database schema, used by both.
-- Daily summary — [Ollama](https://ollama.com) with `qwen3:14b`, called by the app (`src/summary`).
+- Daily summary — lifelog's own [llama.cpp](https://github.com/ggml-org/llama.cpp) server with Qwen3 14B, in
+  `%LOCALAPPDATA%\lifelog\llm` (`src/llm`, `src/summary`). It runs only while a summary is written and is
+  killed straight after, so nothing else has to be installed or kept running.
 
 Capturing costs almost nothing and never stops. Transcribing uses the GPU (about 2.3 GB of VRAM), so by default
 ("auto") the worker is shut down while an app you marked as a game is running, or while anything is loading the
@@ -31,8 +33,9 @@ GPU's 3D engine, and starts again afterwards; the audio waits in the queue and i
 ```powershell
 python -m venv worker\.venv
 worker\.venv\Scripts\python.exe -m pip install -e worker
-winget install Ollama.Ollama; ollama pull qwen3:14b     # for the daily summary (9.3 GB)
 scripts\install.ps1        # builds, installs to %LOCALAPPDATA%\Programs\lifelog, starts it, starts at every login
+                           # and runs scripts\get-llm.ps1: the summary AI (~650 MB + a 9 GB model; reuses Ollama's
+                           # qwen3:14b if it is there). Check it with: lifelog check-ai
 ```
 
 Run `scripts\install.ps1` again after changing the code to update; `-Uninstall` removes the app (not the data).
