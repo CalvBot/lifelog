@@ -42,7 +42,7 @@ app waits for it. Log: `%LOCALAPPDATA%\lifelog\lifelog.log`.
 
 ## Use
 
-Tray icon (a speech bubble with sound bars): red = listening, grey with a pause badge = not listening.
+Tray icon (a speech bubble with sound bars): blue = listening, grey with a pause badge = not listening.
 
 - **Left click** (or "Open browser") opens lifelog's window on the Browser tab: the whole transcript as one timeline, newest at the
   top, loading further back as you scroll down (new lines appear live at the top). Find a word or phrase to jump there. Pasted

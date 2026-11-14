@@ -14,9 +14,11 @@ function Stop-Lifelog {
         & $cli quit 2>$null | Out-Null   # clean stop: lets the worker finish its file
         Start-Sleep 3
     }
-    Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue | Stop-Process -Force
+    $running = @(Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue)
+    $running | Stop-Process -Force
     # Killed processes let go of their exe a moment later.
-    Get-Process lifelogw, lifelog, lifelog-ui -ErrorAction SilentlyContinue | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
 }
 
 if ($Uninstall) {
@@ -48,4 +50,4 @@ if (-not (Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target (J
 $app = Join-Path $dest 'lifelogw.exe'
 Set-ItemProperty -Path $runKey -Name lifelog -Value ('"' + $app + '"')
 Start-Process $app
-"lifelog installed in $dest and started; it will start at every login. Look for the red speech bubble in the tray."
+"lifelog installed in $dest and started; it will start at every login. Look for the blue speech bubble in the tray."
