@@ -396,6 +396,13 @@ static Str exe_description(Arena* a, const wchar_t* path) {
     return out;
 }
 
+// When `path` was last written, or 0 if it isn't there.
+static u64 file_time(const wchar_t* path) {
+    WIN32_FILE_ATTRIBUTE_DATA info = {};
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &info)) return 0;
+    return ((u64)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime;
+}
+
 struct IconJob {
     char exe[64];
     char path[MAX_PATH];
@@ -412,10 +419,13 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
         icon_file(exe, 1, old_file);
         u8* rgba = (u8*)malloc(32 * 32 * 4);
         CHECK(rgba, "memory for an icon");
-        Str cached = read_file(scratch(), file);
+        wchar_t* path = jobs[i].path[0] ? wide(scratch(), str(jobs[i].path)) : 0;
+        // A cached icon older than the exe is from before it changed (an update, or a VoiceStreams
+        // player rebuilt with the person's new avatar): read again.
+        bool stale = path && file_time(path) > file_time(file);
+        Str cached = stale ? Str{} : read_file(scratch(), file);
         bool ok = cached.ptr && cached.len == 32 * 32 * 4;
         if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
-        wchar_t* path = jobs[i].path[0] ? wide(scratch(), str(jobs[i].path)) : 0;
         if (!ok && path && extract_icon(path, rgba)) {
             ok = true;
             wchar_t dir[MAX_PATH];
