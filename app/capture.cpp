@@ -728,7 +728,9 @@ static DWORD WINAPI capture_watch_main(void* p) {
             SET(s->title, title_for(exe, &procs, &wins));
             list_push(&c->streams, s);
             stream_start(app, s);
-            app_get(app, exe);
+            AppInfo* a = app_get(app, exe);
+            // Their exe is rebuilt when their avatar changes: picked up as they start talking.
+            if (voice_person(exe).len) a->icon_recheck = true;
             LOG("capturing %s (pid %u): %s", s->exe, root, s->title[0] ? s->title : "no window");
             changed = true;
         }

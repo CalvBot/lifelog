@@ -33,6 +33,8 @@ struct AppInfo {
     u8* icon;            // 32×32 RGBA (malloc), or null if none was found
     u32 icon_version;    // bumped when `icon` changes, so the window makes a new texture
     bool icon_tried;     // the icon was looked for (found or not), so it is not tried again
+    bool icon_recheck;   // look again even if it has one: a VoiceStreams player started, maybe
+                         // rebuilt with the person's new avatar
 };
 
 // Where an exe lives, for every exe seen (not only apps). Kept in paths.txt between runs.

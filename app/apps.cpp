@@ -447,7 +447,9 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
         AppInfo* a = app_find(app, exe);
         bool found = a != 0;
         if (a) {
-            if (rgba && !a->icon) {
+            // A new icon, or a changed one (a player rebuilt with a new avatar).
+            if (rgba && (!a->icon || memcmp(a->icon, rgba, 32 * 32 * 4) != 0)) {
+                free(a->icon);
                 a->icon = rgba;
                 a->icon_version++;
                 rgba = 0;
@@ -468,9 +470,10 @@ static void icons_for(App* app, bool only_running) {
     app_lock(app);
     for (i32 i = 0; i < app->apps.list.count; i++) {
         AppInfo* a = &app->apps.list[i];
-        if (a->icon || a->icon_tried) continue;
+        if ((a->icon || a->icon_tried) && !a->icon_recheck) continue;
         if (only_running && !a->running && !a->playing) continue;
         a->icon_tried = true;
+        a->icon_recheck = false;
         IconJob* j = list_push(&jobs);
         SET(j->exe, str(a->exe));
         SET(j->path, str(a->path));
