@@ -178,7 +178,9 @@ static const wchar_t* cache_dir() {
     return buf;
 }
 
-static void icon_file(Str exe, wchar_t out[MAX_PATH]) {
+// `version` 1 is the old lifelog's file (<exe>.rgba), which cropped icons bigger than 32 px; 2
+// (<exe>.2.rgba) is scaled to fit. The old one is only used when the exe can't be found any more.
+static void icon_file(Str exe, i32 version, wchar_t out[MAX_PATH]) {
     char safe[81];
     i32 n = 0;
     for (i64 i = 0; i < exe.len && n < 80; i++) {
@@ -187,7 +189,7 @@ static void icon_file(Str exe, wchar_t out[MAX_PATH]) {
     }
     safe[n] = 0;
     Mark m = mark(scratch());
-    swprintf(out, MAX_PATH, L"%s\\icons\\%s.rgba", cache_dir(), wide(scratch(), str(safe)));
+    swprintf(out, MAX_PATH, L"%s\\icons\\%s%s.rgba", cache_dir(), wide(scratch(), str(safe)), version == 1 ? L"" : L".2");
     rewind(m);
 }
 
@@ -245,7 +247,9 @@ static void paths_load(App* app) {
     LOG("apps: %d exe paths from paths.txt", n);
 }
 
-// The shell's 32×32 icon of a file as RGBA, into `out` (4096 bytes). False if it has none.
+// The shell's large icon of a file as 32×32 RGBA, into `out` (4096 bytes). False if it has none.
+// lifelog is DPI-aware, so "large" is 32 px only at 100 % scaling (48 at 150 %): read the icon
+// at its own size and average it down, or a bigger one would be cropped to its top-left corner.
 static bool extract_icon(const wchar_t* path, u8* out) {
     const i32 N = 32;
     SHFILEINFOW info = {};
@@ -254,34 +258,68 @@ static bool extract_icon(const wchar_t* path, u8* out) {
     BOOL got = GetIconInfo(info.hIcon, &icon);
     DestroyIcon(info.hIcon);
     if (!got) return false;
-    HDC dc = GetDC(0);
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = N;
-    bmi.bmiHeader.biHeight = -N;  // top row first
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    u8 mask[N * N * 4];
-    bool colour = icon.hbmColor && GetDIBits(dc, icon.hbmColor, 0, N, out, &bmi, DIB_RGB_COLORS) == N;
-    bool have_mask = icon.hbmMask && GetDIBits(dc, icon.hbmMask, 0, N, mask, &bmi, DIB_RGB_COLORS) == N;
-    ReleaseDC(0, dc);
+    BITMAP bm = {};
+    // A colour icon's size is its colour bitmap's; a mono one's mask holds both halves, stacked.
+    if (icon.hbmColor) GetObjectW(icon.hbmColor, sizeof(bm), &bm);
+    else if (icon.hbmMask) GetObjectW(icon.hbmMask, sizeof(bm), &bm), bm.bmHeight /= 2;
+    i32 w = bm.bmWidth, h = bm.bmHeight;
+    bool ok = icon.hbmColor && w > 0 && h > 0 && w <= 512 && h <= 512;
+    Mark m = mark(scratch());
+    u8* src = ok ? PUSH_ARRAY(scratch(), u8, (i64)w * h * 4) : 0;
+    u8* mask = ok ? PUSH_ARRAY(scratch(), u8, (i64)w * h * 4) : 0;
+    bool have_mask = false;
+    if (ok) {
+        HDC dc = GetDC(0);
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h;  // top row first
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        ok = GetDIBits(dc, icon.hbmColor, 0, (UINT)h, src, &bmi, DIB_RGB_COLORS) == h;
+        have_mask = icon.hbmMask && GetDIBits(dc, icon.hbmMask, 0, (UINT)h, mask, &bmi, DIB_RGB_COLORS) == h;
+        ReleaseDC(0, dc);
+    }
     if (icon.hbmColor) DeleteObject(icon.hbmColor);
     if (icon.hbmMask) DeleteObject(icon.hbmMask);
-    if (!colour) return false;
-    // Old icons have no alpha channel: take it from the mask (black = opaque).
-    bool any_alpha = false;
-    for (i32 i = 0; i < N * N; i++) any_alpha |= out[i * 4 + 3] != 0;
-    if (!any_alpha) {
-        if (!have_mask) return false;
-        for (i32 i = 0; i < N * N; i++) out[i * 4 + 3] = mask[i * 4] == 0 ? 255 : 0;
+    if (ok) {
+        // Old icons have no alpha channel: take it from the mask (black = opaque).
+        bool any_alpha = false;
+        for (i32 i = 0; i < w * h; i++) any_alpha |= src[i * 4 + 3] != 0;
+        if (!any_alpha && !have_mask) ok = false;
+        if (ok && !any_alpha)
+            for (i32 i = 0; i < w * h; i++) src[i * 4 + 3] = mask[i * 4] == 0 ? 255 : 0;
     }
-    for (i32 i = 0; i < N * N; i++) {  // BGRA to RGBA
-        u8 t = out[i * 4];
-        out[i * 4] = out[i * 4 + 2];
-        out[i * 4 + 2] = t;
+    if (ok) {
+        // Each output pixel averages the source box it covers, weighted by alpha so the clear
+        // edges don't darken the colour. BGRA in, RGBA out.
+        for (i32 y = 0; y < N; y++) {
+            for (i32 x = 0; x < N; x++) {
+                i32 x0 = x * w / N, x1 = (x + 1) * w / N, y0 = y * h / N, y1 = (y + 1) * h / N;
+                if (x1 <= x0) x1 = x0 + 1;
+                if (y1 <= y0) y1 = y0 + 1;
+                u32 r = 0, g = 0, b = 0, a = 0, n = 0;
+                for (i32 sy = y0; sy < y1; sy++) {
+                    for (i32 sx = x0; sx < x1; sx++) {
+                        u8* p = src + ((i64)sy * w + sx) * 4;
+                        b += p[0] * p[3];
+                        g += p[1] * p[3];
+                        r += p[2] * p[3];
+                        a += p[3];
+                        n++;
+                    }
+                }
+                u8* o = out + (y * N + x) * 4;
+                o[0] = a ? (u8)(r / a) : 0;
+                o[1] = a ? (u8)(g / a) : 0;
+                o[2] = a ? (u8)(b / a) : 0;
+                o[3] = (u8)(a / n);
+            }
+        }
     }
-    return true;
+    rewind(m);
+    return ok;
 }
 
 // An exe's own description ("Discord", "Mozilla Firefox") from its version info, or "".
@@ -319,8 +357,9 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
     for (i32 i = 0; i < count && !stopping(app); i++) {
         Mark m = mark(scratch());
         Str exe = str(jobs[i].exe);
-        wchar_t file[MAX_PATH];
-        icon_file(exe, file);
+        wchar_t file[MAX_PATH], old_file[MAX_PATH];
+        icon_file(exe, 2, file);
+        icon_file(exe, 1, old_file);
         u8* rgba = (u8*)malloc(32 * 32 * 4);
         CHECK(rgba, "memory for an icon");
         Str cached = read_file(scratch(), file);
@@ -333,6 +372,11 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
             swprintf(dir, MAX_PATH, L"%s\\icons", cache_dir());
             CreateDirectoryW(dir, 0);
             if (!write_file(file, {(const char*)rgba, 32 * 32 * 4})) WARN("apps: could not cache the icon of %s", jobs[i].exe);
+        }
+        if (!ok) {
+            cached = read_file(scratch(), old_file);
+            ok = cached.ptr && cached.len == 32 * 32 * 4;
+            if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
         }
         Str name = path ? exe_description(scratch(), path) : Str{"", 0};
         if (!ok) {
