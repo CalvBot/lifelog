@@ -52,6 +52,8 @@ struct SettingsState {
     i32 max_words;
     i32 gpu;
     bool ask_at_active;
+    char vs_dir[MAX_PATH];
+    bool vs_dir_active;
 
     List<SettingsUndo> undo;
 };
@@ -218,6 +220,8 @@ static void undo_last(App* app, SettingsState* s) {
 static AppsView view_of(AppInfo* a) {
     if (a->game == GAME_YES || a->decision == DECISION_INCLUDED) return VIEW_INCLUDED;
     if (a->decision == DECISION_EXCLUDED) return VIEW_EXCLUDED;
+    // People in Discord calls are included without asking.
+    if (voice_person(str(a->exe)).len) return VIEW_INCLUDED;
     return VIEW_NEW;
 }
 
@@ -245,6 +249,9 @@ static void apps_load(App* app, SettingsState* s) {
         if (is_own_exe(str(a->exe))) continue;
         if (q.len && str_find(str(a->exe), q) < 0 && str_find(str_lower(scratch(), str(a->name)), q) < 0) continue;
         AppsView v = view_of(a);
+        // People in Discord calls would fill the Included list one call at a time: they show there
+        // only when searched for (the Discord calls card stands for them).
+        if (v == VIEW_INCLUDED && !q.len && voice_person(str(a->exe)).len) continue;
         // New lists what was heard, plays now, or is installed; not every exe the config names.
         if (v == VIEW_NEW && !a->playing && !a->installed && a->lines == 0 && a->last_ts == 0) continue;
         s->counts[v]++;
@@ -450,6 +457,46 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Discord calls (the VoiceStreams plugin)
+
+static void calls_card(App* app, SettingsState* s, f32 width) {
+    Config* c = &app->config;
+    settings_card("calls", width);
+    title("Discord calls");
+    ImGui::SameLine(0, px(12));
+    Mark m = mark(scratch());
+    wchar_t dir[MAX_PATH];
+    voicestreams_dir(c, dir);
+    i32 people = 0;
+    for (i32 i = 0; i < app->capture.streams.count; i++)
+        if (app->capture.streams[i]->source == SOURCE_APP && voice_person(str(app->capture.streams[i]->exe)).len) people++;
+    bool found = GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES;
+    weak(!found ? "VoiceStreams folder not found: Discord is recorded as one app"
+         : people ? tmp("Recording %d %s one by one", people, people == 1 ? "person" : "people")
+                  : "Each person in a call is recorded under their own name");
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("VoiceStreams folder");
+    ImGui::SameLine();
+    const char* open = label(ICON_FOLDER_OPEN, "Open");
+    f32 open_w = ImGui::CalcTextSize(open).x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - open_w - ImGui::GetStyle().ItemSpacing.x);
+    if (!s->vs_dir_active) SET(s->vs_dir, str(c->capture.voicestreams_dir));
+    wchar_t local[MAX_PATH] = L"";
+    GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    const char* hint = tmp("%s\\VoiceStreams", narrow(scratch(), local).ptr);
+    ImGui::InputTextWithHint("##vs_dir", hint, s->vs_dir, sizeof(s->vs_dir));
+    s->vs_dir_active = ImGui::IsItemActive();
+    if (ImGui::IsItemDeactivatedAfterEdit() && !str_eq(str_trim(str(s->vs_dir)), str(c->capture.voicestreams_dir))) voicestreams_set_dir(app, str(s->vs_dir));
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!found);
+    if (ImGui::Button(open)) open_path(app, dir, false);
+    ImGui::EndDisabled();
+    rewind(m);
+    settings_card_end();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Transcription
 
 static void transcription_card(App* app, SettingsState* s, f32 width) {
@@ -634,6 +681,9 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     apps_card(app, s, width);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::SetCursorPosX(x);
+    calls_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     transcription_card(app, s, width);

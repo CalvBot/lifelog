@@ -58,8 +58,16 @@ const char* app_path(App* app, Str exe);
 bool is_own_exe(Str exe);
 // A VoiceStreams player (the vencord-voicestreams plugin): one per person in a Discord call,
 // named "discord-<username>-<userId>.exe". Their username ("zaddish"), or their id when the name
-// had nothing safe in it; empty for any other exe.
+// had nothing safe in it; empty for any other exe. People are recorded without being included:
+// they don't wait under New, and only show in the app lists when excluded or searched for.
 Str voice_person(Str exe);
+// The folder VoiceStreams runs its players from: capture.voicestreams_dir, or by default
+// %LOCALAPPDATA%\VoiceStreams. No trailing backslash.
+void voicestreams_dir(Config* c, wchar_t out[MAX_PATH]);
+// Whether process `pid` (`exe`) is a VoiceStreams player: named like one and run from under `dir`.
+bool voice_player(u32 pid, Str exe, const wchar_t* dir);
+// Sets capture.voicestreams_dir and saves it; empty goes back to the default.
+void voicestreams_set_dir(App* app, Str dir);
 
 // Sets the decisions from the config's lists (once, at start).
 void apps_from_config(App* app);

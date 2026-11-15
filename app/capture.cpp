@@ -661,9 +661,9 @@ static bool is_discord(Str exe) { return str_eq_nocase(exe, str("discord.exe"));
 
 // Whether a VoiceStreams player runs: then the call is recorded one person per player, and
 // Discord's own mixed sound would only repeat it. Without players Discord is recorded as usual.
-static bool voice_players_running(Procs* procs) {
+static bool voice_players_running(Procs* procs, const wchar_t* dir) {
     for (i32 i = 0; i < procs->count; i++)
-        if (voice_person(str(procs->items[i].exe)).len) return true;
+        if (voice_player(procs->items[i].pid, str(procs->items[i].exe), dir)) return true;
     return false;
 }
 
@@ -685,7 +685,11 @@ static DWORD WINAPI capture_watch_main(void* p) {
         Procs procs = processes(scratch());
         Wins wins = windows_now(scratch());
         Pids playing = playing_pids(en, scratch());
-        bool calls = discord_calls_recorded(calls_file) || voice_players_running(&procs);
+        wchar_t vs_dir[MAX_PATH];
+        app_lock(app);
+        voicestreams_dir(&app->config, vs_dir);
+        app_unlock(app);
+        bool calls = discord_calls_recorded(calls_file) || voice_players_running(&procs, vs_dir);
         if (calls != c_calls_last) LOG("%s", calls ? "Discord call recorded per person: Discord's own sound is not" : "Discord recorded as one app again");
         c_calls_last = calls;
         f64 now = now_ts();

@@ -21,6 +21,9 @@ excluded_apps = []
 gate_rms = 0.003
 # Days the audio of transcribed lines is kept, to play them back. The text is kept for good.
 keep_audio_days = 7
+# Where the VoiceStreams Vencord plugin runs its players (one per person in a Discord call).
+# Empty: %LOCALAPPDATA%\VoiceStreams. While its players run, Discord itself isn't recorded.
+voicestreams_dir = ""
 
 [processing]
 # When to transcribe. Capturing never stops; this only controls the GPU work.
@@ -306,6 +309,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("excluded_apps"))) take_names(&cfg->capture.excluded_apps, &v);
             if (str_eq(k, str("gate_rms")) && v.kind == Value::NUMBER) cfg->capture.gate_rms = (f32)v.number;
             if (str_eq(k, str("keep_audio_days"))) take_u32(&cfg->capture.keep_audio_days, &v);
+            if (str_eq(k, str("voicestreams_dir"))) take_string(cfg->capture.voicestreams_dir, sizeof(cfg->capture.voicestreams_dir), &v);
         } else if (str_eq(tb, str("processing"))) {
             if (str_eq(k, str("mode")) && v.kind == Value::STRING) mode_parse(str(v.s), &cfg->processing.mode);
             if (str_eq(k, str("gpu_busy_percent"))) take_u32(&cfg->processing.gpu_busy_percent, &v);

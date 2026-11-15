@@ -34,6 +34,41 @@ Str voice_person(Str exe) {
     return dash > 0 ? str_sub(rest, 0, dash) : id;
 }
 
+void voicestreams_dir(Config* c, wchar_t out[MAX_PATH]) {
+    out[0] = 0;
+    if (c->capture.voicestreams_dir[0]) {
+        Mark m = mark(scratch());
+        wcsncpy_s(out, MAX_PATH, wide(scratch(), str(c->capture.voicestreams_dir)), _TRUNCATE);
+        rewind(m);
+    } else {
+        wchar_t local[MAX_PATH] = L"";
+        GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        swprintf(out, MAX_PATH, L"%s\\VoiceStreams", local);
+    }
+    for (size_t n = wcslen(out); n > 0 && (out[n - 1] == L'\\' || out[n - 1] == L'/'); n--) out[n - 1] = 0;
+}
+
+bool voice_player(u32 pid, Str exe, const wchar_t* dir) {
+    if (!voice_person(exe).len || !dir[0]) return false;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return false;
+    wchar_t path[MAX_PATH * 2];
+    DWORD n = COUNT(path);
+    bool ok = QueryFullProcessImageNameW(h, 0, path, &n) != 0;
+    CloseHandle(h);
+    size_t len = wcslen(dir);
+    for (DWORD i = 0; ok && i < n; i++)
+        if (path[i] == L'/') path[i] = L'\\';
+    return ok && n > len && _wcsnicmp(path, dir, len) == 0 && path[len] == L'\\';
+}
+
+void voicestreams_set_dir(App* app, Str dir) {
+    dir = str_trim(dir);
+    SET(app->config.capture.voicestreams_dir, dir);
+    config_save_string("capture", "voicestreams_dir", app->config.capture.voicestreams_dir);
+    LOG("VoiceStreams folder: %s", dir.len ? app->config.capture.voicestreams_dir : "the default");
+}
+
 AppInfo* app_find(App* app, Str exe) {
     for (i32 i = 0; i < app->apps.list.count; i++)
         if (str_eq_nocase(str(app->apps.list[i].exe), exe)) return &app->apps.list[i];
