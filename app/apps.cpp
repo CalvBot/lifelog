@@ -19,7 +19,7 @@ bool is_own_exe(Str exe) {
     return false;
 }
 
-Str voice_person(Str exe) {
+Str voice_person(Str exe, Str* id_out) {
     Str prefix = str("discord-");
     if (exe.len <= prefix.len + 4 || !str_eq_nocase(str_sub(exe, exe.len - 4, 4), str(".exe"))) return {};
     if (!str_eq_nocase(str_sub(exe, 0, prefix.len), prefix)) return {};
@@ -31,6 +31,7 @@ Str voice_person(Str exe) {
     if (id.len < 1 || id.len > 20) return {};
     for (i64 i = 0; i < id.len; i++)
         if (id.ptr[i] < '0' || id.ptr[i] > '9') return {};
+    if (id_out) *id_out = id;
     return dash > 0 ? str_sub(rest, 0, dash) : id;
 }
 
@@ -377,6 +378,36 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
         icon_file(exe, 1, old_file);
         u8* rgba = (u8*)malloc(32 * 32 * 4);
         CHECK(rgba, "memory for an icon");
+        // A person in a Discord call: their avatar, which VoiceStreams saves as 32×32 RGBA.
+        Str voice_id = {};
+        bool person = voice_person(exe, &voice_id).len > 0;
+        if (person) {
+            wchar_t local[MAX_PATH] = L"", avatar[MAX_PATH];
+            GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+            swprintf(avatar, MAX_PATH, L"%s\\VoiceStreams\\avatars\\%.*S.rgba", local, (int)voice_id.len, voice_id.ptr);
+            Str cached = read_file(scratch(), avatar);
+            bool ok = cached.ptr && cached.len == 32 * 32 * 4;
+            if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
+            else {
+                free(rgba);
+                rgba = 0;
+            }
+            app_lock(app);
+            AppInfo* a = app_find(app, exe);
+            bool got = a && rgba && !a->icon;
+            if (got) {
+                a->icon = rgba;
+                a->icon_version++;
+                rgba = 0;
+            }
+            // Not there yet (the plugin saves it as they join): looked for again later.
+            if (a && !a->icon) a->icon_tried = false;
+            app_unlock(app);
+            free(rgba);
+            rewind(m);
+            if (got) wake_window(app);
+            continue;
+        }
         Str cached = read_file(scratch(), file);
         bool ok = cached.ptr && cached.len == 32 * 32 * 4;
         if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
