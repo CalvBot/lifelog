@@ -113,3 +113,9 @@ registered (per user) to `lifelogw.exe`, which passes them to the running app.
 - Audio with speech is kept for 7 days (`keep_audio_days`) in `<data_dir>\audio\YYYY-MM-DD\` so lines can be
   played back, then deleted; the text stays. Clips without speech are deleted at once. Nothing leaves the PC; the
   summary model runs locally too.
+
+## Contributing
+
+The GitHub repo is a mirror: it is overwritten from the main copy on every sync, so nothing pushed to it directly
+survives. To send a change, fork it on GitHub, push a branch to your fork and open a pull request. It gets merged on
+the main copy, and the mirror then shows the pull request as merged. Don't merge pull requests on GitHub.
