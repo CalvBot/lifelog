@@ -1,5 +1,5 @@
 // llm.cpp: the AI for the daily summary. By default it is lifelog's own copy of llama.cpp, in
-// %LOCALAPPDATA%\lifelog\llm (put there by scripts\get-llm.ps1): llama-server.exe with its DLLs,
+// %LOCALAPPDATA%\lifelog\llm (put there from Settings, see setup.h): llama-server.exe with its DLLs,
 // and <model>.gguf. The server is started only while a summary is written and stopped straight
 // after; it is tied to a job object, so it also goes if lifelog crashes.
 //
@@ -124,7 +124,7 @@ static bool llm_start(App* app, const char* model, u32 ctx, Llm* llm, char* erro
     Mark m = mark(scratch());
     swprintf(gguf, MAX_PATH, L"%ls\\%ls.gguf", dir, wide(scratch(), str(model)));
     if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(gguf) == INVALID_FILE_ATTRIBUTES) {
-        snprintf(error, cap, "the summary AI is not set up: run scripts\\get-llm.ps1");
+        snprintf(error, cap, "the summary AI is not set up: see Settings, Summary");
         rewind(m);
         return false;
     }

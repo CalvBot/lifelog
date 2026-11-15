@@ -23,6 +23,7 @@ struct App {
     Worker worker;      // transcription (worker.h)
     Storage storage;    // the database (db.h)
     Summary summary;    // the daily summary and reminders (summary.h)
+    Setup setup;        // downloading the transcriber and the summary AI (setup.h)
     Clips clips;        // copying, pasting and playback (clip.h)
     Ui ui;              // the window and the tray menu (ui.h)
 };

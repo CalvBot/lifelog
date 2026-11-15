@@ -17,14 +17,23 @@ Nothing leaves the PC. Design and roadmap: [PLAN.md](PLAN.md).
 
 ## Setup
 
-```powershell
-python -m venv worker\.venv
-worker\.venv\Scripts\python.exe -m pip install -e worker
-scripts\install.ps1    # build, install, start now and at login; also fetches the summary AI (~10 GB)
-```
+Install `lifelog-<version>.msi`. It installs for your account only (no admin prompt) into
+`%LOCALAPPDATA%\Programs\lifelog`, adds a Start menu entry, and starts lifelog in the tray now and at login.
 
-Run `install.ps1` again to update; `-Uninstall` removes the app but keeps the data. Settings live in
-`%APPDATA%\lifelog\config.toml`, and the log in `%LOCALAPPDATA%\lifelog\lifelog.log`.
+The installer holds no AI. In **Settings**, press **Set up** under Transcription to download the transcriber
+(faster-whisper and its CUDA libraries, about 3 GB, through [uv](https://github.com/astral-sh/uv)), and under
+Daily summary to download [llama.cpp](https://github.com/ggml-org/llama.cpp) and Qwen3 14B (about 10 GB). Each
+comes from where it is published, into `%LOCALAPPDATA%\lifelog`. You can use your own instead:
+
+- **Transcriber:** a `python.exe` that has the worker's dependencies (`pip install -r worker\pyproject.toml`).
+- **Summary:** any OpenAI-compatible server (Ollama, LM Studio, a cloud API) and the model name it knows.
+
+Recordings and the database go to `%LOCALAPPDATA%\lifelog\data` unless `data_dir` says otherwise. Settings live in
+`%APPDATA%\lifelog\config.toml`, and the log in `%LOCALAPPDATA%\lifelog\lifelog.log`. Uninstalling keeps your data,
+settings and the downloaded AI; delete those two folders to remove them too.
+
+To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Studio 2022), and
+`scripts\build-msi.ps1` builds the release exe and `dist\lifelog-<version>.msi` (needs WiX Toolset 3).
 
 ## Use
 

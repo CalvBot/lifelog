@@ -11,6 +11,7 @@
 struct Worker {
     char state[160];      // what it is doing, for the window: "transcribing", "waiting for the game to close", ...
     bool running;         // the Python process is up
+    bool missing;         // no transcriber: none chosen in Settings, and none set up there
     i32 queued;           // WAV files waiting in the spool folder
     f64 queued_secs;      // how much audio that is
     u32 gpu_3d_percent;   // the 3D engine's load now, as in Task Manager

@@ -54,6 +54,12 @@ struct SettingsState {
     bool ask_at_active;
     char vs_dir[MAX_PATH];
     bool vs_dir_active;
+    char python[MAX_PATH];
+    bool python_active;
+    char endpoint[512];
+    bool endpoint_active;
+    char model[128];
+    bool model_active;
 
     List<SettingsUndo> undo;
 };
@@ -497,6 +503,38 @@ static void calls_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Setting up the AI (setup.h)
+
+// "Set up" while `part` is missing: how far it has got while it runs, why it failed after.
+static void setup_row(App* app, SetupPart part, const char* what, const char* size) {
+    SetupState* st = &app->setup.part[part];
+    if (st->running) {
+        weak(st->text);
+        return;
+    }
+    if (ImGui::Button(tmp("%s##setup%d", label(ICON_ARROW_DOWN, st->failed ? "Try again" : "Set up"), (int)part))) setup_start(app, part);
+    ImGui::SameLine();
+    if (st->failed) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(ImVec4(0.86f, 0.33f, 0.31f, 1), "%s", st->text);
+        ImGui::PopTextWrapPos();
+    } else {
+        ImGui::AlignTextToFramePadding();
+        weak(tmp("Downloads %s (%s) from where it is published", what, size));
+    }
+}
+
+// A path or URL field: shows the config's value while not being typed in, and calls back with
+// what was typed once the typing ends.
+static bool setting_field(const char* id, const char* hint, char* buf, i32 cap, bool* active, const char* value, f32 width) {
+    if (!*active) set(buf, cap, str(value));
+    ImGui::SetNextItemWidth(width);
+    ImGui::InputTextWithHint(id, hint, buf, cap);
+    *active = ImGui::IsItemActive();
+    return ImGui::IsItemDeactivatedAfterEdit() && !str_eq(str_trim(str(buf)), str(value));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Transcription
 
 static void transcription_card(App* app, SettingsState* s, f32 width) {
@@ -532,6 +570,13 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
         ImGui::SameLine();
         weak(tmp("now %u%%", app->worker.gpu_3d_percent));
     }
+
+    if (app->worker.missing || app->setup.part[SETUP_TRANSCRIBER].running) setup_row(app, SETUP_TRANSCRIBER, "Whisper", "about 3 GB");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Your own Python");
+    ImGui::SameLine();
+    if (setting_field("##python", "a python.exe with lifelog's worker installed (pip install worker)", s->python, sizeof(s->python), &s->python_active, c->worker.python, ImGui::GetContentRegionAvail().x))
+        worker_set_python(app, str(s->python));
     settings_card_end();
 }
 
@@ -594,6 +639,19 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
         Str result = summary_act(app, scratch(), "now", 0, 0);
         ui_say(app, "%s", str_eq(result, str("writing")) ? "Writing today's summary" : result.ptr);
     }
+
+    // lifelog's own llama.cpp, or any OpenAI-compatible server (Ollama, LM Studio, a cloud one).
+    if (!c->summary.endpoint[0] && (!summary_ai_ready(c->summary.model) || app->setup.part[SETUP_SUMMARY_AI].running))
+        setup_row(app, SETUP_SUMMARY_AI, "llama.cpp and Qwen3 14B", "about 10 GB");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Your own AI server");
+    ImGui::SameLine();
+    f32 model_w = px(140);
+    bool url_done = setting_field("##endpoint", "http://localhost:11434/v1 (OpenAI-compatible)", s->endpoint, sizeof(s->endpoint), &s->endpoint_active,
+                                  c->summary.endpoint, ImGui::GetContentRegionAvail().x - model_w - ImGui::GetStyle().ItemSpacing.x);
+    ImGui::SameLine();
+    bool model_done = setting_field("##model", "model", s->model, sizeof(s->model), &s->model_active, c->summary.model, model_w);
+    if (url_done || model_done) summary_set_endpoint(app, str(url_done ? s->endpoint : c->summary.endpoint), str(model_done ? s->model : ""));
 
     bool remind = c->summary.ask_reminders;
     if (toggle("##reminders", &remind)) {

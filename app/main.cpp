@@ -723,13 +723,8 @@ static bool single_instance() {
             CloseHandle(old);
         }
     }
-    wchar_t name[96] = L"Local\\lifelog.cpp.running";
-    wchar_t test_config[MAX_PATH];
-    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
-        u32 hash = 2166136261u;
-        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
-        swprintf(name, COUNT(name), L"Local\\lifelog.cpp.test.%08x", hash);
-    }
+    wchar_t name[96];
+    instance_name(name);
     HANDLE single = CreateMutexW(0, TRUE, name);  // held until the process exits
     return !(single && GetLastError() == ERROR_ALREADY_EXISTS);
 }

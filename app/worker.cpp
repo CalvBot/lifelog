@@ -162,8 +162,8 @@ struct Child {
     HANDLE job;
 };
 
-// The worker to run: from the config, else worker\.venv next to the exe (an installed copy) or in
-// the repo the exe was built from (<repo>\app\build\lifelog.exe).
+// The worker to run: from the config, else worker\.venv in the repo the exe was built from
+// (<repo>\app\build\lifelog.exe) or next to it, else the environment Settings sets up (setup.h).
 static bool find_worker(Config* cfg, wchar_t python[MAX_PATH], wchar_t dir[MAX_PATH]) {
     Mark m = mark(scratch());
     bool found = false;
@@ -181,6 +181,10 @@ static bool find_worker(Config* cfg, wchar_t python[MAX_PATH], wchar_t dir[MAX_P
         if (GetFileAttributesW(py) == INVALID_FILE_ATTRIBUTES) continue;
         wcscpy_s(python, MAX_PATH, py);
         found = true;
+    }
+    if (!found) {
+        transcriber_python(python);
+        found = GetFileAttributesW(python) != INVALID_FILE_ATTRIBUTES && worker_source(dir);
     }
     rewind(m);
     return found;
@@ -363,9 +367,10 @@ static DWORD WINAPI supervisor_thread(void* p) {
     wchar_t python[MAX_PATH] = {}, dir[MAX_PATH] = {}, spool[MAX_PATH];
     app_lock(app);
     bool found = find_worker(&app->config, python, dir);
+    app->worker.missing = !found;
     spool_dir(&app->config, spool);
     app_unlock(app);
-    if (!found) WARN("no worker found (set [worker] python in the config): audio will queue up untranscribed");
+    if (!found) WARN("the transcriber is not set up (Settings, Transcription): audio will queue up untranscribed");
 
     f64 next_start = 0;  // after a crash or a failed start, wait before trying again
     f64 next_count = 0;
@@ -385,6 +390,15 @@ static DWORD WINAPI supervisor_thread(void* p) {
         char state[160];
         app_lock(app);
         Worker* w = &app->worker;
+        if (!w->process) {  // set up from Settings since, or another Python chosen there
+            bool was = found;
+            found = find_worker(&app->config, python, dir);
+            if (found && !was) LOG("transcriber found: %ls", python);
+            if (found == w->missing) {
+                w->missing = !found;
+                wake = true;
+            }
+        }
         bool game = app->apps.game_running[0] != 0;
         if (had_game && !game) quiet_from = now;
         had_game = game;
@@ -414,7 +428,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             else snprintf(state, sizeof(state), "starting");
             w->waiting_since = 0;
         } else {
-            if (!found) snprintf(state, sizeof(state), "no worker found: set [worker] python in the config");
+            if (!found) snprintf(state, sizeof(state), "not set up yet");
             if (!w->waiting_since) w->waiting_since = now;
         }
         if (strcmp(state, w->state) != 0) {

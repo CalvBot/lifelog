@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  lifelog.wxs: the per-user installer (WiX 3). Built by scripts\build-msi.ps1.
+
+  It holds lifelog.exe and the worker's code, and no AI: the transcriber and the summary AI are
+  downloaded from where they are published when you press "Set up" in Settings (app\setup.h),
+  or you point lifelog at your own. Uninstalling leaves %LOCALAPPDATA%\lifelog (recordings,
+  database, downloaded AI) and %APPDATA%\lifelog (settings) alone.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="lifelog" Language="1033" Version="$(var.Version)" Manufacturer="lifelog"
+           UpgradeCode="6E1F7A52-3C1D-4B8E-9A0F-2D7C4B5E8A11">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited"
+             Description="lifelog: a local transcript of what is said and heard on this PC" />
+    <MajorUpgrade DowngradeErrorMessage="A newer lifelog is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="lifelog.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="lifelog.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/CalvBot/lifelog" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="lifelog">
+            <Directory Id="AssetsFolder" Name="assets" />
+            <Directory Id="WorkerFolder" Name="worker">
+              <Directory Id="WorkerPackageFolder" Name="lifelog_worker" />
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <!-- Per-user components key on a registry value (ICE38) and remove their folders (ICE64). -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="App" Guid="E77F9048-4FBF-483D-9279-CD579B531A82">
+        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="App" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="LifelogExe" Source="$(var.Build)\lifelog.exe" />
+        <File Id="SchemaSql" Source="$(var.Build)\schema.sql" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      </Component>
+      <!-- Starts hidden in the tray at login, like scripts\install.ps1 did. -->
+      <Component Id="Autostart" Guid="*">
+        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="lifelog" Type="string"
+                       Value="&quot;[INSTALLFOLDER]lifelog.exe&quot; --tray" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="AssetsFolder">
+      <Component Id="Assets" Guid="22AD80B8-5B63-4F41-95D0-A44EB4B0F886">
+        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="Assets" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="LucideTtf" Source="$(var.Build)\assets\lucide.ttf" />
+        <RemoveFolder Id="RemoveAssetsFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="WorkerFolder">
+      <Component Id="Worker" Guid="80CDCFDB-EC26-407D-B54D-1D8758E28377">
+        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="Worker" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="WorkerPyproject" Source="$(var.Worker)\pyproject.toml" />
+        <RemoveFolder Id="RemoveWorkerFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="WorkerPackageFolder">
+      <Component Id="WorkerPackage" Guid="EF4598FC-A7FA-437B-9AF7-52C386439D57">
+        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="WorkerPackage" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="WorkerInit" Source="$(var.Worker)\lifelog_worker\__init__.py" />
+        <File Id="WorkerMain" Source="$(var.Worker)\lifelog_worker\__main__.py" />
+        <!-- Python writes __pycache__ here when the worker runs. -->
+        <RemoveFile Id="RemovePycache" Directory="WorkerPycacheFolder" Name="*" On="uninstall" />
+        <RemoveFolder Id="RemovePycacheFolder" Directory="WorkerPycacheFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveWorkerPackageFolder" On="uninstall" />
+      </Component>
+      <Directory Id="WorkerPycacheFolder" Name="__pycache__" />
+    </DirectoryRef>
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="*">
+        <Shortcut Id="StartMenuShortcut" Name="lifelog" Target="[INSTALLFOLDER]lifelog.exe" WorkingDirectory="INSTALLFOLDER" Icon="lifelog.ico"
+                  Description="A local transcript of what is said and heard on this PC" />
+        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="lifelog" Level="1">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="Autostart" />
+      <ComponentRef Id="Assets" />
+      <ComponentRef Id="Worker" />
+      <ComponentRef Id="WorkerPackage" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!-- A running lifelog is asked to quit (it finishes the file it is transcribing) before its
+         files are replaced or removed; `lifelog quit` waits until it has exited. -->
+    <CustomAction Id="QuitLifelog" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]lifelog.exe&quot; quit"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <!-- Started in the tray when installing or updating, not when removing. -->
+    <CustomAction Id="StartLifelog" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]lifelog.exe&quot; --tray"
+                  Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="QuitLifelog" Before="InstallValidate">Installed OR WIX_UPGRADE_DETECTED</Custom>
+      <Custom Action="StartLifelog" After="InstallFinalize">NOT (REMOVE ~= "ALL")</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

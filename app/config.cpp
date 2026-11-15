@@ -3,8 +3,8 @@
 
 static const char DEFAULT_CONFIG[] = R"toml(# lifelog settings. Restart lifelog after editing.
 
-# Where the database and the transcription queue live.
-data_dir = 'G:\lifelog'
+# Where the database, the recordings and the transcription queue live. Empty: %LOCALAPPDATA%\lifelog\data.
+data_dir = ''
 
 # Local API port (127.0.0.1 only).
 api_port = 47800
@@ -230,7 +230,6 @@ static void take_names(Names* dst, Value* v) {
 
 static void config_defaults(Config* cfg) {
     *cfg = {};
-    SET(cfg->data_dir, str("G:\\lifelog"));
     cfg->api_port = 47800;
     cfg->capture.mic = true;
     cfg->capture.apps = true;
@@ -333,6 +332,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         }
         list_free(&v.array);
     }
+    if (!cfg->data_dir[0]) SET(cfg->data_dir, str_fmt(a, "%s\\data", narrow(a, local_dir()).ptr));
     rewind(m);
     return ok;
 }

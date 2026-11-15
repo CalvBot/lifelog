@@ -168,6 +168,30 @@ static i32 cli_icon(Str path) {
     return ok ? 0 : cli_error("could not write %.*s", (int)path.len, path.ptr);
 }
 
+// The mutex the running lifelog holds until it exits (one per config, so a test copy is apart).
+static void instance_name(wchar_t out[96]) {
+    swprintf(out, 96, L"Local\\lifelog.cpp.running");
+    wchar_t test_config[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
+        u32 hash = 2166136261u;
+        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
+        swprintf(out, 96, L"Local\\lifelog.cpp.test.%08x", hash);
+    }
+}
+
+// `lifelog quit`: asks, then waits (up to 30 s) until the program has exited, so an installer
+// can replace its files straight after.
+static i32 cli_quit() {
+    wchar_t name[96];
+    instance_name(name);
+    HANDLE running = OpenMutexW(SYNCHRONIZE, FALSE, name);
+    if (!running) return 0;  // not running: nothing to do
+    i32 code = cli_call("POST", str("/quit"));
+    if (code == 0) WaitForSingleObject(running, 30000);
+    CloseHandle(running);
+    return code;
+}
+
 // Runs a command and returns the exit code. Called before anything else starts.
 static i32 cli_main(i32 argc, wchar_t** argv) {
     cli_console();
@@ -179,7 +203,8 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
 
     if (str_eq(cmd, str("run"))) return cli_run();
     if (str_eq(cmd, str("clip"))) return cli_clip(has_arg ? args[1] : str("15m"));
-    if (str_eq(cmd, str("pause")) || str_eq(cmd, str("resume")) || str_eq(cmd, str("toggle")) || str_eq(cmd, str("quit")))
+    if (str_eq(cmd, str("quit"))) return cli_quit();
+    if (str_eq(cmd, str("pause")) || str_eq(cmd, str("resume")) || str_eq(cmd, str("toggle")))
         return cli_call("POST", str_fmt(a, "/%s", cmd.ptr));
     if (str_eq(cmd, str("exclude")) || str_eq(cmd, str("include")) || str_eq(cmd, str("game")) || str_eq(cmd, str("not-game"))) {
         if (!cli_config(&g_cli.config)) return 1;

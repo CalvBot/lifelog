@@ -5,6 +5,7 @@
 //   POST /pause | /resume | /toggle     private mode
 //   POST /exclude | /include | /game | /not-game ?app=X.exe
 //   POST /transcription?mode=auto|always|paused     when the GPU work may run
+//   POST /setup?part=transcriber|summary    download and set up that AI (as Settings' "Set up")
 //   POST /clip?range=15m    write the clip file and put it on the clipboard
 //   POST /summary?do=now|later|skip|until[&day=][&at=]
 //   POST /remind?do=yes|no|done|snooze&id=N        a reminder notification's buttons
@@ -160,6 +161,15 @@ static void status_json(App* app, Buf* b) {
     json_quote(b, str(mode_name(c->processing.mode)));
     buf_cstr(b, ",\"state\":");
     json_quote(b, str(app->worker.state));
+    buf_cstr(b, "},\"setup\":{");
+    const char* parts[SETUP_PARTS] = {"transcriber", "summary"};
+    for (i32 i = 0; i < SETUP_PARTS; i++) {
+        SetupState* st = &app->setup.part[i];
+        buf_fmt(b, "%s\"%s\":{\"running\":%s,\"failed\":%s,\"text\":", i ? "," : "", parts[i], st->running ? "true" : "false",
+                st->failed ? "true" : "false");
+        json_quote(b, str(st->text));
+        buf_cstr(b, "}");
+    }
     buf_cstr(b, "}}");
 }
 
@@ -250,6 +260,22 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         }
         status_json(app, &r->body);
         app_unlock(app);
+        return;
+    }
+
+    if (str_eq(path, str("/setup"))) {
+        Str part = {};
+        query_param(a, query, "part", &part);
+        bool transcriber = str_eq(part, str("transcriber")), summary = str_eq(part, str("summary"));
+        if (!transcriber && !summary) {
+            answer_error(r, 400, "part must be transcriber or summary");
+            return;
+        }
+        app_lock(app);
+        setup_start(app, transcriber ? SETUP_TRANSCRIBER : SETUP_SUMMARY_AI);
+        status_json(app, &r->body);
+        app_unlock(app);
+        wake_window(app);
         return;
     }
 
