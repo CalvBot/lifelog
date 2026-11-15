@@ -34,5 +34,7 @@ struct App;
 #include "worker.cpp"
 #include "summary.cpp"
 #include "clip.cpp"
+#include "files.cpp"
+#include "player.cpp"
 #include "ui.cpp"
 #include "main.cpp"

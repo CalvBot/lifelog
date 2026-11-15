@@ -12,20 +12,31 @@ enum ClipKind : u8 {
 struct ClipResult {
     bool ok;
     i32 lines;
-    f64 seconds;       // for audio
+    f64 seconds;          // for audio
+    char path[MAX_PATH];  // the .txt or .wav written to the temp folder (UTF-8)
     char error[256];
 };
 
-// Copies [from, to) to the clipboard, leaving out `exclude` (speakers). Unlocked: it reads the
-// database and the audio files. Must run on a thread with a window (the clipboard needs one).
-ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind);
-// The CLI's and the API's "15m", "1h", "2d", "today". False if `range` is not one of those.
-bool clip_range(Str range, f64 now, f64* from);
+// Copies [from, to) to the clipboard, leaving out `exclude` (speakers; may be null). Unlocked: it
+// reads the database and the audio files, and mixing audio can take a while. Any thread.
+// `label` names the file "lifelog-<label>.txt"; by default it is the times ("2026-11-15-1400-to-1415").
+ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label = 0);
+// The CLI's and the API's "15m", "1h", "90s", "2d", "today". False if `range` is not one of those.
+// `label` gets the file label ("last-15m", "today") when given.
+bool clip_range(Str range, f64 now, f64* from, char* label = 0, i32 label_cap = 0);
+// Puts text on the clipboard. Any thread, unlocked. False if the clipboard stayed busy.
+bool clipboard_set_text(Str text);
 
-// "Paste here": saves the files, images, text or links on the clipboard into the timeline now.
-// Returns how many were saved, or -1 with `error` set.
+// "Paste here": reads the files, images, text or links on the clipboard now, and saves them into
+// the timeline on a thread (which then bumps Storage.files_version and says "Saved N items").
+// With the lock. Returns how many things were on the clipboard, or -1 with `error` set.
 i32 files_paste(App* app, char* error, i32 cap);
+// Opens a pasted file in its app (a link in the browser), or shows it in its folder. With the
+// lock; the work is done on a thread and failures show as a toast.
 void file_open(App* app, i64 id, bool in_folder);
+// Where a pasted file is on disk (its copy under data_dir\files, or what a link points at). False
+// for a web address or a bad path. Does not check that the file is still there.
+bool file_full_path(Config* cfg, FileItem* f, wchar_t out[MAX_PATH]);
 
 // Playback of kept audio (16 kHz mono).
 enum PlayMode : u8 {
@@ -39,10 +50,12 @@ struct Clips {
     // Playback, for the window: what is playing and where.
     i64 playing_line;     // 0 when nothing plays
     PlayMode play_mode;
-    f64 play_ts;          // the moment being heard (unix seconds)
+    f64 play_ts;          // the moment being heard (unix seconds); 0 until the audio starts
     void* player;         // the playback thread's own
 };
 
-// Starts playing from `line_id` (stops what was playing). `hidden` are speakers left out.
+// Starts playing from `line_id` (stops what was playing). `hidden` are speakers left out (copied).
+// With the lock; the audio is mixed and played on a thread, and failures show as a toast.
 void play(App* app, i64 line_id, PlayMode mode, Names* hidden);
+// With the lock.
 void play_stop(App* app);
