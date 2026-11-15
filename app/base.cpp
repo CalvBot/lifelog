@@ -268,7 +268,19 @@ bool write_file(const wchar_t* path, Str data) {
 
 const wchar_t* log_path() {
     static wchar_t buf[MAX_PATH];
-    if (!buf[0]) swprintf(buf, MAX_PATH, L"%s\\lifelog.log", local_dir());
+    if (buf[0]) return buf;
+    // A test copy (LIFELOG_CONFIG set) logs next to its config, out of the real log.
+    wchar_t config[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LIFELOG_CONFIG", config, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        wchar_t* slash = wcsrchr(config, L'\\');
+        if (!slash) slash = wcsrchr(config, L'/');
+        if (slash) *slash = 0;
+        else wcscpy_s(config, L".");
+        swprintf(buf, MAX_PATH, L"%s\\lifelog.log", config);
+    } else {
+        swprintf(buf, MAX_PATH, L"%s\\lifelog.log", local_dir());
+    }
     return buf;
 }
 
