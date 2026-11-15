@@ -12,7 +12,8 @@ Nothing leaves the PC. Design and roadmap: [PLAN.md](PLAN.md).
 - `worker/`: Python, transcribes with faster-whisper (large-v3-turbo) into SQLite (`schema.sql`). It steps aside
   while a game is running and catches up after.
 - Daily summary: a [llama.cpp](https://github.com/ggml-org/llama.cpp) server with Qwen3 14B, only running while it
-  writes.
+  writes. To use an AI you already run (Ollama, LM Studio, any OpenAI-compatible endpoint), set `endpoint` and
+  `model` under `[summary]` in the settings; then the install skips the 10 GB download.
 
 ## Setup
 

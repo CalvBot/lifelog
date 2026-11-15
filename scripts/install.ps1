@@ -40,8 +40,11 @@ if (-not (Test-Path (Join-Path $repo 'worker\.venv\Scripts\python.exe'))) {
     throw 'worker\.venv is missing: see Setup in README.md'
 }
 
-# The summary AI (fetched once; quick when it is already there).
-& (Join-Path $PSScriptRoot 'get-llm.ps1')
+# The summary AI (fetched once; quick when it is already there), unless the settings name an endpoint.
+$config = Join-Path $env:APPDATA 'lifelog\config.toml'
+if (-not ((Test-Path $config) -and (Select-String -Path $config -Pattern '^\s*endpoint\s*=\s*"[^"]+"' -Quiet))) {
+    & (Join-Path $PSScriptRoot 'get-llm.ps1')
+}
 
 Stop-Lifelog
 New-Item -ItemType Directory -Force $dest | Out-Null
