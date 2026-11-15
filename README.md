@@ -1,4 +1,4 @@
-# lifelog
+![lifelog](assets/banner.svg)
 
 An always-on, local, searchable transcript of what is said and heard on this PC: your mic and every app that plays
 sound, each as its own stream, transcribed on the GPU. Each evening a local AI writes a summary of the day.
