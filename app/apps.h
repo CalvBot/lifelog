@@ -58,8 +58,8 @@ const char* app_path(App* app, Str exe);
 bool is_own_exe(Str exe);
 // A VoiceStreams player (the vencord-voicestreams plugin): one per person in a Discord call,
 // named "discord-<username>-<userId>.exe". Their username ("zaddish"), or their id when the name
-// had nothing safe in it; empty for any other exe. `id` gets the user id.
-Str voice_person(Str exe, Str* id = 0);
+// had nothing safe in it; empty for any other exe.
+Str voice_person(Str exe);
 
 // Sets the decisions from the config's lists (once, at start).
 void apps_from_config(App* app);
