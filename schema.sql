@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS files (
 );
 CREATE INDEX IF NOT EXISTS files_ts ON files (ts);
 
+-- Reminders from summaries that pop up as a notification when due.
+CREATE TABLE IF NOT EXISTS alerts (
+    id        INTEGER PRIMARY KEY,
+    day       TEXT NOT NULL,     -- the summary's day, 'YYYY-MM-DD'
+    text      TEXT NOT NULL,     -- the to-do, as in the summary
+    said      TEXT,              -- my words
+    said_time TEXT,              -- 'HH:MM'
+    due_ts    REAL NOT NULL,     -- unix seconds
+    state     TEXT NOT NULL,     -- 'asked' | 'set' | 'shown' | 'no'
+    UNIQUE (day, text)
+);
+
 -- Topics the daily summary must never mention again (set from the summaries window).
 CREATE TABLE IF NOT EXISTS summary_never (
     id         INTEGER PRIMARY KEY,
