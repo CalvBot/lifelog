@@ -8,14 +8,15 @@ AI sums up the day. Speakers and the phone app are later phases.
 
 ## How it fits together
 
-- `src/` — native. `lifelogw.exe` is the recorder: a tray icon, no window. It captures the Windows default mic
+- `src/` — native, the library behind `lifelogw.exe`, the app: a tray icon and the recorder. It captures the Windows default mic
   (following it when it changes) and one stream per app (WASAPI process loopback), cuts the audio into short 16 kHz
   WAV files in `<data_dir>\spool`, serves a local API, and runs the worker. Every few hours it also scans installed
   software (Steam, Epic, GOG, EA, Ubisoft, Battle.net, Riot, Xbox, Start menu) to fill the Games and Apps lists. `lifelog.exe` is the
   command line for the same thing.
-- `ui/` — `lifelog-ui.exe`, the window, native ([immediate-mode](https://github.com/emilk/immediate-mode)): one window with tabs
-  (Timeline, Journal, Settings), and small popups by the tray. It is a separate program that only runs while a
-  window is open, so closing or ending it never stops recording. Icons are [Lucide](https://lucide.dev) as a font,
+- `ui/` — builds `lifelogw.exe`: the recorder runs on its own threads and the window on the main thread, native
+  native ([immediate-mode](https://github.com/emilk/immediate-mode)): one window with tabs (Timeline, Journal, Settings), and small popups
+  by the tray. The window only exists while it is open, and calls the API's routes in-process; the local port is
+  for the CLI, the Stream Deck and notification buttons. Icons are [Lucide](https://lucide.dev) as a font,
   vendored in `ui/assets/`; apps show their own exe icons.
 - `worker/` — Python worker. Takes spool files oldest-first, transcribes with faster-whisper (large-v3-turbo),
   writes lines to `<data_dir>\lifelog.db`, then keeps the audio for a week (for playback).

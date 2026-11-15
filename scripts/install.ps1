@@ -45,7 +45,9 @@ if (-not (Test-Path (Join-Path $repo 'worker\.venv\Scripts\python.exe'))) {
 
 Stop-Lifelog
 New-Item -ItemType Directory -Force $dest | Out-Null
-Copy-Item (Join-Path $repo 'target\release\lifelog.exe'), (Join-Path $repo 'target\release\lifelogw.exe'), (Join-Path $repo 'target\release\lifelog-ui.exe') $dest -Force
+Copy-Item (Join-Path $repo 'target\release\lifelog.exe'), (Join-Path $repo 'target\release\lifelogw.exe') $dest -Force
+# The window used to be its own program; it is part of lifelogw.exe now.
+Remove-Item (Join-Path $dest 'lifelog-ui.exe') -ErrorAction SilentlyContinue
 # The worker (Python + its 2 GB of libraries) stays in the repo; the app just links to it.
 $link = Join-Path $dest 'worker'
 if (-not (Test-Path $link)) { New-Item -ItemType Junction -Path $link -Target (Join-Path $repo 'worker') | Out-Null }
