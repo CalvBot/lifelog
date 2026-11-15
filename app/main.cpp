@@ -336,7 +336,7 @@ static void tray_add(HWND hwnd) {
     g_tray.uID = TRAY_ID;
     g_tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_tray.uCallbackMessage = WM_APP_TRAY;
-    g_tray.hIcon = LoadIconW(GetModuleHandleW(0), MAKEINTRESOURCEW(1));
+    g_tray.hIcon = logo_icon(GetSystemMetrics(SM_CXSMICON), g_app.capture.paused);
     if (!g_tray.hIcon) g_tray.hIcon = LoadIconW(0, IDI_APPLICATION);
     wcscpy_s(g_tray.szTip, L"lifelog");
     Shell_NotifyIconW(NIM_ADD, &g_tray);
@@ -346,8 +346,12 @@ static void tray_add(HWND hwnd) {
 
 void tray_update(App* app) {
     wcscpy_s(g_tray.szTip, app->capture.paused ? L"lifelog: private, recording nothing" : L"lifelog: recording");
-    g_tray.uFlags = NIF_TIP;
+    // Blue while recording, grey in private mode.
+    HICON old = g_tray.hIcon;
+    g_tray.hIcon = logo_icon(GetSystemMetrics(SM_CXSMICON), app->capture.paused);
+    g_tray.uFlags = NIF_TIP | NIF_ICON;
     Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+    if (old && old != g_tray.hIcon) DestroyIcon(old);
 }
 
 static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -494,8 +498,9 @@ static i32 run_app() {
     LOG("lifelog started");
 
     bool want_main = true;  // the window opens at start unless --tray was passed
+    // __argv is null in a wWinMain program; the wide arguments are in __wargv.
     for (i32 i = 1; i < __argc; i++)
-        if (strcmp(__argv[i], "--tray") == 0) want_main = false;
+        if (wcscmp(__wargv[i], L"--tray") == 0) want_main = false;
     if (want_main) open_main_window();
 
     for (;;) {
