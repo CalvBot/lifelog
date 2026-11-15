@@ -5,6 +5,10 @@
 // OpenAI-compatible endpoint. Reminders ("I'll call Sam tomorrow") are offered as notifications
 // and shown when due. Settings live in App.config.summary; the functions below change them there
 // and in config.toml.
+//
+// Notifications (notify.cpp) are Windows toasts. Their buttons open `lifelog:` links, a link type
+// registered to run lifelog.exe with the link; that second copy hands the link to the running one
+// (notify_forward) and exits, and the running one acts on it (notify_open_link).
 
 #pragma once
 
@@ -20,9 +24,11 @@ struct Reminder {
     Str text;    // the to-do
     Str said;    // my words
     Str when;    // "YYYY-MM-DD HH:MM" if a time was said, else empty
-    // Its notification: none, asked, set (with when it will show), shown or declined.
+    // Its notification: none, asked, set (with when it will show), shown or no (declined).
+    // Empty when it has none and said no time.
     Str alert_state;
     Str alert_when;  // "tomorrow at 09:00"
+    f64 alert_due;   // when it shows (or would), unix seconds; 0 if not known
 };
 
 struct StoredSummary {
@@ -41,6 +47,28 @@ struct NeverTopic {
     char topic[128];
 };
 
+// A notification waiting for the notify thread to show it (or take it away).
+struct ToastButton {
+    char text[64];
+    char link[160];
+};
+struct ToastJob {
+    bool remove;          // take away the toast with `tag` instead of showing one
+    char tag[32];         // the same tag replaces the earlier toast
+    char title[256];
+    char body[1024];
+    ToastButton buttons[4];
+    i32 button_count;
+    char launch[160];     // the link clicking the toast itself opens; "" for none
+    bool sticky;          // stays on screen until answered
+};
+
+struct Notify {
+    SRWLOCK lock;            // guards `queue` (taken with or without App.lock, never the other way round)
+    List<ToastJob> queue;
+    HWND window;             // the notify thread's message window, which links are sent to
+};
+
 struct Summary {
     char phase[160];      // what it is doing: "", "asks at 21:00", "writing: notes for 3 of 5 parts", ...
     bool writing;
@@ -51,6 +79,11 @@ struct Summary {
     // The summary thread's own:
     f64 ask_ts;                 // when it will next ask
     char ask_day[11];
+    f64 snooze_ts;              // no asking before this (after "in an hour" or "delay until")
+    f64 countdown_ts;           // the "starts in 5 minutes" toast is up: writing starts at this moment
+    char countdown_day[11];
+    f64 last_game_ts;           // a game was running or the GPU was busy then
+    Notify notify;
 };
 
 void summary_start(App* app);
@@ -83,3 +116,11 @@ void reminder_answer(App* app, i64 id, const char* action);
 
 // For the CLI's check-ai: starts the AI, asks it one thing, stops it. Unlocked.
 bool summary_check_ai(App* app, char* said, i32 cap);
+
+// Notifications. Any thread; notify_show and notify_remove only queue the work.
+void notify_show(App* app, ToastJob* toast);
+void notify_remove(App* app, const char* tag);
+// A `lifelog:` link (a notification's button) in the running app, with the lock: does what it says.
+bool notify_open_link(App* app, Str link);
+// In a second copy of lifelog started with a link: hands it to the running one. False if none runs.
+bool notify_forward(const wchar_t* link);
