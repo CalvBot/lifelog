@@ -15,6 +15,7 @@ enum : UINT {
 };
 
 static const UINT TRAY_ID = 1;
+static const UINT TRAY_OPEN_WINDOW = WM_APP + 0x100;  // our own WM_APP_TRAY code: open the window
 static const UINT_PTR REDRAW_TIMER = 1;
 
 // ---------------------------------------------------------------------------------------------
@@ -372,7 +373,8 @@ static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         return 0;
     case WM_ACTIVATE:
         // The tray menu closes when it loses focus, like a menu.
-        if (s == &g_popup && LOWORD(wp) == WA_INACTIVE) s->closing = true;
+        // LIFELOG_POPUP_STAY keeps it open, for screenshots while testing.
+        if (s == &g_popup && LOWORD(wp) == WA_INACTIVE && !GetEnvironmentVariableW(L"LIFELOG_POPUP_STAY", 0, 0)) s->closing = true;
         s->frames_wanted = 2;
         return 0;
     case WM_CLOSE:
@@ -422,17 +424,44 @@ void tray_update(App* app) {
 static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_APP_TRAY) {
         switch (LOWORD(lp)) {
-        case NIN_SELECT:
-        case NIN_KEYSELECT:
+        case TRAY_OPEN_WINDOW:  // a second start of lifelog.exe
             app_lock(&g_app);
             ui_show(&g_app, g_app.ui.want_tab, 0);
             app_unlock(&g_app);
             return 0;
-        case WM_CONTEXTMENU:
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
             app_lock(&g_app);
             ui_popup(&g_app, POPUP_TRAY, 0);
             app_unlock(&g_app);
             return 0;
+        case WM_CONTEXTMENU: {
+            // A plain Windows menu, for when lifelog's own one is not wanted.
+            enum { CMD_PAUSE = 1, CMD_RESTART, CMD_QUIT };
+            app_lock(&g_app);
+            bool paused = g_app.capture.paused;
+            app_unlock(&g_app);
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, CMD_PAUSE, paused ? L"Resume" : L"Pause");
+            AppendMenuW(menu, MF_STRING, CMD_RESTART, L"Restart");
+            AppendMenuW(menu, MF_STRING, CMD_QUIT, L"Quit");
+            POINT at;
+            GetCursorPos(&at);
+            SetForegroundWindow(hwnd);  // so the menu closes when you click elsewhere
+            i32 cmd = (i32)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, 0, hwnd, 0);
+            DestroyMenu(menu);
+            app_lock(&g_app);
+            if (cmd == CMD_PAUSE) {
+                capture_set_paused(&g_app, !g_app.capture.paused);
+                tray_update(&g_app);
+            } else if (cmd == CMD_RESTART) {
+                app_restart(&g_app);
+            } else if (cmd == CMD_QUIT) {
+                app_quit(&g_app);
+            }
+            app_unlock(&g_app);
+            return 0;
+        }
         }
         return 0;
     }
@@ -449,7 +478,9 @@ static HWND tray_window() {
     wc.hInstance = GetModuleHandleW(0);
     wc.lpszClassName = L"lifelog.tray";
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, L"lifelog.tray", L"lifelog", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, wc.hInstance, 0);
+    // A hidden top-level window rather than a message-only one: TrackPopupMenu needs a window
+    // that can come to the foreground.
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"lifelog.tray", L"lifelog", WS_POPUP, 0, 0, 0, 0, 0, 0, wc.hInstance, 0);
     CHECK(hwnd, "the tray's message window (error %lu)", GetLastError());
     g_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
     ChangeWindowMessageFilterEx(hwnd, g_taskbar_created, MSGFLT_ALLOW, 0);
@@ -493,7 +524,7 @@ static void close_main_window() {
 static void open_popup(Popup which) {
     if (g_popup.hwnd) surface_close(&g_popup);
     f32 scale = GetDpiForSystem() / 96.0f;
-    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 260 * scale : 330 * scale);
+    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 260 * scale : 352 * scale);
     // Above the tray, at the cursor (where the icon was clicked).
     POINT at;
     GetCursorPos(&at);
@@ -664,7 +695,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (!single_instance()) {
         HWND other = FindWindowW(L"lifelog.tray", 0);
         if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
-        if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(NIN_SELECT, 0));
+        AllowSetForegroundWindow(ASFW_ANY);  // so its window comes to the front, not behind others
+        if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(TRAY_OPEN_WINDOW, 0));
         return 0;
     }
     i32 code = run_app();

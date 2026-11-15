@@ -351,6 +351,8 @@ bool config_save_value(const char* table, const char* key, Str value) {
     Str text = read_file(a, config_path());
     bool ok = false;
     if (text.ptr) {
+        // New lines use the file's own line ending, so a CRLF file stays CRLF.
+        const char* nl = str_find(text, str("\r\n")) >= 0 ? "\r\n" : "\n";
         // The table's lines: from after its header (or the top of the file) to the next header.
         i64 from = table[0] ? -1 : 0, to = text.len;
         for (i64 at = 0; at < text.len; at = line_end(text, at)) {
@@ -366,8 +368,8 @@ bool config_save_value(const char* table, const char* key, Str value) {
         bool found_table = from >= 0;
         Str out = {};
         if (!found_table) {
-            out = str_fmt(a, "%.*s%s\n[%s]\n%s = %.*s\n", (int)text.len, text.ptr,
-                          text.len && text.ptr[text.len - 1] != '\n' ? "\n" : "", table, key, (int)value.len, value.ptr);
+            out = str_fmt(a, "%.*s%s%s[%s]%s%s = %.*s%s", (int)text.len, text.ptr,
+                          text.len && text.ptr[text.len - 1] != '\n' ? nl : "", nl, table, nl, key, (int)value.len, value.ptr, nl);
         } else {
             // The key's line, if the table has it.
             i64 key_at = -1, key_end = -1, last_key_end = from;
@@ -390,7 +392,7 @@ bool config_save_value(const char* table, const char* key, Str value) {
                     break;
                 }
             }
-            Str line = str_fmt(a, "%s = %.*s\n", key, (int)value.len, value.ptr);
+            Str line = str_fmt(a, "%s = %.*s%s", key, (int)value.len, value.ptr, nl);
             i64 cut_from = key_at >= 0 ? key_at : last_key_end;
             i64 cut_to = key_at >= 0 ? key_end : last_key_end;
             out = str_fmt(a, "%.*s%.*s%.*s", (int)cut_from, text.ptr, (int)line.len, line.ptr, (int)(text.len - cut_to),
