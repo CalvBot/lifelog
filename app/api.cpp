@@ -497,16 +497,26 @@ static DWORD WINAPI api_main(void* param) {
         ERR("API: Winsock did not start");
         return 0;
     }
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    BOOL exclusive = TRUE;  // no other program may share the port
-    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&exclusive, sizeof(exclusive));
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (s == INVALID_SOCKET || bind(s, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(s, 16) != 0) {
-        ERR("API port %u: could not listen (error %d); the CLI and the Stream Deck cannot reach lifelog", port, WSAGetLastError());
+    // The port can stay busy for a few seconds after a restart or recent connections, so try
+    // for up to 30 s before giving up.
+    SOCKET s = INVALID_SOCKET;
+    i32 error = 0;
+    for (i32 attempt = 0; attempt < 30; attempt++) {
+        s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        BOOL exclusive = TRUE;  // no other program may share the port
+        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&exclusive, sizeof(exclusive));
+        if (s != INVALID_SOCKET && bind(s, (sockaddr*)&addr, sizeof(addr)) == 0 && listen(s, 16) == 0) break;
+        error = WSAGetLastError();
         if (s != INVALID_SOCKET) closesocket(s);
+        s = INVALID_SOCKET;
+        if (!sleep_unless_stopping(app, 1000)) return 0;
+    }
+    if (s == INVALID_SOCKET) {
+        ERR("API port %u: could not listen (error %d); the CLI and the Stream Deck cannot reach lifelog", port, error);
         return 0;
     }
     LOG("API on http://127.0.0.1:%u", port);

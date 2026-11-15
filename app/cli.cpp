@@ -20,6 +20,7 @@ static const char* CLI_USAGE =
     "  lifelog config          print the config file path\n";
 
 static i32 run_app();  // main.cpp, after this file in the unity build
+static bool single_instance();  // main.cpp
 
 // The App for commands that work without the running copy (clip, check-ai): only its config.
 static App g_cli;
@@ -105,16 +106,7 @@ static BOOL WINAPI cli_ctrl(DWORD) {
 }
 
 static i32 cli_run() {
-    // One lifelog at a time, as in wWinMain (the same mutex name).
-    wchar_t mutex_name[96] = L"Local\\lifelog.cpp.running";
-    wchar_t test_config[MAX_PATH];
-    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
-        u32 hash = 2166136261u;
-        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
-        swprintf(mutex_name, COUNT(mutex_name), L"Local\\lifelog.cpp.test.%08x", hash);
-    }
-    HANDLE single = CreateMutexW(0, TRUE, mutex_name);
-    if (single && GetLastError() == ERROR_ALREADY_EXISTS) return cli_error("lifelog is already running");
+    if (!single_instance()) return cli_error("lifelog is already running");
     g_cli_main_thread = GetCurrentThreadId();
     SetConsoleCtrlHandler(cli_ctrl, TRUE);
     // The log already goes to stderr as well as the file, so it shows in this terminal.

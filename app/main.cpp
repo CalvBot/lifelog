@@ -620,13 +620,37 @@ static i32 run_app() {
         STARTUPINFOW si = {sizeof(si)};
         PROCESS_INFORMATION pi = {};
         wchar_t cmd[MAX_PATH + 16];
-        swprintf(cmd, COUNT(cmd), L"\"%ls\" --tray", exe);
+        // The new copy waits for this one to exit before it takes the single-instance mutex.
+        swprintf(cmd, COUNT(cmd), L"\"%ls\" --tray --after %lu", exe, GetCurrentProcessId());
         if (CreateProcessW(exe, cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi)) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
         }
     }
     return 0;
+}
+
+// Takes the one-lifelog-at-a-time mutex; false if another copy holds it. A test copy
+// (LIFELOG_CONFIG set) is one per config, so several can run beside the real one. After a
+// restart (--after PID) it first waits up to 30 s for the old copy to exit.
+static bool single_instance() {
+    for (i32 i = 1; i + 1 < __argc; i++) {
+        if (wcscmp(__wargv[i], L"--after") != 0) continue;
+        HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)wcstoul(__wargv[i + 1], 0, 10));
+        if (old) {
+            WaitForSingleObject(old, 30000);
+            CloseHandle(old);
+        }
+    }
+    wchar_t name[96] = L"Local\\lifelog.cpp.running";
+    wchar_t test_config[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
+        u32 hash = 2166136261u;
+        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
+        swprintf(name, COUNT(name), L"Local\\lifelog.cpp.test.%08x", hash);
+    }
+    HANDLE single = CreateMutexW(0, TRUE, name);  // held until the process exits
+    return !(single && GetLastError() == ERROR_ALREADY_EXISTS);
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
@@ -636,17 +660,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (__argc > 1 && wcsncmp(__wargv[1], L"lifelog", 7) == 0) return notify_forward(__wargv[1]) ? 0 : 1;
     // `lifelog.exe clip 15m` and the other commands: the CLI (options start with "-").
     if (__argc > 1 && __wargv[1][0] != L'-') return cli_main(__argc, __wargv);
-    // One lifelog at a time: a second start opens the first one's window instead. A test copy
-    // (LIFELOG_CONFIG set) is one per config, so several can run beside the real one.
-    wchar_t mutex_name[96] = L"Local\\lifelog.cpp.running";
-    wchar_t test_config[MAX_PATH];
-    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
-        u32 hash = 2166136261u;
-        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
-        swprintf(mutex_name, COUNT(mutex_name), L"Local\\lifelog.cpp.test.%08x", hash);
-    }
-    HANDLE single = CreateMutexW(0, TRUE, mutex_name);
-    if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
+    // One lifelog at a time: a second start opens the first one's window instead.
+    if (!single_instance()) {
         HWND other = FindWindowW(L"lifelog.tray", 0);
         if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
         if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(NIN_SELECT, 0));
