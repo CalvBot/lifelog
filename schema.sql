@@ -40,9 +40,10 @@ CREATE TABLE IF NOT EXISTS files (
     id    INTEGER PRIMARY KEY,
     ts    REAL NOT NULL,      -- unix seconds: the moment it was pasted
     name  TEXT NOT NULL,      -- original file name
-    path  TEXT NOT NULL,      -- 'YYYY-MM-DD/<file>' under <data_dir>/files
-    kind  TEXT NOT NULL,      -- 'image' | 'video' | 'audio' | 'text' | 'file'
-    size  INTEGER NOT NULL
+    path  TEXT NOT NULL,      -- 'YYYY-MM-DD/<file>' under <data_dir>/files; for a link, the full path or URL
+    kind  TEXT NOT NULL,      -- 'image' | 'video' | 'audio' | 'text' | 'file' | 'folder' | 'url'
+    size  INTEGER NOT NULL,
+    link  INTEGER NOT NULL DEFAULT 0  -- 1: points at the original (a pasted path or URL), no copy kept
 );
 CREATE INDEX IF NOT EXISTS files_ts ON files (ts);
 

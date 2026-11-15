@@ -52,7 +52,8 @@ Tray icon (a speech bubble with sound bars): blue = listening, grey with a pause
   - **Copy the last** few minutes or hours (type a number, pick min or h), previewing where the copy starts;
     then **File** (a .txt on the clipboard, ready to paste), **Text** or **Audio** (a .wav).
   - **Timeline**, **Paste here** (saves whatever is on the clipboard — files, an image, or text — at this moment
-    in the timeline, under `files/` in the data folder), **Settings**, **Restart**, **Quit**.
+    in the timeline, under `files/` in the data folder; copied text that is a file or folder path or a web address
+    becomes a link instead, with no copy kept), **Settings**, **Restart**, **Quit**.
 - **Right click**: Pause/Resume, Restart, Quit.
 - **Timeline** tab: one page per day (a day runs 04:00 to 04:00), oldest at the top. Today opens at the bottom and new
   lines write themselves in as they are transcribed. ◀ ▶ (or the arrow keys) go a day back or forward; the day's name
