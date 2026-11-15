@@ -1,4 +1,23 @@
-// apps.cpp: see apps.h. The scan of installed apps, the process watcher and icons are to come.
+// apps.cpp: see apps.h. Two threads:
+//   - "apps-watch", every second: which processes run, which game runs, where each exe lives, the
+//     icons of apps that are open, and every minute or so the lines heard per app;
+//   - "apps-scan", at start and every six hours: the Start menu and the game launchers' records.
+// Both do their slow work unlocked and store the result under the lock.
+
+#include <tlhelp32.h>
+#include <shobjidl.h>
+
+#pragma comment(lib, "uuid.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "version.lib")
+
+static const char* OWN_EXES[] = {"lifelog.exe", "lifelogw.exe"};
+
+bool is_own_exe(Str exe) {
+    for (i32 i = 0; i < COUNT(OWN_EXES); i++)
+        if (str_eq_nocase(exe, str(OWN_EXES[i]))) return true;
+    return false;
+}
 
 AppInfo* app_find(App* app, Str exe) {
     for (i32 i = 0; i < app->apps.list.count; i++)
@@ -13,7 +32,15 @@ AppInfo* app_get(App* app, Str exe) {
     Mark m = mark(scratch());
     SET(a->exe, str_lower(scratch(), exe));
     rewind(m);
+    const char* path = app_path(app, exe);
+    if (path) SET(a->path, str(path));
     return a;
+}
+
+const char* app_path(App* app, Str exe) {
+    for (i32 i = 0; i < app->apps.paths.count; i++)
+        if (str_eq_nocase(str(app->apps.paths[i].exe), exe)) return app->apps.paths[i].path;
+    return 0;
 }
 
 void apps_from_config(App* app) {
@@ -42,6 +69,956 @@ void app_set_game(App* app, Str exe, GameMark g) {
     config_save_names("processing", "not_games", &c->processing.not_games);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Processes and windows
+
+Procs processes(Arena* a) {
+    List<Proc> list = {};
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W e = {sizeof(e)};
+        for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e)) {
+            Proc* p = list_push(&list);
+            p->pid = e.th32ProcessID;
+            p->parent = e.th32ParentProcessID;
+            Mark m = mark(scratch());
+            SET(p->exe, str_lower(scratch(), narrow(scratch(), e.szExeFile)));
+            rewind(m);
+        }
+        CloseHandle(snap);
+    }
+    Procs out = {PUSH_ARRAY(a, Proc, list.count), list.count};
+    if (list.count) memcpy(out.items, list.items, sizeof(Proc) * list.count);
+    list_free(&list);
+    return out;
+}
+
+Proc* proc_find(Procs* p, u32 pid) {
+    for (i32 i = 0; i < p->count; i++)
+        if (p->items[i].pid == pid) return &p->items[i];
+    return 0;
+}
+
+u32 proc_root(Procs* p, u32 pid) {
+    Proc* at = proc_find(p, pid);
+    if (!at) return pid;
+    for (i32 i = 0; i < 32; i++) {
+        Proc* parent = proc_find(p, at->parent);
+        if (!parent || parent == at || strcmp(parent->exe, at->exe) != 0) break;
+        at = parent;
+    }
+    return at->pid;
+}
+
+struct WinsBuild {
+    List<Win> list;
+    HWND front;
+    bool front_seen;
+};
+
+static BOOL CALLBACK each_window(HWND hwnd, LPARAM lp) {
+    WinsBuild* b = (WinsBuild*)lp;
+    // Tool windows are overlays and helpers, not something one thinks of as an app.
+    bool tool = (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0;
+    if (!IsWindowVisible(hwnd) || tool) return TRUE;
+    wchar_t buf[512];
+    int len = GetWindowTextW(hwnd, buf, COUNT(buf));
+    if (len <= 0) return TRUE;
+    Win w = {};
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    w.pid = pid;
+    Mark m = mark(scratch());
+    SET(w.title, narrow(scratch(), buf, len));
+    rewind(m);
+    if (hwnd == b->front) {
+        list_push(&b->list);
+        memmove(&b->list.items[1], &b->list.items[0], sizeof(Win) * (b->list.count - 1));
+        b->list.items[0] = w;
+    } else {
+        list_push(&b->list, w);
+    }
+    return TRUE;
+}
+
+Wins windows_now(Arena* a) {
+    WinsBuild b = {};
+    b.front = GetForegroundWindow();
+    EnumWindows(each_window, (LPARAM)&b);
+    Wins out = {PUSH_ARRAY(a, Win, b.list.count), b.list.count};
+    if (b.list.count) memcpy(out.items, b.list.items, sizeof(Win) * b.list.count);
+    list_free(&b.list);
+    return out;
+}
+
+Str title_for(Str exe, Procs* p, Wins* w) {
+    for (i32 i = 0; i < w->count; i++) {
+        Proc* proc = proc_find(p, w->items[i].pid);
+        if (proc && str_eq_nocase(str(proc->exe), exe)) return str(w->items[i].title);
+    }
+    return {"", 0};
+}
+
+// ---------------------------------------------------------------------------------------------
+// The cache: icons\<exe>.rgba (32×32 RGBA, as the old lifelog kept them) and paths.txt
+// ("exe<TAB>path" a line). Under %LOCALAPPDATA%\lifelog, or beside the config when LIFELOG_CONFIG
+// points elsewhere, so a test run keeps to its own folder.
+
+static const wchar_t* cache_dir() {
+    static wchar_t buf[MAX_PATH];
+    if (buf[0]) return buf;
+    wchar_t env[8];
+    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", env, COUNT(env)) == 0) {
+        swprintf(buf, MAX_PATH, L"%s", local_dir());
+    } else {
+        swprintf(buf, MAX_PATH, L"%s", config_path());
+        wchar_t* slash = wcsrchr(buf, L'\\');
+        if (slash) *slash = 0;
+    }
+    return buf;
+}
+
+static void icon_file(Str exe, wchar_t out[MAX_PATH]) {
+    char safe[81];
+    i32 n = 0;
+    for (i64 i = 0; i < exe.len && n < 80; i++) {
+        char c = exe.ptr[i];
+        safe[n++] = (isalnum((u8)c) || c == '-' || c == '_' || c == '.' || (u8)c >= 0x80) ? c : '_';
+    }
+    safe[n] = 0;
+    Mark m = mark(scratch());
+    swprintf(out, MAX_PATH, L"%s\\icons\\%s.rgba", cache_dir(), wide(scratch(), str(safe)));
+    rewind(m);
+}
+
+static void paths_file(wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%s\\paths.txt", cache_dir()); }
+
+// Adds lines ("exe\tpath\n" each) to paths.txt.
+static void paths_append(Str lines) {
+    if (!lines.len) return;
+    wchar_t file[MAX_PATH];
+    paths_file(file);
+    HANDLE f = CreateFileW(file, FILE_APPEND_DATA, FILE_SHARE_READ, 0, OPEN_ALWAYS, 0, 0);
+    if (f == INVALID_HANDLE_VALUE) {
+        WARN("apps: could not add to paths.txt (error %lu)", GetLastError());
+        return;
+    }
+    DWORD wrote = 0;
+    WriteFile(f, lines.ptr, (DWORD)lines.len, &wrote, 0);
+    CloseHandle(f);
+}
+
+// Remembers where `exe` lives, and returns true if that was new. With the lock.
+static bool learn_path(App* app, Str exe, Str path) {
+    if (!exe.len || !path.len || str_find(exe, str("\t")) >= 0 || app_path(app, exe)) return false;
+    ExePath* p = list_push(&app->apps.paths);
+    Mark m = mark(scratch());
+    SET(p->exe, str_lower(scratch(), exe));
+    rewind(m);
+    SET(p->path, path);
+    AppInfo* a = app_find(app, exe);
+    if (a && !a->path[0]) SET(a->path, path);
+    return true;
+}
+
+static void paths_load(App* app) {
+    wchar_t file[MAX_PATH];
+    paths_file(file);
+    Mark m = mark(scratch());
+    Str text = read_file(scratch(), file);
+    if (!text.ptr) {
+        rewind(m);
+        return;
+    }
+    app_lock(app);
+    i32 n = 0;
+    for (i64 at = 0; at < text.len;) {
+        i64 end = at;
+        while (end < text.len && text.ptr[end] != '\n') end++;
+        Str line = str_trim(str_sub(text, at, end - at));
+        i64 tab = str_find(line, str("\t"));
+        if (tab > 0) n += learn_path(app, str_sub(line, 0, tab), str_trim(str_sub(line, tab + 1)));
+        at = end + 1;
+    }
+    app_unlock(app);
+    rewind(m);
+    LOG("apps: %d exe paths from paths.txt", n);
+}
+
+// The shell's 32×32 icon of a file as RGBA, into `out` (4096 bytes). False if it has none.
+static bool extract_icon(const wchar_t* path, u8* out) {
+    const i32 N = 32;
+    SHFILEINFOW info = {};
+    if (!SHGetFileInfoW(path, 0, &info, sizeof(info), SHGFI_ICON | SHGFI_LARGEICON) || !info.hIcon) return false;
+    ICONINFO icon = {};
+    BOOL got = GetIconInfo(info.hIcon, &icon);
+    DestroyIcon(info.hIcon);
+    if (!got) return false;
+    HDC dc = GetDC(0);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = N;
+    bmi.bmiHeader.biHeight = -N;  // top row first
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    u8 mask[N * N * 4];
+    bool colour = icon.hbmColor && GetDIBits(dc, icon.hbmColor, 0, N, out, &bmi, DIB_RGB_COLORS) == N;
+    bool have_mask = icon.hbmMask && GetDIBits(dc, icon.hbmMask, 0, N, mask, &bmi, DIB_RGB_COLORS) == N;
+    ReleaseDC(0, dc);
+    if (icon.hbmColor) DeleteObject(icon.hbmColor);
+    if (icon.hbmMask) DeleteObject(icon.hbmMask);
+    if (!colour) return false;
+    // Old icons have no alpha channel: take it from the mask (black = opaque).
+    bool any_alpha = false;
+    for (i32 i = 0; i < N * N; i++) any_alpha |= out[i * 4 + 3] != 0;
+    if (!any_alpha) {
+        if (!have_mask) return false;
+        for (i32 i = 0; i < N * N; i++) out[i * 4 + 3] = mask[i * 4] == 0 ? 255 : 0;
+    }
+    for (i32 i = 0; i < N * N; i++) {  // BGRA to RGBA
+        u8 t = out[i * 4];
+        out[i * 4] = out[i * 4 + 2];
+        out[i * 4 + 2] = t;
+    }
+    return true;
+}
+
+// An exe's own description ("Discord", "Mozilla Firefox") from its version info, or "".
+static Str exe_description(Arena* a, const wchar_t* path) {
+    DWORD ignored = 0;
+    DWORD size = GetFileVersionInfoSizeW(path, &ignored);
+    if (!size) return {"", 0};
+    Mark m = mark(scratch());
+    void* data = arena_push(scratch(), size);
+    Str out = {"", 0};
+    struct Lang {
+        WORD lang, page;
+    }* langs = 0;
+    UINT len = 0;
+    if (GetFileVersionInfoW(path, 0, size, data) &&
+        VerQueryValueW(data, L"\\VarFileInfo\\Translation", (void**)&langs, &len) && len >= sizeof(Lang)) {
+        wchar_t key[64];
+        swprintf(key, COUNT(key), L"\\StringFileInfo\\%04x%04x\\FileDescription", langs[0].lang, langs[0].page);
+        wchar_t* text = 0;
+        UINT n = 0;
+        if (VerQueryValueW(data, key, (void**)&text, &n) && n > 1) out = str_trim(narrow(a, text));
+    }
+    rewind(m);
+    return out;
+}
+
+struct IconJob {
+    char exe[64];
+    char path[MAX_PATH];
+};
+
+// Finds icons (from the cache, or from the exe and then cached) and missing names for `jobs`,
+// unlocked, and stores each under the lock.
+static void icons_fetch(App* app, IconJob* jobs, i32 count) {
+    for (i32 i = 0; i < count && !stopping(app); i++) {
+        Mark m = mark(scratch());
+        Str exe = str(jobs[i].exe);
+        wchar_t file[MAX_PATH];
+        icon_file(exe, file);
+        u8* rgba = (u8*)malloc(32 * 32 * 4);
+        CHECK(rgba, "memory for an icon");
+        Str cached = read_file(scratch(), file);
+        bool ok = cached.ptr && cached.len == 32 * 32 * 4;
+        if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
+        wchar_t* path = jobs[i].path[0] ? wide(scratch(), str(jobs[i].path)) : 0;
+        if (!ok && path && extract_icon(path, rgba)) {
+            ok = true;
+            wchar_t dir[MAX_PATH];
+            swprintf(dir, MAX_PATH, L"%s\\icons", cache_dir());
+            CreateDirectoryW(dir, 0);
+            if (!write_file(file, {(const char*)rgba, 32 * 32 * 4})) WARN("apps: could not cache the icon of %s", jobs[i].exe);
+        }
+        Str name = path ? exe_description(scratch(), path) : Str{"", 0};
+        if (!ok) {
+            free(rgba);
+            rgba = 0;
+        }
+        app_lock(app);
+        AppInfo* a = app_find(app, exe);
+        bool found = a != 0;
+        if (a) {
+            if (rgba && !a->icon) {
+                a->icon = rgba;
+                a->icon_version++;
+                rgba = 0;
+            }
+            if (!a->name[0] && name.len) SET(a->name, name);
+        }
+        app_unlock(app);
+        free(rgba);
+        rewind(m);
+        if (found) wake_window(app);
+    }
+}
+
+// Icons for apps that have none yet and were not tried; with `only_running`, just the ones open
+// now. Takes the lock itself.
+static void icons_for(App* app, bool only_running) {
+    List<IconJob> jobs = {};
+    app_lock(app);
+    for (i32 i = 0; i < app->apps.list.count; i++) {
+        AppInfo* a = &app->apps.list[i];
+        if (a->icon || a->icon_tried) continue;
+        if (only_running && !a->running && !a->playing) continue;
+        a->icon_tried = true;
+        IconJob* j = list_push(&jobs);
+        SET(j->exe, str(a->exe));
+        SET(j->path, str(a->path));
+    }
+    app_unlock(app);
+    icons_fetch(app, jobs.items, jobs.count);
+    list_free(&jobs);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The process watcher
+
+// Lines heard per app, from the database, into the list.
+static void lines_refresh(App* app, sqlite3* db) {
+    Mark m = mark(scratch());
+    Slice<SpeakerCount> s = db_speakers(db, scratch());
+    app_lock(app);
+    for (i32 i = 0; i < s.count; i++) {
+        Str who = s.items[i].speaker;
+        // Speakers are "me", people in a call, or the exe of an app.
+        if (!str_ends(str_lower(scratch(), who), str(".exe")) || is_own_exe(who)) continue;
+        AppInfo* a = app_get(app, who);
+        a->lines = s.items[i].lines;
+        a->last_ts = s.items[i].last_ts;
+    }
+    app_unlock(app);
+    rewind(m);
+    wake_window(app);
+}
+
+static DWORD WINAPI apps_watch_main(void* p) {
+    App* app = (App*)p;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);  // the shell's icons want it
+    paths_load(app);
+    Names seen = {};  // exes whose path was looked up already (found or not), this run
+    sqlite3* db = 0;
+    u64 lines_version = (u64)-1;
+    f64 lines_ts = 0;
+
+    while (!stopping(app)) {
+        Mark m = mark(scratch());
+        Procs procs = processes(scratch());
+
+        // Where each exe not seen before lives. Elevated processes cannot be asked; they are
+        // tried once a run.
+        List<Proc> fresh = {};
+        for (i32 i = 0; i < procs.count; i++) {
+            Proc* pr = &procs.items[i];
+            if (pr->pid == 0 || names_has(&seen, str(pr->exe))) continue;
+            names_set(&seen, str(pr->exe), true);
+            list_push(&fresh, *pr);
+        }
+        if (fresh.count) {
+            app_lock(app);
+            for (i32 i = 0; i < fresh.count; i++)
+                if (app_path(app, str(fresh[i].exe))) list_remove(&fresh, i--);
+            app_unlock(app);
+        }
+        Str lines = {"", 0};
+        for (i32 i = 0; i < fresh.count; i++) {
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, fresh[i].pid);
+            if (!h) continue;
+            wchar_t buf[1024];
+            DWORD len = COUNT(buf);
+            BOOL ok = QueryFullProcessImageNameW(h, 0, buf, &len);
+            CloseHandle(h);
+            if (!ok) continue;
+            Str path = narrow(scratch(), buf, len);
+            app_lock(app);
+            bool added = learn_path(app, str(fresh[i].exe), path);
+            app_unlock(app);
+            if (added) lines = str_fmt(scratch(), "%s%s\t%s\n", lines.ptr, fresh[i].exe, path.ptr);
+        }
+        list_free(&fresh);
+        paths_append(lines);
+
+        // Which apps run, and whether a game does. A game counts even when it is excluded.
+        bool changed = false;
+        app_lock(app);
+        const char* game = "";
+        for (i32 i = 0; i < app->apps.list.count; i++) {
+            AppInfo* a = &app->apps.list[i];
+            bool running = false;
+            for (i32 j = 0; j < procs.count && !running; j++) running = strcmp(procs.items[j].exe, a->exe) == 0;
+            changed |= running != a->running;
+            a->running = running;
+            if (running && a->game == GAME_YES && !game[0]) game = a->exe;
+        }
+        if (strcmp(game, app->apps.game_running) != 0) {
+            if (game[0]) LOG("%s is running: transcription waits, audio keeps queueing", game);
+            else LOG("no game running any more");
+            SET(app->apps.game_running, str(game));
+            changed = true;
+        }
+        u64 version = app->worker.lines_version;
+        bool db_ready = app->storage.ready;
+        app_unlock(app);
+        if (changed) wake_window(app);
+
+        icons_for(app, true);
+
+        // Lines heard per app: when the worker wrote some, at most once a minute.
+        f64 now = now_ts();
+        if (db_ready && version != lines_version && now - lines_ts >= 60) {
+            if (!db) db = db_open(app);  // reads only data_dir, which does not change while running
+            if (db) {
+                lines_refresh(app, db);
+                lines_version = version;
+                lines_ts = now;
+            }
+        }
+        rewind(m);
+        if (!sleep_unless_stopping(app, 1000)) break;
+    }
+    if (db) sqlite3_close(db);
+    list_free(&seen);
+    CoUninitialize();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The scan: what is installed. Games are found through the launchers' own records and marked as
+// games (unless dismissed as "not a game" once, which sticks); apps are the Start menu's shortcuts,
+// so the Apps list can show programs before they ever play.
+
+struct Found {
+    char name[128];
+    char exe[64];
+    char path[MAX_PATH];
+    char game[128];  // the game it belongs to, "" for a Start menu app
+};
+
+struct Scan {
+    List<Found> found;
+    Names game_names;  // lower case, so a game listed by two launchers counts once
+};
+
+// ---- Registry
+
+static List<Str> reg_subkeys(Arena* a, HKEY root, const wchar_t* path) {
+    List<Str> out = {};
+    HKEY key = 0;
+    if (RegOpenKeyExW(root, path, 0, KEY_READ, &key) != ERROR_SUCCESS) return out;
+    for (DWORD i = 0;; i++) {
+        wchar_t buf[256];
+        DWORD len = COUNT(buf);
+        if (RegEnumKeyExW(key, i, buf, &len, 0, 0, 0, 0) != ERROR_SUCCESS) break;
+        list_push(&out, narrow(a, buf, len));
+    }
+    RegCloseKey(key);
+    return out;
+}
+
+static Str reg_string(Arena* a, HKEY root, Str path, const wchar_t* value) {
+    wchar_t buf[2048];
+    DWORD bytes = sizeof(buf);
+    Mark m = mark(scratch());
+    LSTATUS r = RegGetValueW(root, wide(scratch(), path), value, RRF_RT_REG_SZ, 0, buf, &bytes);
+    rewind(m);
+    if (r != ERROR_SUCCESS) return {};
+    i64 len = bytes / 2;
+    while (len > 0 && buf[len - 1] == 0) len--;
+    Str s = str_trim(narrow(a, buf, len));
+    return s.len ? s : Str{};
+}
+
+static bool file_exists(Str path) {
+    Mark m = mark(scratch());
+    DWORD at = GetFileAttributesW(wide(scratch(), path));
+    rewind(m);
+    return at != INVALID_FILE_ATTRIBUTES;
+}
+
+static Str file_name(Str path) {
+    i64 i = path.len;
+    while (i > 0 && path.ptr[i - 1] != '\\' && path.ptr[i - 1] != '/') i--;
+    return str_sub(path, i);
+}
+
+static Str env(Arena* a, const wchar_t* name) {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(name, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return narrow(a, buf, n);
+}
+
+static Str slashes_to_back(Str s) {
+    for (i64 i = 0; i < s.len; i++)
+        if (s.ptr[i] == '/') ((char*)s.ptr)[i] = '\\';
+    return s;
+}
+
+// ---- A folder's listing
+
+struct Entry {
+    Str name;   // as on disk
+    bool dir;
+    u64 size;
+};
+
+static List<Entry> list_dir(Arena* a, Str dir) {
+    List<Entry> out = {};
+    Mark m = mark(scratch());
+    wchar_t* pattern = wide(scratch(), str_fmt(scratch(), "%.*s\\*", (int)dir.len, dir.ptr));
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &fd, FindExSearchNameMatch, 0, FIND_FIRST_EX_LARGE_FETCH);
+    rewind(m);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        // Links and junctions are skipped, as the old scan did (it did not follow them).
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        Entry e = {};
+        e.name = narrow(a, fd.cFileName);
+        e.dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        e.size = ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        list_push(&out, e);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+
+static Str join(Arena* a, Str dir, Str name) { return str_fmt(a, "%.*s\\%.*s", (int)dir.len, dir.ptr, (int)name.len, name.ptr); }
+
+static bool has_any(Str s, const char** words, i32 n) {
+    for (i32 i = 0; i < n; i++)
+        if (str_find(s, str(words[i])) >= 0) return true;
+    return false;
+}
+
+// ---- Finding a game's exes
+
+struct GameExe {
+    Str exe;  // lower case
+    Str path;
+    u64 size;
+};
+
+// The exes of a game's folder that are not installers, crash reporters, redistributables and
+// such: the biggest few, which include the game itself and any launcher it starts from.
+static List<GameExe> game_exes(Arena* a, Str dir) {
+    static const char* SKIP_DIRS[] = {
+        "redist", "_commonredist", "commonredist", "directx", "vcredist", "dotnet", "support", "installer",
+        "__installer", "easyanticheat", "battleye", "engine", "prereqs", "_redist",
+    };
+    // Helpers that ship next to games but aren't the game (launchers would mark idle clients as games).
+    static const char* SKIP_WORDS[] = {
+        "unins", "crash", "setup", "redist", "report", "install", "update", "helper", "prereq", "dxsetup", "dotnet",
+        "cleanup", "service", "overlay", "bugsplat", "handler", "easyanticheat", "beservice", "battleye", "cefprocess",
+        "webhelper", "notification", "launcher", "error", "diag", "console", "browser", "renderinfo", "tpprocess",
+        "leagueclient", "editor",
+    };
+    struct Todo {
+        Str dir;
+        i32 depth;
+    };
+    List<Todo> stack = {};
+    List<GameExe> found = {};
+    list_push(&stack, {dir, 0});
+    i32 seen = 0;
+    while (stack.count && seen <= 20000) {
+        Todo t = stack.items[--stack.count];
+        List<Entry> entries = list_dir(a, t.dir);
+        for (i32 i = 0; i < entries.count && ++seen <= 20000; i++) {
+            Entry* e = &entries.items[i];
+            Str name = str_lower(a, e->name);
+            if (e->dir) {
+                bool skip = false;
+                for (i32 k = 0; k < COUNT(SKIP_DIRS) && !skip; k++) skip = str_eq(name, str(SKIP_DIRS[k]));
+                if (t.depth < 4 && !skip) list_push(&stack, {join(a, t.dir, e->name), t.depth + 1});
+            } else if (str_ends(name, str(".exe")) && !has_any(name, SKIP_WORDS, COUNT(SKIP_WORDS))) {
+                list_push(&found, {name, join(a, t.dir, e->name), e->size});
+            }
+        }
+        list_free(&entries);
+    }
+    list_free(&stack);
+    // Biggest first, one per name, four at most.
+    for (i32 i = 1; i < found.count; i++)
+        for (i32 j = i; j > 0 && found.items[j].size > found.items[j - 1].size; j--) {
+            GameExe t = found.items[j];
+            found.items[j] = found.items[j - 1];
+            found.items[j - 1] = t;
+        }
+    List<GameExe> out = {};
+    for (i32 i = 0; i < found.count && out.count < 4; i++) {
+        bool dup = false;
+        for (i32 k = 0; k < out.count && !dup; k++) dup = str_eq(out.items[k].exe, found.items[i].exe);
+        if (!dup) list_push(&out, found.items[i]);
+    }
+    list_free(&found);
+    return out;
+}
+
+static void add_game(Scan* scan, Arena* a, Str name, Str dir, Str extra) {
+    if (!name.len || !dir.len) return;
+    List<GameExe> exes = game_exes(a, dir);
+    if (extra.len && file_exists(extra)) {
+        Str exe = str_lower(a, file_name(extra));
+        bool dup = false;
+        for (i32 k = 0; k < exes.count && !dup; k++) dup = str_eq(exes.items[k].exe, exe);
+        if (exe.len && !dup) {
+            list_push(&exes);
+            memmove(&exes.items[1], &exes.items[0], sizeof(GameExe) * (exes.count - 1));
+            exes.items[0] = {exe, extra, 0};
+        }
+    }
+    if (exes.count && !names_has(&scan->game_names, name)) {
+        names_set(&scan->game_names, name, true);
+        for (i32 i = 0; i < exes.count; i++) {
+            Found* f = list_push(&scan->found);
+            SET(f->name, name);
+            SET(f->game, name);
+            SET(f->exe, exes.items[i].exe);
+            SET(f->path, exes.items[i].path);
+        }
+    }
+    list_free(&exes);
+}
+
+// ---- Steam: libraryfolders.vdf and appmanifest_*.acf are Valve KeyValues files
+
+// The quoted strings of a KeyValues file, in order.
+static List<Str> vdf_tokens(Arena* a, Str text) {
+    List<Str> out = {};
+    for (i64 i = 0; i < text.len; i++) {
+        if (text.ptr[i] != '"') continue;
+        i64 end = i + 1;
+        while (end < text.len && text.ptr[end] != '"') end += text.ptr[end] == '\\' ? 2 : 1;
+        char* s = PUSH_ARRAY(a, char, end - i + 1);
+        i64 n = 0;
+        for (i++; i < text.len && text.ptr[i] != '"'; i++) {
+            if (text.ptr[i] == '\\' && i + 1 < text.len) i++;
+            s[n++] = text.ptr[i];
+        }
+        list_push(&out, {s, n});
+    }
+    return out;
+}
+
+static Str vdf_value(List<Str>* tokens, const char* key) {
+    for (i32 i = 0; i + 1 < tokens->count; i++)
+        if (str_eq_nocase(tokens->items[i], str(key))) return tokens->items[i + 1];
+    return {};
+}
+
+static void steam(Scan* scan, Arena* a) {
+    Str root = reg_string(a, HKEY_CURRENT_USER, str("Software\\Valve\\Steam"), L"SteamPath");
+    if (!root.len) return;
+    root = slashes_to_back(root);
+    List<Str> libraries = {};
+    list_push(&libraries, root);
+    Mark m = mark(scratch());
+    Str text = read_file(a, wide(scratch(), join(scratch(), root, str("steamapps\\libraryfolders.vdf"))));
+    rewind(m);
+    if (text.ptr) {
+        List<Str> tokens = vdf_tokens(a, text);
+        for (i32 i = 0; i + 1 < tokens.count; i++) {
+            if (!str_eq_nocase(tokens.items[i], str("path"))) continue;
+            bool have = false;
+            for (i32 k = 0; k < libraries.count && !have; k++) have = str_eq_nocase(libraries.items[k], tokens.items[i + 1]);
+            if (!have) list_push(&libraries, tokens.items[i + 1]);
+        }
+        list_free(&tokens);
+    }
+    // Steam's own redistributables and tools that are not games.
+    static const char* NOT_GAMES[] = {"228980", "1070560", "1391110"};
+    for (i32 l = 0; l < libraries.count; l++) {
+        Str apps = join(a, libraries.items[l], str("steamapps"));
+        List<Entry> entries = list_dir(a, apps);
+        for (i32 i = 0; i < entries.count; i++) {
+            Str name = entries.items[i].name;
+            if (!str_starts(name, str("appmanifest_")) || !str_ends(name, str(".acf"))) continue;
+            Mark mm = mark(scratch());
+            Str acf = read_file(a, wide(scratch(), join(scratch(), apps, name)));
+            rewind(mm);
+            if (!acf.ptr) continue;
+            List<Str> tokens = vdf_tokens(a, acf);
+            Str title = vdf_value(&tokens, "name"), dir = vdf_value(&tokens, "installdir"), id = vdf_value(&tokens, "appid");
+            bool skip = !title.len || !dir.len || str_find(title, str("Proton")) >= 0;
+            for (i32 k = 0; k < COUNT(NOT_GAMES) && !skip; k++) skip = str_eq(id, str(NOT_GAMES[k]));
+            if (!skip) add_game(scan, a, title, join(a, join(a, apps, str("common")), dir), {});
+            list_free(&tokens);
+        }
+        list_free(&entries);
+    }
+    list_free(&libraries);
+}
+
+// ---- Epic: one JSON manifest per game
+
+// The string value of `"key": "..."` in a JSON text, unescaped (simple escapes only), or empty.
+static Str json_string(Arena* a, Str text, const char* key) {
+    Str quoted = str_fmt(scratch(), "\"%s\"", key);
+    i64 at = str_find(text, quoted);
+    if (at < 0) return {};
+    i64 i = at + quoted.len;
+    while (i < text.len && (text.ptr[i] == ' ' || text.ptr[i] == '\t' || text.ptr[i] == '\r' || text.ptr[i] == '\n' || text.ptr[i] == ':')) i++;
+    if (i >= text.len || text.ptr[i] != '"') return {};
+    char* s = PUSH_ARRAY(a, char, text.len - i + 1);
+    i64 n = 0;
+    for (i++; i < text.len && text.ptr[i] != '"'; i++) {
+        char c = text.ptr[i];
+        if (c == '\\' && i + 1 < text.len) {
+            c = text.ptr[++i];
+            if (c == 'n') c = '\n';
+            else if (c == 't') c = '\t';
+        }
+        s[n++] = c;
+    }
+    return {s, n};
+}
+
+static void epic(Scan* scan, Arena* a) {
+    Str data = env(a, L"ProgramData");
+    if (!data.len) data = str("C:\\ProgramData");
+    Str dir = join(a, data, str("Epic\\EpicGamesLauncher\\Data\\Manifests"));
+    List<Entry> entries = list_dir(a, dir);
+    for (i32 i = 0; i < entries.count; i++) {
+        if (!str_ends(str_lower(a, entries.items[i].name), str(".item"))) continue;
+        Mark m = mark(scratch());
+        Str text = read_file(a, wide(scratch(), join(scratch(), dir, entries.items[i].name)));
+        rewind(m);
+        if (!text.ptr) continue;
+        // Only manifests whose AppCategories (if listed) include "games".
+        i64 cat = str_find(text, str("\"AppCategories\""));
+        if (cat >= 0) {
+            Str rest = str_sub(text, cat);
+            i64 end = str_find(rest, str("]"));
+            if (end < 0 || str_find(str_sub(rest, 0, end), str("\"games\"")) < 0) continue;
+        }
+        Str name = json_string(a, text, "DisplayName"), location = json_string(a, text, "InstallLocation");
+        if (!name.len || !location.len) continue;
+        location = slashes_to_back(location);
+        Str launch = json_string(a, text, "LaunchExecutable");
+        add_game(scan, a, name, location, launch.len ? join(a, location, slashes_to_back(launch)) : Str{});
+    }
+    list_free(&entries);
+}
+
+// ---- GOG, Ubisoft, and the launchers that only leave an uninstall entry
+
+static void gog(Scan* scan, Arena* a) {
+    const char* KEY = "SOFTWARE\\WOW6432Node\\GOG.com\\Games";
+    List<Str> ids = reg_subkeys(a, HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\GOG.com\\Games");
+    for (i32 i = 0; i < ids.count; i++) {
+        Str key = str_fmt(a, "%s\\%s", KEY, ids.items[i].ptr);
+        Str name = reg_string(a, HKEY_LOCAL_MACHINE, key, L"gameName");
+        Str path = reg_string(a, HKEY_LOCAL_MACHINE, key, L"path");
+        if (!name.len || !path.len) continue;
+        add_game(scan, a, name, path, reg_string(a, HKEY_LOCAL_MACHINE, key, L"exe"));
+    }
+    list_free(&ids);
+}
+
+static void ubisoft(Scan* scan, Arena* a) {
+    const char* KEY = "SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs";
+    List<Str> ids = reg_subkeys(a, HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs");
+    for (i32 i = 0; i < ids.count; i++) {
+        Str dir = reg_string(a, HKEY_LOCAL_MACHINE, str_fmt(a, "%s\\%s", KEY, ids.items[i].ptr), L"InstallDir");
+        if (!dir.len) continue;
+        dir = slashes_to_back(dir);
+        while (dir.len && dir.ptr[dir.len - 1] == '\\') dir.len--;
+        add_game(scan, a, file_name(dir), dir, {});
+    }
+    list_free(&ids);
+}
+
+// Games from launchers that only leave an ordinary uninstall entry: Battle.net, Riot and EA.
+static void uninstall_entries(Scan* scan, Arena* a) {
+    static const char* PUBLISHERS[] = {"Blizzard Entertainment", "Riot Games", "Electronic Arts", "Valve"};
+    static const char* NOT_GAMES[] = {"battle.net", "riot client", "ea app", "origin", "steam", "riot vanguard"};
+    struct Where {
+        HKEY root;
+        const char* base;
+    };
+    Where places[] = {
+        {HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+        {HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+        {HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+    };
+    for (i32 p = 0; p < COUNT(places); p++) {
+        List<Str> ids = reg_subkeys(a, places[p].root, wide(a, str(places[p].base)));
+        for (i32 i = 0; i < ids.count; i++) {
+            Str key = str_fmt(a, "%s\\%s", places[p].base, ids.items[i].ptr);
+            Str publisher = reg_string(a, places[p].root, key, L"Publisher");
+            bool known = false;
+            for (i32 k = 0; k < COUNT(PUBLISHERS) && !known; k++) known = str_starts(publisher, str(PUBLISHERS[k]));
+            if (!known) continue;
+            Str name = reg_string(a, places[p].root, key, L"DisplayName");
+            Str dir = reg_string(a, places[p].root, key, L"InstallLocation");
+            if (!name.len || !dir.len) continue;
+            Str lower = str_lower(a, name);
+            bool launcher = false;
+            for (i32 k = 0; k < COUNT(NOT_GAMES) && !launcher; k++) launcher = str_eq(lower, str(NOT_GAMES[k]));
+            if (launcher) continue;
+            while (dir.len && dir.ptr[0] == '"') dir.ptr++, dir.len--;
+            while (dir.len && dir.ptr[dir.len - 1] == '"') dir.len--;
+            add_game(scan, a, name, str_copy(a, dir), {});
+        }
+        list_free(&ids);
+    }
+}
+
+static void xbox(Scan* scan, Arena* a) {
+    DWORD drives = GetLogicalDrives();
+    for (i32 i = 2; i < 26; i++) {
+        if (!(drives & (1u << i))) continue;
+        Str root = str_fmt(a, "%c:\\XboxGames", 'A' + i);
+        List<Entry> entries = list_dir(a, root);
+        for (i32 k = 0; k < entries.count; k++) {
+            Entry* e = &entries.items[k];
+            if (!e->dir || str_eq(e->name, str("GameSave"))) continue;
+            Str content = join(a, join(a, root, e->name), str("Content"));
+            DWORD at = GetFileAttributesW(wide(a, content));
+            if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_DIRECTORY)) add_game(scan, a, e->name, content, {});
+        }
+        list_free(&entries);
+    }
+}
+
+// ---- Apps: the Start menu
+
+static Str shortcut_target(Arena* a, Str link) {
+    IShellLinkW* shell_link = 0;
+    if (FAILED(CoCreateInstance(__uuidof(ShellLink), 0, CLSCTX_INPROC_SERVER, __uuidof(IShellLinkW), (void**)&shell_link))) return {};
+    Str out = {};
+    IPersistFile* file = 0;
+    if (SUCCEEDED(shell_link->QueryInterface(__uuidof(IPersistFile), (void**)&file))) {
+        Mark m = mark(scratch());
+        if (SUCCEEDED(file->Load(wide(scratch(), link), STGM_READ))) {
+            wchar_t buf[1024] = {};
+            if (SUCCEEDED(shell_link->GetPath(buf, COUNT(buf), 0, 0)) && buf[0]) out = narrow(a, buf);
+        }
+        rewind(m);
+        file->Release();
+    }
+    shell_link->Release();
+    return out;
+}
+
+static void start_menu(Scan* scan, Arena* a) {
+    static const char* SKIP[] = {"unins", "uninstall", "setup", "readme", "help", "manual", "website", "update"};
+    struct Todo {
+        Str dir;
+        i32 depth;
+    };
+    List<Todo> stack = {};
+    Str data = env(a, L"ProgramData"), roaming = env(a, L"APPDATA");
+    if (data.len) list_push(&stack, {join(a, data, str("Microsoft\\Windows\\Start Menu\\Programs")), 0});
+    if (roaming.len) list_push(&stack, {join(a, roaming, str("Microsoft\\Windows\\Start Menu\\Programs")), 0});
+    Names exes = {};
+    while (stack.count) {
+        Todo t = stack.items[--stack.count];
+        List<Entry> entries = list_dir(a, t.dir);
+        for (i32 i = 0; i < entries.count; i++) {
+            Entry* e = &entries.items[i];
+            Str path = join(a, t.dir, e->name);
+            if (e->dir) {
+                if (t.depth < 3) list_push(&stack, {path, t.depth + 1});
+                continue;
+            }
+            Str lower = str_lower(a, e->name);
+            if (!str_ends(lower, str(".lnk"))) continue;
+            Str name = str_sub(e->name, 0, e->name.len - 4);
+            if (has_any(str_sub(lower, 0, lower.len - 4), SKIP, COUNT(SKIP))) continue;
+            Str target = shortcut_target(a, path);
+            Str exe = str_lower(a, file_name(target));
+            if (!str_ends(exe, str(".exe")) || has_any(exe, SKIP, COUNT(SKIP)) || !file_exists(target)) continue;
+            if (names_has(&exes, exe)) continue;
+            names_set(&exes, exe, true);
+            Found* f = list_push(&scan->found);
+            SET(f->name, name);
+            SET(f->exe, exe);
+            SET(f->path, target);
+        }
+        list_free(&entries);
+    }
+    list_free(&exes);
+    list_free(&stack);
+}
+
+// Stores what the scan found: names, paths, and games marked. With the lock.
+static Str scan_store(App* app, Scan* scan, Arena* a, i32* new_games) {
+    Config* c = &app->config;
+    Str lines = {"", 0};
+    *new_games = 0;
+    for (i32 i = 0; i < scan->found.count; i++) {
+        Found* f = &scan->found.items[i];
+        if (is_own_exe(str(f->exe))) continue;
+        if (learn_path(app, str(f->exe), str(f->path))) lines = str_fmt(a, "%s%s\t%s\n", lines.ptr, f->exe, f->path);
+        AppInfo* info = app_get(app, str(f->exe));
+        info->installed = true;
+        if (!info->name[0]) SET(info->name, str(f->name));
+        if (!info->path[0]) SET(info->path, str(f->path));
+    }
+    // A game whose exes include one dismissed as "not a game" stays dismissed as a whole.
+    for (i32 i = 0; i < scan->found.count; i++) {
+        Found* f = &scan->found.items[i];
+        if (!f->game[0]) continue;
+        bool dismissed = false;
+        for (i32 k = 0; k < scan->found.count && !dismissed; k++)
+            dismissed = strcmp(scan->found.items[k].game, f->game) == 0 && names_has(&c->processing.not_games, str(scan->found.items[k].exe));
+        AppInfo* info = app_find(app, str(f->exe));
+        if (dismissed || !info || info->game != GAME_NO) continue;
+        info->game = GAME_YES;
+        names_set(&c->processing.games, str(f->exe), true);
+        (*new_games)++;
+    }
+    if (*new_games) config_save_names("processing", "games", &c->processing.games);
+    return lines;
+}
+
+static DWORD WINAPI apps_scan_main(void* p) {
+    App* app = (App*)p;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);  // the shell's shortcuts want it
+    Arena arena = {};
+    do {
+        f64 started = now_ts();
+        Scan scan = {};
+        steam(&scan, &arena);
+        epic(&scan, &arena);
+        gog(&scan, &arena);
+        ubisoft(&scan, &arena);
+        uninstall_entries(&scan, &arena);
+        xbox(&scan, &arena);
+        i32 games = scan.game_names.count;
+        start_menu(&scan, &arena);
+        i32 apps = scan.found.count;
+        for (i32 i = 0; i < scan.found.count; i++) apps -= scan.found.items[i].game[0] != 0;
+
+        app_lock(app);
+        i32 new_games = 0;
+        Str lines = scan_store(app, &scan, &arena, &new_games);
+        app->apps.scanned = true;
+        app_unlock(app);
+        paths_append(lines);
+        LOG("apps: found %d installed games and %d apps in %.1f s", games, apps, now_ts() - started);
+        if (new_games) LOG("apps: marked %d installed games' exes as games", new_games);
+        wake_window(app);
+
+        list_free(&scan.found);
+        list_free(&scan.game_names);
+        arena_reset(&arena);
+        icons_for(app, false);
+    } while (sleep_unless_stopping(app, 6 * 3600 * 1000));
+    arena_release(&arena);
+    CoUninitialize();
+    return 0;
+}
+
 void apps_start(App* app) {
-    (void)app;
+    start_thread(app, "apps-watch", apps_watch_main);
+    start_thread(app, "apps-scan", apps_scan_main);
 }
