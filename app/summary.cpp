@@ -88,6 +88,8 @@ static bool has(Str hay, const char* needle) { return str_find(hay, str(needle))
 
 // `s` with every trailing ".exe" taken off (case as it is, like the old app's trim_end_matches).
 static Str trim_exe(Str s) {
+    Str person = voice_person(s);  // "discord-zaddish-4508….exe": zaddish, in a Discord call
+    if (person.len) return person;
     while (str_ends(s, str(".exe"))) s.len -= 4;
     return s;
 }
@@ -104,6 +106,7 @@ static i64 count_words(Str s) {
 }
 
 static bool is_call_app(Str speaker) {
+    if (voice_person(speaker).len) return true;  // a person in a Discord call (VoiceStreams)
     Mark m = mark(scratch());
     Str name = str_lower(scratch(), trim_exe(speaker));
     bool call = false;

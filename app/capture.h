@@ -2,9 +2,10 @@
 // loopback), each cut into short 16 kHz mono WAV files in the spool folder with a .json beside
 // it for the worker. Excluded apps and private mode record nothing.
 //
-// While the lifelog-vencord plugin records a Discord call one track per person (it keeps
-// <data_dir>\discord-calls.active fresh), Discord's mixed sound is not recorded: it would only
-// repeat the same speech.
+// While a Discord call is recorded one person per stream, Discord's mixed sound is not recorded:
+// it would only repeat the same speech. That is while vencord-voicestreams runs a player per
+// person (discord-<username>-<userId>.exe, each recorded as its own app), or while the older
+// lifelog-vencord plugin keeps <data_dir>\discord-calls.active fresh.
 
 #pragma once
 

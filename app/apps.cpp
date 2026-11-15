@@ -19,6 +19,21 @@ bool is_own_exe(Str exe) {
     return false;
 }
 
+Str voice_person(Str exe) {
+    Str prefix = str("discord-");
+    if (exe.len <= prefix.len + 4 || !str_eq_nocase(str_sub(exe, exe.len - 4, 4), str(".exe"))) return {};
+    if (!str_eq_nocase(str_sub(exe, 0, prefix.len), prefix)) return {};
+    Str rest = str_sub(exe, prefix.len, exe.len - 4 - prefix.len);  // "zaddish-450827036068544522"
+    i64 dash = -1;
+    for (i64 i = 0; i < rest.len; i++)
+        if (rest.ptr[i] == '-') dash = i;
+    Str id = dash < 0 ? rest : str_sub(rest, dash + 1);
+    if (id.len < 1 || id.len > 20) return {};
+    for (i64 i = 0; i < id.len; i++)
+        if (id.ptr[i] < '0' || id.ptr[i] > '9') return {};
+    return dash > 0 ? str_sub(rest, 0, dash) : id;
+}
+
 AppInfo* app_find(App* app, Str exe) {
     for (i32 i = 0; i < app->apps.list.count; i++)
         if (str_eq_nocase(str(app->apps.list[i].exe), exe)) return &app->apps.list[i];

@@ -341,7 +341,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         draw_app_icon(app, exe, px(20));
         ImGui::SameLine();
         f32 left = x - ImGui::GetCursorScreenPos().x;
-        const char* name = a->name[0] ? a->name : str_copy(scratch(), app_name(exe)).ptr;
+        const char* name = a->name[0] && !voice_person(exe).len ? a->name : str_copy(scratch(), app_name(exe)).ptr;
         ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, text_y));
         const char* shown = fit(name, left);
         ImGui::TextUnformatted(shown);

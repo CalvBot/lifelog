@@ -199,6 +199,8 @@ static const char* size_text(i64 bytes) {
 
 // "spotify.exe" → "spotify"; the mic is "me".
 static Str app_name(Str exe) {
+    Str person = voice_person(exe);  // a person in a Discord call: their name
+    if (person.len) return person;
     if (str_ends(exe, str(".exe")) || str_ends(exe, str(".EXE"))) return str_sub(exe, 0, exe.len - 4);
     return exe;
 }
