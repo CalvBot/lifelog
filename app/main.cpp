@@ -1,0 +1,571 @@
+// main.cpp: the program's start, the main thread's message loop, and the windows.
+//
+// The main thread owns every window: the tray icon's hidden window, the main window while it is
+// open, and the tray menu. Each window that shows ImGui is a Surface with its own ImGui context
+// and swap chain; they share one D3D11 device. A Surface draws only when something happened:
+// input, a wake_window() from another thread, or a frame ui.cpp asked for (an animation).
+
+static App g_app;
+
+enum : UINT {
+    WM_APP_WAKE = WM_APP + 1,  // a background thread changed something the window shows
+    WM_APP_SHOW,               // App.ui.want_* says what to open
+    WM_APP_TRAY,               // the tray icon's messages
+    WM_APP_QUIT,
+};
+
+static const UINT TRAY_ID = 1;
+static const UINT_PTR REDRAW_TIMER = 1;
+
+// ---------------------------------------------------------------------------------------------
+// App helpers (app.h)
+
+void app_lock(App* app) { AcquireSRWLockExclusive(&app->lock); }
+void app_unlock(App* app) { ReleaseSRWLockExclusive(&app->lock); }
+
+void wake_window(App* app) {
+    HWND w = app->ui.window;
+    if (w) PostMessageW(w, WM_APP_WAKE, 0, 0);
+    HWND p = app->ui.popup;
+    if (p) PostMessageW(p, WM_APP_WAKE, 0, 0);
+}
+
+bool stopping(App* app) { return WaitForSingleObject(app->stop, 0) == WAIT_OBJECT_0; }
+
+bool sleep_unless_stopping(App* app, u32 ms) { return WaitForSingleObject(app->stop, ms) != WAIT_OBJECT_0; }
+
+struct ThreadStart {
+    App* app;
+    LPTHREAD_START_ROUTINE fn;
+    char name[64];
+};
+
+static DWORD WINAPI thread_main(void* p) {
+    ThreadStart start = *(ThreadStart*)p;
+    free(p);
+    Mark m = mark(scratch());
+    SetThreadDescription(GetCurrentThread(), wide(scratch(), str(start.name)));
+    rewind(m);
+    return start.fn(start.app);
+}
+
+void start_thread(App* app, const char* name, LPTHREAD_START_ROUTINE fn) {
+    ThreadStart* s = (ThreadStart*)calloc(1, sizeof(ThreadStart));
+    CHECK(s, "memory for a thread start");
+    s->app = app;
+    s->fn = fn;
+    snprintf(s->name, sizeof(s->name), "%s", name);
+    HANDLE t = CreateThread(0, 0, thread_main, s, 0, 0);
+    CHECK(t, "thread %s to start (error %lu)", name, GetLastError());
+    CloseHandle(t);
+}
+
+void ui_show(App* app, Tab tab, const char* day) {
+    app->ui.want_window = true;
+    app->ui.want_tab = tab;
+    SET(app->ui.want_day, str(day ? day : ""));
+    PostThreadMessageW(app->ui.main_thread, WM_APP_SHOW, 0, 0);
+}
+
+void ui_popup(App* app, Popup popup, const char* day) {
+    app->ui.want_popup = popup;
+    SET(app->ui.popup_day, str(day ? day : ""));
+    PostThreadMessageW(app->ui.main_thread, WM_APP_SHOW, 0, 0);
+}
+
+void ui_say(App* app, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(app->ui.toast, sizeof(app->ui.toast), fmt, args);
+    va_end(args);
+    app->ui.toast_ts = now_ts();
+    wake_window(app);
+}
+
+void app_quit(App* app) {
+    app->quitting = true;
+    SetEvent(app->stop);
+    PostThreadMessageW(app->ui.main_thread, WM_APP_QUIT, 0, 0);
+}
+
+void app_restart(App* app) {
+    app->restarting = true;
+    app_quit(app);
+}
+
+// ---------------------------------------------------------------------------------------------
+// D3D11 and surfaces
+
+struct Gpu {
+    ID3D11Device* device;
+    ID3D11DeviceContext* context;
+    IDXGIFactory2* factory;
+};
+static Gpu g_gpu;
+
+struct Surface {
+    HWND hwnd;
+    IDXGISwapChain1* swap;
+    ID3D11RenderTargetView* target;
+    ImGuiContext* imgui;
+    i32 frames_wanted;     // draw this many more frames (ImGui settles over two or three)
+    f32 dpi_scale;
+    bool closing;
+};
+static Surface g_main;
+static Surface g_popup;
+
+static void gpu_init() {
+    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
+    HRESULT hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
+                                   &g_gpu.device, 0, &g_gpu.context);
+    if (FAILED(hr))  // no GPU driver (a VM, a remote desktop): software rendering still works
+        hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_WARP, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
+                               &g_gpu.device, 0, &g_gpu.context);
+    CHECK(SUCCEEDED(hr), "a Direct3D 11 device (0x%08lx)", (unsigned long)hr);
+    hr = CreateDXGIFactory1(__uuidof(IDXGIFactory2), (void**)&g_gpu.factory);
+    CHECK(SUCCEEDED(hr), "a DXGI factory (0x%08lx)", (unsigned long)hr);
+}
+
+static void surface_make_target(Surface* s) {
+    ID3D11Texture2D* back = 0;
+    s->swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back);
+    CHECK(back, "the swap chain's back buffer");
+    g_gpu.device->CreateRenderTargetView(back, 0, &s->target);
+    back->Release();
+}
+
+static void load_fonts(f32 scale) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    wchar_t fonts[MAX_PATH];
+    GetWindowsDirectoryW(fonts, MAX_PATH);
+    Mark m = mark(scratch());
+    Str segoe = narrow(scratch(), fonts);
+    Str path = str_fmt(scratch(), "%.*s\\Fonts\\segoeui.ttf", (int)segoe.len, segoe.ptr);
+    ImFont* font = io.Fonts->AddFontFromFileTTF(path.ptr, 16.0f);
+    if (!font) io.Fonts->AddFontDefault();
+    // Lucide icons, merged into the same font so they can sit in labels.
+    Str exe = narrow(scratch(), exe_dir());
+    Str icons = str_fmt(scratch(), "%.*s\\assets\\lucide.ttf", (int)exe.len, exe.ptr);
+    if (font && GetFileAttributesA(icons.ptr) != INVALID_FILE_ATTRIBUTES) {
+        ImFontConfig cfg;
+        cfg.MergeMode = true;
+        cfg.GlyphOffset.y = 3.0f;
+        io.Fonts->AddFontFromFileTTF(icons.ptr, 16.0f, &cfg);
+    }
+    rewind(m);
+    ImGui::GetStyle().FontScaleDpi = scale;
+}
+
+static void style_init(f32 scale) {
+    ImGuiStyle& st = ImGui::GetStyle();
+    st = ImGuiStyle();
+    ImGui::StyleColorsLight(&st);
+    st.WindowRounding = 0;
+    st.FrameRounding = 4;
+    st.GrabRounding = 4;
+    st.PopupRounding = 6;
+    st.FramePadding = ImVec2(8, 5);
+    st.ItemSpacing = ImVec2(8, 6);
+    st.WindowPadding = ImVec2(12, 12);
+    ImVec4 accent = ImVec4(0 / 255.0f, 120 / 255.0f, 212 / 255.0f, 1);
+    st.Colors[ImGuiCol_Button] = ImVec4(0.93f, 0.93f, 0.93f, 1);
+    st.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.87f, 0.87f, 0.87f, 1);
+    st.Colors[ImGuiCol_ButtonActive] = ImVec4(0.80f, 0.80f, 0.80f, 1);
+    st.Colors[ImGuiCol_CheckMark] = accent;
+    st.Colors[ImGuiCol_SliderGrab] = accent;
+    st.Colors[ImGuiCol_Tab] = ImVec4(0.95f, 0.95f, 0.95f, 1);
+    st.Colors[ImGuiCol_TabSelected] = ImVec4(1, 1, 1, 1);
+    st.Colors[ImGuiCol_TabSelectedOverline] = accent;
+    st.Colors[ImGuiCol_WindowBg] = ImVec4(1, 1, 1, 1);
+    st.ScaleAllSizes(scale);
+}
+
+static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+static bool surface_open(Surface* s, const wchar_t* title, DWORD style, DWORD ex_style, i32 x, i32 y, i32 w, i32 h) {
+    static bool registered = false;
+    HINSTANCE inst = GetModuleHandleW(0);
+    if (!registered) {
+        WNDCLASSEXW wc = {sizeof(wc)};
+        wc.style = CS_CLASSDC;
+        wc.lpfnWndProc = surface_proc;
+        wc.hInstance = inst;
+        wc.hCursor = LoadCursorW(0, IDC_ARROW);
+        wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+        wc.lpszClassName = L"lifelog.surface";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+    *s = {};
+    s->hwnd = CreateWindowExW(ex_style, L"lifelog.surface", title, style, x, y, w, h, 0, 0, inst, 0);
+    if (!s->hwnd) return false;
+    SetWindowLongPtrW(s->hwnd, GWLP_USERDATA, (LONG_PTR)s);
+
+    DXGI_SWAP_CHAIN_DESC1 sd = {};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.BufferCount = 2;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    HRESULT hr = g_gpu.factory->CreateSwapChainForHwnd(g_gpu.device, s->hwnd, &sd, 0, 0, &s->swap);
+    CHECK(SUCCEEDED(hr), "a swap chain for the window (0x%08lx)", (unsigned long)hr);
+    g_gpu.factory->MakeWindowAssociation(s->hwnd, DXGI_MWA_NO_ALT_ENTER);
+    surface_make_target(s);
+
+    s->imgui = ImGui::CreateContext();
+    ImGui::SetCurrentContext(s->imgui);
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = 0;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    s->dpi_scale = ImGui_ImplWin32_GetDpiScaleForHwnd(s->hwnd);
+    style_init(s->dpi_scale);
+    load_fonts(s->dpi_scale);
+    ImGui_ImplWin32_Init(s->hwnd);
+    ImGui_ImplDX11_Init(g_gpu.device, g_gpu.context);
+    s->frames_wanted = 3;
+    return true;
+}
+
+static void surface_close(Surface* s) {
+    if (!s->hwnd) return;
+    ImGui::SetCurrentContext(s->imgui);
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext(s->imgui);
+    if (s->target) s->target->Release();
+    if (s->swap) s->swap->Release();
+    HWND hwnd = s->hwnd;
+    *s = {};
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    DestroyWindow(hwnd);
+}
+
+// Draws one frame of `s`; `draw` is ui.cpp's function for it. Returns false when the surface
+// asked to close.
+static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
+    ImGui::SetCurrentContext(s->imgui);
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    f32 next_ms = -1;
+    app_lock(&g_app);
+    bool keep = draw(&g_app, &next_ms);
+    app_unlock(&g_app);
+
+    ImGui::Render();
+    f32 clear[4] = {1, 1, 1, 1};
+    g_gpu.context->OMSetRenderTargets(1, &s->target, 0);
+    g_gpu.context->ClearRenderTargetView(s->target, clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    s->swap->Present(1, 0);
+
+    if (next_ms == 0) s->frames_wanted = 2;
+    else if (next_ms > 0) SetTimer(s->hwnd, REDRAW_TIMER, (UINT)next_ms, 0);
+    return keep;
+}
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    Surface* s = (Surface*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (!s) return DefWindowProcW(hwnd, msg, wp, lp);
+    ImGui::SetCurrentContext(s->imgui);
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) {
+        s->frames_wanted = 3;
+        return 1;
+    }
+    switch (msg) {
+    case WM_SIZE:
+        if (wp != SIZE_MINIMIZED && s->swap) {
+            if (s->target) s->target->Release();
+            s->target = 0;
+            s->swap->ResizeBuffers(0, LOWORD(lp), HIWORD(lp), DXGI_FORMAT_UNKNOWN, 0);
+            surface_make_target(s);
+            s->frames_wanted = 2;
+        }
+        return 0;
+    case WM_DPICHANGED: {
+        s->dpi_scale = HIWORD(wp) / 96.0f;
+        style_init(s->dpi_scale);
+        load_fonts(s->dpi_scale);
+        RECT* r = (RECT*)lp;
+        SetWindowPos(hwnd, 0, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        s->frames_wanted = 2;
+        return 0;
+    }
+    case WM_TIMER:
+        if (wp == REDRAW_TIMER) {
+            KillTimer(hwnd, REDRAW_TIMER);
+            s->frames_wanted = 2;
+        }
+        return 0;
+    case WM_APP_WAKE:
+        s->frames_wanted = 2;
+        return 0;
+    case WM_ACTIVATE:
+        // The tray menu closes when it loses focus, like a menu.
+        if (s == &g_popup && LOWORD(wp) == WA_INACTIVE) s->closing = true;
+        s->frames_wanted = 2;
+        return 0;
+    case WM_CLOSE:
+        s->closing = true;
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        ValidateRect(hwnd, 0);
+        s->frames_wanted = 2;
+        return 0;
+    }
+    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) s->frames_wanted = 3;
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The tray icon
+
+static NOTIFYICONDATAW g_tray;
+static UINT g_taskbar_created;
+
+static void tray_add(HWND hwnd) {
+    g_tray = {sizeof(g_tray)};
+    g_tray.hWnd = hwnd;
+    g_tray.uID = TRAY_ID;
+    g_tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    g_tray.uCallbackMessage = WM_APP_TRAY;
+    g_tray.hIcon = LoadIconW(GetModuleHandleW(0), MAKEINTRESOURCEW(1));
+    if (!g_tray.hIcon) g_tray.hIcon = LoadIconW(0, IDI_APPLICATION);
+    wcscpy_s(g_tray.szTip, L"lifelog");
+    Shell_NotifyIconW(NIM_ADD, &g_tray);
+    g_tray.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &g_tray);
+}
+
+void tray_update(App* app) {
+    wcscpy_s(g_tray.szTip, app->capture.paused ? L"lifelog: private, recording nothing" : L"lifelog: recording");
+    g_tray.uFlags = NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+}
+
+static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_APP_TRAY) {
+        switch (LOWORD(lp)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+            app_lock(&g_app);
+            ui_show(&g_app, g_app.ui.want_tab, 0);
+            app_unlock(&g_app);
+            return 0;
+        case WM_CONTEXTMENU:
+            app_lock(&g_app);
+            ui_popup(&g_app, POPUP_TRAY, 0);
+            app_unlock(&g_app);
+            return 0;
+        }
+        return 0;
+    }
+    if (msg == g_taskbar_created && msg) {  // Explorer restarted: the icon is gone
+        tray_add(hwnd);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static HWND tray_window() {
+    WNDCLASSEXW wc = {sizeof(wc)};
+    wc.lpfnWndProc = tray_proc;
+    wc.hInstance = GetModuleHandleW(0);
+    wc.lpszClassName = L"lifelog.tray";
+    RegisterClassExW(&wc);
+    HWND hwnd = CreateWindowExW(0, L"lifelog.tray", L"lifelog", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, wc.hInstance, 0);
+    CHECK(hwnd, "the tray's message window (error %lu)", GetLastError());
+    g_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+    ChangeWindowMessageFilterEx(hwnd, g_taskbar_created, MSGFLT_ALLOW, 0);
+    tray_add(hwnd);
+    return hwnd;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Opening and closing the windows
+
+static void open_main_window() {
+    if (g_main.hwnd) {
+        ShowWindow(g_main.hwnd, IsIconic(g_main.hwnd) ? SW_RESTORE : SW_SHOW);
+        SetForegroundWindow(g_main.hwnd);
+        g_main.frames_wanted = 2;
+        return;
+    }
+    f32 scale = GetDpiForSystem() / 96.0f;
+    i32 w = (i32)(1000 * scale), h = (i32)(720 * scale);
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
+    bool ok = surface_open(&g_main, L"lifelog", WS_OVERLAPPEDWINDOW, 0, x, y, w, h);
+    CHECK(ok, "the main window to open (error %lu)", GetLastError());
+    app_lock(&g_app);
+    g_app.ui.window = g_main.hwnd;
+    ui_window_opened(&g_app);
+    app_unlock(&g_app);
+    ShowWindow(g_main.hwnd, SW_SHOW);
+    SetForegroundWindow(g_main.hwnd);
+}
+
+static void close_main_window() {
+    app_lock(&g_app);
+    g_app.ui.window = 0;
+    ui_window_closed(&g_app);
+    app_unlock(&g_app);
+    surface_close(&g_main);
+}
+
+static void open_popup(Popup which) {
+    if (g_popup.hwnd) surface_close(&g_popup);
+    f32 scale = GetDpiForSystem() / 96.0f;
+    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 260 * scale : 330 * scale);
+    // Above the tray, at the cursor (where the icon was clicked).
+    POINT at;
+    GetCursorPos(&at);
+    HMONITOR mon = MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(mon, &mi);
+    i32 x = at.x - w / 2, y = at.y - h - (i32)(8 * scale);
+    if (which == POPUP_DELAY) {
+        x = mi.rcWork.right - w - (i32)(16 * scale);
+        y = mi.rcWork.bottom - h - (i32)(16 * scale);
+    }
+    if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top) y = mi.rcWork.top;
+    bool ok = surface_open(&g_popup, L"lifelog", WS_POPUP | WS_BORDER, WS_EX_TOOLWINDOW | WS_EX_TOPMOST, x, y, w, h);
+    CHECK(ok, "the tray menu to open (error %lu)", GetLastError());
+    app_lock(&g_app);
+    g_app.ui.popup = g_popup.hwnd;
+    app_unlock(&g_app);
+    ShowWindow(g_popup.hwnd, SW_SHOW);
+    SetForegroundWindow(g_popup.hwnd);
+}
+
+static void close_popup() {
+    app_lock(&g_app);
+    g_app.ui.popup = 0;
+    g_app.ui.want_popup = POPUP_NONE;
+    app_unlock(&g_app);
+    surface_close(&g_popup);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Start
+
+static i32 run_app() {
+    App* app = &g_app;
+    app->lock = SRWLOCK_INIT;
+    app->stop = CreateEventW(0, TRUE, FALSE, 0);
+    app->ui.main_thread = GetCurrentThreadId();
+    // Make sure the thread has a message queue before anyone posts to it.
+    MSG msg;
+    PeekMessageW(&msg, 0, WM_USER, WM_USER, PM_NOREMOVE);
+
+    char error[512] = {};
+    if (!config_load(&app->config, error, sizeof(error))) {
+        ERR("config: %s", error);
+        Mark m = mark(scratch());
+        MessageBoxW(0, wide(scratch(), str_fmt(scratch(), "lifelog could not read its settings:\n\n%s", error)), L"lifelog", MB_ICONERROR);
+        rewind(m);
+        return 1;
+    }
+    app->storage.ready = db_init(&app->config);
+    if (app->storage.ready) app->storage.db = db_open(app);
+
+    ImGui_ImplWin32_EnableDpiAwareness();
+    gpu_init();
+    app->ui.tray = tray_window();
+
+    app_lock(app);
+    apps_from_config(app);
+    apps_start(app);
+    capture_start(app);
+    worker_start(app);
+    summary_start(app);
+    tray_update(app);
+    app_unlock(app);
+    LOG("lifelog started");
+
+    bool want_main = true;  // the window opens at start unless --tray was passed
+    for (i32 i = 1; i < __argc; i++)
+        if (strcmp(__argv[i], "--tray") == 0) want_main = false;
+    if (want_main) open_main_window();
+
+    for (;;) {
+        // Handle everything waiting, then draw what needs it, then sleep until the next message.
+        bool quit = false;
+        while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_APP_QUIT || msg.message == WM_QUIT) quit = true;
+            if (msg.message == WM_APP_SHOW) {
+                app_lock(app);
+                bool open = app->ui.want_window;
+                Popup popup = app->ui.want_popup;
+                app->ui.want_window = false;
+                app_unlock(app);
+                if (open) open_main_window();
+                if (popup != POPUP_NONE && !g_popup.hwnd) open_popup(popup);
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (quit) break;
+
+        if (g_main.hwnd && g_main.frames_wanted > 0) {
+            g_main.frames_wanted--;
+            if (!surface_draw(&g_main, ui_draw_window)) g_main.closing = true;
+        }
+        if (g_main.closing) close_main_window();
+        if (g_popup.hwnd && g_popup.frames_wanted > 0) {
+            g_popup.frames_wanted--;
+            if (!surface_draw(&g_popup, ui_draw_popup)) g_popup.closing = true;
+        }
+        if (g_popup.closing) close_popup();
+
+        if ((g_main.hwnd && g_main.frames_wanted > 0) || (g_popup.hwnd && g_popup.frames_wanted > 0)) continue;
+        WaitMessage();
+    }
+
+    LOG("lifelog stopping");
+    SetEvent(app->stop);
+    if (g_popup.hwnd) close_popup();
+    if (g_main.hwnd) close_main_window();
+    Shell_NotifyIconW(NIM_DELETE, &g_tray);
+    app_lock(app);
+    capture_stop(app);
+    worker_stop(app);
+    app_unlock(app);
+    if (app->restarting) {
+        wchar_t exe[MAX_PATH];
+        GetModuleFileNameW(0, exe, MAX_PATH);
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        wchar_t cmd[MAX_PATH + 16];
+        swprintf(cmd, COUNT(cmd), L"\"%ls\" --tray", exe);
+        if (CreateProcessW(exe, cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+    }
+    return 0;
+}
+
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    log_open();
+    // One lifelog at a time: a second start opens the first one's window instead.
+    HANDLE single = CreateMutexW(0, TRUE, L"Local\\lifelog.cpp.running");
+    if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND other = FindWindowW(L"lifelog.tray", 0);
+        if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
+        if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(NIN_SELECT, 0));
+        return 0;
+    }
+    i32 code = run_app();
+    ExitProcess((UINT)code);
+}
