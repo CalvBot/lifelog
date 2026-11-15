@@ -79,8 +79,8 @@ static void weak(const char* text) {
 
 // A card `width` wide (ui_common's card_begin always takes the whole window's width).
 static void settings_card(const char* id, f32 width) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 14));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16), px(14)));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
     ImGui::BeginChild(id, ImVec2(width, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     // Text boxes, drag values and switches sit darker than the card, as the window's background.
@@ -269,11 +269,11 @@ enum AppAct : u8 { ACT_NONE, ACT_INCLUDE, ACT_EXCLUDE, ACT_GAME, ACT_REVEAL };
 static void apps_card(App* app, SettingsState* s, f32 width) {
     settings_card("apps", width);
     title("Apps");
-    ImGui::SameLine(0, 16);
+    ImGui::SameLine(0, px(16));
     const char* names[] = {"New", "Included", "Excluded"};
     for (i32 v = 0; v < 3; v++) {
         if (v) ImGui::SameLine();
-        if (pick(tmp("%s  %d##view%d", names[v], s->counts[v], v), s->view == v, ImVec2(96, 26)) && s->view != v) {
+        if (pick(tmp("%s  %d##view%d", names[v], s->counts[v], v), s->view == v, ImVec2(px(96), 0)) && s->view != v) {
             s->view = (AppsView)v;
             s->page = 0;
             s->stale = true;
@@ -292,8 +292,8 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
 
     AppAct act = ACT_NONE;
     char act_exe[64] = "";
-    const f32 row_h = 28;
-    ImVec2 button = ImVec2(40, 26);
+    const f32 row_h = px(30);
+    ImVec2 button = ImVec2(px(40), ImGui::GetFrameHeight());
     f32 spacing = ImGui::GetStyle().ItemSpacing.x;
     f32 rows_top = ImGui::GetCursorPosY();
     for (i32 i = 0; i < s->row_count; i++) {
@@ -322,13 +322,13 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
             if (ImGui::Button(ICON_X "##exc", button)) act = ACT_EXCLUDE;
             x -= spacing;
         }
-        x -= 32;
-        ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - 24) / 2));
+        x -= px(32);
+        ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
         ImVec4 pad_color = game ? ACCENT : ImVec4(weak_text().x, weak_text().y, weak_text().z, 0.6f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_Text, pad_color);
         ImGui::PushFont(0, ImGui::GetStyle().FontSizeBase * 1.12f);
-        if (ImGui::Button(ICON_GAMEPAD "##game", ImVec2(32, 24))) act = ACT_GAME;
+        if (ImGui::Button(ICON_GAMEPAD "##game", ImVec2(px(32), button.y))) act = ACT_GAME;
         ImGui::PopFont();
         ImGui::PopStyleColor(2);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", game ? "Game" : "Mark as game");
@@ -336,9 +336,9 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
 
         // Icon, name, "N lines · x ago" and the path, in what is left.
         f32 text_y = at.y + (row_h - ImGui::GetTextLineHeight()) / 2;
-        ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + (row_h - 20) / 2));
+        ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + (row_h - px(20)) / 2));
         ImGui::BeginGroup();
-        draw_app_icon(app, exe, 20);
+        draw_app_icon(app, exe, px(20));
         ImGui::SameLine();
         f32 left = x - ImGui::GetCursorScreenPos().x;
         const char* name = a->name[0] ? a->name : str_copy(scratch(), app_name(exe)).ptr;
@@ -348,8 +348,8 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", a->exe);
         left -= ImGui::CalcTextSize(shown).x + spacing;
         ImGui::PushFont(0, small_size());
-        f32 small_y = at.y + (row_h - ImGui::GetTextLineHeight()) / 2 + 1;
-        if (a->lines > 0 && left > 40) {
+        f32 small_y = at.y + (row_h - ImGui::GetTextLineHeight()) / 2 + px(1);
+        if (a->lines > 0 && left > px(40)) {
             const char* heard = tmp("%lld lines · %s", a->lines, ago_text(a->last_ts));
             ImGui::SameLine();
             ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, small_y));
@@ -357,7 +357,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
             ImGui::TextColored(weak_text(), "%s", heard);
             left -= ImGui::CalcTextSize(heard).x + spacing;
         }
-        if (a->path[0] && left > 40) {
+        if (a->path[0] && left > px(40)) {
             ImGui::SameLine();
             ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, small_y));
             ImGui::TextColored(weak_text(), "%s", fit(a->path, left));
@@ -458,14 +458,14 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     title("Transcription");
     const char* names[] = {"Auto", "Always", "Paused"};
     for (i32 m = 0; m < 3; m++) {
-        if (m) ImGui::SameLine(0, 4);
+        if (m) ImGui::SameLine(0, px(4));
         if (pick(tmp("%s##mode", names[m]), c->processing.mode == m) && c->processing.mode != m) {
             SettingsUndo* u = remember(s, UNDO_MODE, "transcription %s", names[m]);
             u->n = (u32)c->processing.mode;
             worker_set_mode(app, (Mode)m);
         }
     }
-    ImGui::SameLine(0, 12);
+    ImGui::SameLine(0, px(12));
     f64 queued = app->worker.queued_secs / 60.0;
     weak(queued >= 1 ? tmp("%s · %.0f min waiting", app->worker.state, queued) : app->worker.state);
 
@@ -473,7 +473,7 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Wait while the graphics card is busier than");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(64);
+        ImGui::SetNextItemWidth(px(64));
         ImGui::DragInt("##gpu", &s->gpu, 0.2f, 10, 100, "%d %%", ImGuiSliderFlags_AlwaysClamp);
         // Saved when the drag or the typing ends, not on every frame of it.
         if (ImGui::IsItemDeactivatedAfterEdit() && (u32)s->gpu != c->processing.gpu_busy_percent) {
@@ -512,7 +512,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     ImGui::TextUnformatted("Ask at");
     ImGui::SameLine();
     if (!s->ask_at_active) SET(s->ask_at, str(c->summary.ask_at));
-    ImGui::SetNextItemWidth(56);
+    ImGui::SetNextItemWidth(px(56));
     ImGui::InputText("##ask_at", s->ask_at, sizeof(s->ask_at));
     s->ask_at_active = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -531,7 +531,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     ImGui::SameLine();
     ImGui::TextUnformatted("At most");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(px(100));
     ImGui::DragInt("##words", &s->max_words, 10, 50, 2000, "%d words", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemDeactivatedAfterEdit() && (u32)s->max_words != c->summary.max_words) {
         SettingsUndo* u = remember(s, UNDO_WORDS, "at most %d words", s->max_words);
@@ -629,21 +629,21 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     if (*next_frame_ms < 0 || *next_frame_ms > next) *next_frame_ms = next;
 
     f32 avail = ImGui::GetContentRegionAvail().x;
-    f32 width = avail < 760 ? avail : 760;
+    f32 width = avail < px(760) ? avail : px(760);
     f32 x = ImGui::GetCursorPosX() + (avail - width) / 2;
-    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     apps_card(app, s, width);
-    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     transcription_card(app, s, width);
-    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     summary_card(app, s, width);
-    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     files_card(app, width);
-    ImGui::Dummy(ImVec2(0, 16));
+    ImGui::Dummy(ImVec2(0, px(16)));
 
     // A change shows at once: the apps page is made again on the next frame.
     if (s->stale) *next_frame_ms = 0;

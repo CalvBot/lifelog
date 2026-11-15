@@ -100,11 +100,14 @@ static void message_label(PopupState* s) {
     ImGui::PopStyleColor();
 }
 
-// A menu line: icon and text, no frame, the full width.
+// A menu line: icon and text, no frame, the full width. Its hover reaches into the window's
+// padding, so the icons line up with the lines above.
 static bool menu_item(const char* icon, const char* text) {
+    f32 pad = ImGui::GetStyle().FramePadding.x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() - pad);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
-    bool clicked = ImGui::Button(label(icon, text), ImVec2(-FLT_MIN, 30));
+    bool clicked = ImGui::Button(label(icon, text), ImVec2(ImGui::GetContentRegionAvail().x + pad, px(30)));
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
     return clicked;
@@ -114,7 +117,7 @@ static bool menu_item(const char* icon, const char* text) {
 static bool choice(const char* text, bool on, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : weak_text());
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(2), ImGui::GetStyle().FramePadding.y));
     bool clicked = ImGui::Button(text, size);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
@@ -157,7 +160,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         const char* state = on ? "Listening" : "Not listening";
         f32 sw = ImGui::GetFrameHeight() * 0.8f * 1.8f;
         f32 right = ImGui::GetWindowContentRegionMax().x;
-        ImGui::SameLine(right - sw - 8 - ImGui::CalcTextSize(state).x);
+        ImGui::SameLine(right - sw - px(8) - ImGui::CalcTextSize(state).x);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(weak_text(), "%s", state);
         ImGui::SameLine(right - sw);
@@ -173,18 +176,18 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     ImGui::TextUnformatted(label(ICON_HISTORY, "Copy the last"));
     {
         f32 right = ImGui::GetWindowContentRegionMax().x;
-        f32 x = right - (48 + 4 + 36 + 4 + 36);
+        f32 x = right - px(48 + 4 + 36 + 4 + 36);
         ImGui::SameLine(x);
-        ImGui::SetNextItemWidth(48);
+        ImGui::SetNextItemWidth(px(48));
         const char* fmt = s->amount == floorf(s->amount) ? "%.0f" : "%.1f";
         if (ImGui::DragFloat("##amount", &s->amount, 0.5f, 1, 999, fmt, ImGuiSliderFlags_AlwaysClamp)) s->changed_ts = now;
-        ImGui::SameLine(x + 52);
-        if (choice("min", !s->hours, ImVec2(36, 0))) {
+        ImGui::SameLine(x + px(52));
+        if (choice("min", !s->hours, ImVec2(px(36), 0))) {
             s->hours = false;
             s->changed_ts = now;
         }
-        ImGui::SameLine(x + 92);
-        if (choice("h", s->hours, ImVec2(36, 0))) {
+        ImGui::SameLine(x + px(92));
+        if (choice("h", s->hours, ImVec2(px(36), 0))) {
             s->hours = true;
             s->changed_ts = now;
         }
@@ -206,10 +209,10 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     }
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, sunken_bg());
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 3));
-    ImGui::BeginChild("preview", ImVec2(0, 92), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(8), px(8)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(6), px(3)));
+    ImGui::BeginChild("preview", ImVec2(0, px(92)), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     ImGui::PushFont(0, 13);
     // The top line doubles as where "Copying…" and "Copied …" show.
     if (g_copy.busy) {
@@ -248,13 +251,13 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         ImGui::BeginDisabled(g_copy.busy);
         for (i32 i = 0; i < COUNT(kinds); i++) {
             if (i) ImGui::SameLine();
-            if (ImGui::Button(label(kinds[i].icon, kinds[i].text), ImVec2(w, 32))) start_copy(app, s, secs, kinds[i].kind);
+            if (ImGui::Button(label(kinds[i].icon, kinds[i].text), ImVec2(w, px(32)))) start_copy(app, s, secs, kinds[i].kind);
         }
         ImGui::EndDisabled();
     }
     ImGui::Separator();
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), 0));
     if (menu_item(ICON_SCROLL_TEXT, "Timeline")) {
         ui_show(app, TAB_TIMELINE, 0);
         keep = false;
@@ -306,22 +309,20 @@ static bool delay_draw(App* app, PopupState* s) {
         today_day(today);
         if (strcmp(day, today) != 0) ImGui::TextColored(weak_text(), "For %s", page_name(day));
     }
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, px(4)));
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("At");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(px(60));
     bool enter = ImGui::InputText("##at", s->at, sizeof(s->at), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsNoBlank);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7, 4));
     for (i32 h = 1; h <= 3; h++) {
-        ImGui::SameLine(0, 4);
+        ImGui::SameLine(0, px(4));
         if (ImGui::Button(tmp("+%d h", h))) hm_from_now(s->at, h);
     }
-    ImGui::SameLine(0, 4);
+    ImGui::SameLine(0, px(4));
     if (ImGui::Button("23:30")) SET(s->at, str("23:30"));
-    ImGui::PopStyleVar();
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, px(4)));
 
     if (ImGui::Button(label(ICON_CHECK, "Delay")) || enter) {
         Str r = summary_act(app, scratch(), "until", day, str_trim(str(s->at)).ptr);

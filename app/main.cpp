@@ -562,7 +562,7 @@ static void close_main_window() {
 static void open_popup(Popup which) {
     if (g_popup.hwnd) surface_close(&g_popup);
     f32 scale = GetDpiForSystem() / 96.0f;
-    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 260 * scale : 352 * scale);
+    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 176 * scale : 424 * scale);
     // Above the tray, at the cursor (where the icon was clicked).
     POINT at;
     GetCursorPos(&at);

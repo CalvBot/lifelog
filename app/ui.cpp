@@ -53,8 +53,8 @@ static void listen_button(App* app) {
     ImGui::PushStyleColor(ImGuiCol_Button, fill);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(fill.x, fill.y, fill.z, fill.w + 0.1f));
     ImGui::PushStyleColor(ImGuiCol_Text, color);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 14);
-    if (ImGui::Button(text, ImVec2(116, 0))) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(14));
+    if (ImGui::Button(text, ImVec2(px(116), 0))) {
         capture_set_paused(app, !paused);
         tray_update(app);
     }
@@ -95,19 +95,19 @@ bool ui_draw_window(App* app, f32* next_frame_ms) {
     ImGui::PopStyleVar();
 
     // The tab bar.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 8));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12), px(8)));
     ImGui::BeginChild("tabs", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
     tab_button(app, TAB_TIMELINE, ICON_SCROLL_TEXT, "Timeline");
     ImGui::SameLine();
     tab_button(app, TAB_JOURNAL, ICON_CALENDAR, "Journal");
     ImGui::SameLine();
     tab_button(app, TAB_SETTINGS, ICON_SETTINGS, "Settings");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 116);
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - px(116));
     listen_button(app);
     ImGui::EndChild();
     ImGui::PopStyleVar();
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 8));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12), px(8)));
     ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
     switch (app->ui.tab) {
     case TAB_TIMELINE: timeline_draw(app, &s->timeline, next_frame_ms); break;

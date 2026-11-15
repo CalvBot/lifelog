@@ -44,6 +44,9 @@
 
 static const ImVec4 ACCENT = ImVec4(0 / 255.0f, 120 / 255.0f, 212 / 255.0f, 1);
 
+// A size in pixels at 96 dpi, scaled to the window's screen (the style and fonts already are).
+static f32 px(f32 v) { return v * ImGui::GetStyle().FontScaleDpi; }
+
 static ImU32 accent_u32(f32 alpha = 1) { return ImGui::GetColorU32(ImVec4(ACCENT.x, ACCENT.y, ACCENT.z, alpha)); }
 static ImVec4 weak_text() { return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled); }
 
@@ -81,7 +84,7 @@ static bool toggle(const char* id, bool* on) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImU32 bg = *on ? accent_u32() : ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), bg, h / 2);
-    f32 r = h / 2 - 3, x = *on ? at.x + w - h / 2 : at.x + h / 2;
+    f32 r = h / 2 - px(3), x = *on ? at.x + w - h / 2 : at.x + h / 2;
     dl->AddCircleFilled(ImVec2(x, at.y + h / 2), r, IM_COL32(255, 255, 255, 255));
     return clicked;
 }
@@ -103,8 +106,8 @@ static void column_end() {
 
 // A rounded card around a section (call card_end after).
 static void card_begin(const char* id) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14, 14));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(14), px(14)));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
     ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
 }

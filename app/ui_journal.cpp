@@ -91,8 +91,8 @@ static void spinner(f32* next_frame_ms) {
     ImVec2 c = ImVec2(at.x + size / 2, at.y + size / 2);
     f32 start = (f32)ImGui::GetTime() * 6.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->PathArcTo(c, size / 2 - 2, start, start + 4.2f, 24);
-    dl->PathStroke(accent_u32(), 2.0f);
+    dl->PathArcTo(c, size / 2 - px(2), start, start + 4.2f, 24);
+    dl->PathStroke(accent_u32(), px(2));
     want_frame(next_frame_ms, 33);
 }
 
@@ -116,16 +116,17 @@ static ImVec4 plain_color() {
 // A small icon button painted at (x, y) without taking layout space, so showing it on hover never
 // moves the text. True when clicked.
 static bool slot_button(f32 x, f32 y, const char* glyph, const char* tip) {
-    ImVec2 a = ImVec2(x, y - 1), b = ImVec2(x + SLOT_BUTTON, y - 1 + SLOT_BUTTON);
+    f32 sb = px(SLOT_BUTTON);
+    ImVec2 a = ImVec2(x, y - px(1)), b = ImVec2(x + sb, y - px(1) + sb);
     bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, b);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (hovered) {
-        dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), 4);
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), px(4));
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         ImGui::SetTooltip("%s", tip);
     }
     ImVec2 size = ImGui::CalcTextSize(glyph);
-    ImVec2 at = ImVec2(a.x + (SLOT_BUTTON - size.x) / 2, a.y + (SLOT_BUTTON - size.y) / 2);
+    ImVec2 at = ImVec2(a.x + (sb - size.x) / 2, a.y + (sb - size.y) / 2);
     dl->AddText(at, ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled), glyph);
     return hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 }
@@ -197,35 +198,39 @@ static void calendar(App* app, JournalState* s, const char* today) {
     i32 month = s->month ? s->month : month_of(s->day);
     i32 this_month = month_of(today);
     i32 year = month / 12, mon = month % 12 + 1;
-    const f32 cell_w = 30, cell_h = 26;
+    // Seven cells fill the column; the arrows sit over the first and last of them.
+    f32 gap = px(2);
+    f32 cell_w = floorf((ImGui::GetContentRegionAvail().x - 6 * gap) / 7), cell_h = px(28);
+    f32 x0 = ImGui::GetCursorPosX();
+    f32 row_w = 7 * cell_w + 6 * gap;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 2));
-    ImGui::Dummy(ImVec2(0, 4));
-    if (ImGui::Button(tmp("%s##prev-month", ICON_CHEVRON_LEFT), ImVec2(26, 24))) s->month = month - 1;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+    ImGui::Dummy(ImVec2(0, px(4)));
+    f32 head_h = ImGui::GetFrameHeight();
+    if (ImGui::Button(tmp("%s##prev-month", ICON_CHEVRON_LEFT), ImVec2(cell_w, head_h))) s->month = month - 1;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Month before");
     ImGui::SameLine();
     {
-        f32 w = 7 * 32 - 2 * 28 - 6;
         const char* name = tmp("%s %d", MONTHS[mon - 1], year);
-        ImVec2 at = ImGui::GetCursorPos();
-        f32 tw = ImGui::CalcTextSize(name).x;
-        ImGui::SetCursorPos(ImVec2(at.x + (w - tw) / 2, at.y + (24 - ImGui::GetTextLineHeight()) / 2));
+        f32 y = ImGui::GetCursorPosY();
+        ImGui::SetCursorPosX(x0 + (row_w - ImGui::CalcTextSize(name).x) / 2);
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(name);
-        ImGui::SameLine(at.x + w + 2);
-        ImGui::SetCursorPosY(at.y);
+        ImGui::SameLine(x0 + row_w - cell_w);
+        ImGui::SetCursorPosY(y);
     }
     ImGui::BeginDisabled(month >= this_month);
-    if (ImGui::Button(tmp("%s##next-month", ICON_CHEVRON_RIGHT), ImVec2(26, 24))) s->month = month + 1;
+    if (ImGui::Button(tmp("%s##next-month", ICON_CHEVRON_RIGHT), ImVec2(cell_w, head_h))) s->month = month + 1;
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Month after");
     ImGui::EndDisabled();
 
     static const char* NAMES[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+    ImGui::Dummy(ImVec2(0, px(2)));
     ImGui::PushFont(0, 13);
-    f32 x0 = ImGui::GetCursorPosX();
     for (i32 i = 0; i < 7; i++) {
-        if (i) ImGui::SameLine(x0 + i * (cell_w + 2));
+        if (i) ImGui::SameLine(x0 + i * (cell_w + gap));
         f32 tw = ImGui::CalcTextSize(NAMES[i]).x;
-        ImGui::SetCursorPosX(x0 + i * (cell_w + 2) + (cell_w - tw) / 2);
+        ImGui::SetCursorPosX(x0 + i * (cell_w + gap) + (cell_w - tw) / 2);
         ImGui::TextColored(weak_text(), "%s", NAMES[i]);
     }
     ImGui::PopFont();
@@ -245,8 +250,8 @@ static void calendar(App* app, JournalState* s, const char* today) {
         bool enabled = strcmp(key, today) <= 0 && (sd || heard);
 
         // Each row starts on a new line; the first day sits under its weekday.
-        if (d > 1 && column) ImGui::SameLine(x0 + column * (cell_w + 2));
-        else ImGui::SetCursorPosX(x0 + column * (cell_w + 2));
+        if (d > 1 && column) ImGui::SameLine(x0 + column * (cell_w + gap));
+        else ImGui::SetCursorPosX(x0 + column * (cell_w + gap));
         ImVec4 bg = selected ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : done ? ImGui::GetStyleColorVec4(ImGuiCol_Button) : ImVec4(0, 0, 0, 0);
         ImGui::PushStyleColor(ImGuiCol_Button, bg);
         ImGui::PushStyleColor(ImGuiCol_Text, done ? text_color() : heard ? plain_color() : weak_text());
@@ -256,7 +261,7 @@ static void calendar(App* app, JournalState* s, const char* today) {
         ImGui::PopStyleColor(2);
         ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
         if (strcmp(key, today) == 0) dl->AddRect(a, b, accent_u32(), ImGui::GetStyle().FrameRounding);
-        if (todo > 0) dl->AddCircleFilled(ImVec2((a.x + b.x) / 2, b.y - 4), 2, accent_u32());
+        if (todo > 0) dl->AddCircleFilled(ImVec2((a.x + b.x) / 2, b.y - px(4)), px(2), accent_u32());
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             if (done && todo == 0) ImGui::SetTooltip("Summary");
             else if (done) ImGui::SetTooltip("Summary · %d to do", todo);
@@ -267,14 +272,14 @@ static void calendar(App* app, JournalState* s, const char* today) {
     }
     ImGui::PopStyleVar();
 
-    ImGui::Dummy(ImVec2(0, 2));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 1));
-    if (ImGui::Button("Today")) journal_open(s, today);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    f32 half = (row_w - ImGui::GetStyle().ItemSpacing.x) / 2;
+    if (ImGui::Button("Today", ImVec2(month != this_month ? half : row_w, 0))) journal_open(s, today);
     if (month != this_month) {
         ImGui::SameLine();
-        if (ImGui::Button("This month")) s->month = this_month;
+        if (ImGui::Button("This month", ImVec2(half, 0))) s->month = this_month;
     }
-    ImGui::PopStyleVar();
+    ImGui::Dummy(ImVec2(0, px(2)));
 }
 
 struct ListDay {
@@ -317,18 +322,25 @@ static void day_list(App* app, JournalState* s, const char* today) {
         }
 
     ImGui::BeginChild("day-list");
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, px(2)));
     if (list.count == 0) ImGui::TextColored(weak_text(), "Nothing this month");
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, 0.5f));
     for (i32 i = 0; i < list.count; i++) {
         ListDay* d = &list[i];
         const char* extra = "";
-        if (strcmp(d->status, "done") == 0) extra = d->reminders ? tmp("  · %d to do", d->reminders) : "";
-        else if (strcmp(d->status, "skipped") == 0) extra = "  · skipped";
-        else if (strcmp(d->status, "none") == 0) extra = strcmp(d->day, today) == 0 ? "" : "  · no summary";
-        else extra = tmp("  · %s", d->status);
-        const char* text = tmp("%s%s##list-%s", list_name(d->day, today), extra, d->day);
-        if (ImGui::Selectable(text, strcmp(s->day, d->day) == 0, 0, ImVec2(0, 28))) journal_open(s, d->day);
+        if (strcmp(d->status, "done") == 0) extra = d->reminders ? tmp("%d to do", d->reminders) : "";
+        else if (strcmp(d->status, "skipped") == 0) extra = "skipped";
+        else if (strcmp(d->status, "none") == 0) extra = strcmp(d->day, today) == 0 ? "" : "no summary";
+        else extra = d->status;
+        // The day, padded like the buttons above, and the rest in weak text on the right.
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        f32 row_h = px(28), pad = ImGui::GetStyle().FramePadding.x;
+        if (ImGui::Selectable(tmp("##list-%s", d->day), strcmp(s->day, d->day) == 0, 0, ImVec2(0, row_h))) journal_open(s, d->day);
+        f32 right = ImGui::GetItemRectMax().x;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        f32 ty = at.y + (row_h - ImGui::GetTextLineHeight()) / 2;
+        dl->AddText(ImVec2(at.x + pad, ty), ImGui::GetColorU32(ImGuiCol_Text), list_name(d->day, today));
+        if (extra[0]) dl->AddText(ImVec2(right - pad - ImGui::CalcTextSize(extra).x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), extra);
     }
     ImGui::PopStyleVar();
     ImGui::EndChild();
@@ -344,13 +356,13 @@ static void never_list(App* app) {
     ImGui::Dummy(ImVec2(0, 6));
     sized_text(13, weak_text(), str("Never mentioned (click to allow again)"));
     ImGui::PushFont(0, 13);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(8), px(2)));
     f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     i64 remove = 0;
     for (i32 i = 0; i < app->summary.never.count; i++) {
         NeverTopic* t = &app->summary.never[i];
         const char* text = tmp("%s  %s##never-%lld", t->topic, ICON_X, t->id);
-        f32 w = ImGui::CalcTextSize(text, 0, true).x + 16;
+        f32 w = ImGui::CalcTextSize(text, 0, true).x + px(16);
         if (i) {
             ImGui::SameLine();
             if (ImGui::GetCursorScreenPos().x + w > right) ImGui::NewLine();
@@ -373,7 +385,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
     const char* day = s->day;
     StoredSummary* sum = &s->summary;
 
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, px(2)));
     sized_text(22, text_color(), str(page_name(day)));
     ImGui::Dummy(ImVec2(0, 0));
 
@@ -401,7 +413,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
     }
 
     // Markdown: headings, bullets and plain lines.
-    const f32 slot_w = 3 * SLOT_BUTTON + 8;
+    const f32 slot_w = px(3 * SLOT_BUTTON + 8);
     Str rest = sum->markdown;
     while (rest.len) {
         i64 nl = str_find(rest, str("\n"));
@@ -413,7 +425,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         while (lead.len && (lead.ptr[0] == ' ' || lead.ptr[0] == '\t')) lead = str_sub(lead, 1);
 
         if (str_starts(line, str("## ")) || str_starts(line, str("# "))) {
-            ImGui::Dummy(ImVec2(0, 2));
+            ImGui::Dummy(ImVec2(0, px(2)));
             sized_text(18, text_color(), str_sub(line, str_starts(line, str("## ")) ? 3 : 2));
         } else if (str_starts(lead, str("- ")) || str_starts(lead, str("* "))) {
             Str bullet = str_sub(lead, 2);
@@ -421,8 +433,8 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             ImVec2 row_min = ImGui::GetCursorScreenPos();
             ImGui::TextUnformatted("•");
             ImGui::SameLine();
-            f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - slot_w - 8;
-            if (width < 80) width = 80;
+            f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - slot_w - px(8);
+            if (width < px(80)) width = px(80);
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
             Str shown = strip_md(bullet);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
@@ -430,11 +442,11 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             ImVec2 row_max = ImVec2(row_min.x + col_w, ImGui::GetItemRectMax().y);
             bool open = s->never_open && str_eq(str(s->never_bullet), bullet);
             if (open) {
-                ImGui::Indent(16);
+                ImGui::Indent(px(16));
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextColored(weak_text(), "Never mention");
                 ImGui::SameLine();
-                ImGui::SetNextItemWidth(200);
+                ImGui::SetNextItemWidth(px(200));
                 if (s->never_focus) {
                     ImGui::SetKeyboardFocusHere();
                     s->never_focus = false;
@@ -444,7 +456,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                 bool save = ImGui::Button("Save") || enter;
                 ImGui::SameLine();
                 if (icon_button(ICON_X, "Cancel", "never-cancel")) s->never_open = false;
-                ImGui::Unindent(16);
+                ImGui::Unindent(px(16));
                 if (save && str_trim(str(s->never_topic)).len) {
                     s->never_open = false;
                     summary_add_never(app, str(s->never_topic), day, bullet);
@@ -456,13 +468,13 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                 f64 ts = hm.len ? moment(day, hm) : 0;
                 if (ts) {
                     if (slot_button(x, row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, strip_md(bullet));
-                    x += SLOT_BUTTON + 4;
+                    x += px(SLOT_BUTTON + 4);
                 }
                 if (slot_button(x, row_min.y, ICON_X, "Dismiss (not worth keeping)")) {
                     summary_dismiss(app, day, bullet, -1);
                     ui_say(app, "Dismissed. Rewrite brings it back");
                 }
-                x += SLOT_BUTTON + 4;
+                x += px(SLOT_BUTTON + 4);
                 if (slot_button(x, row_min.y, ICON_BAN, "Never mention this topic")) {
                     s->never_open = true;
                     s->never_focus = true;
@@ -480,7 +492,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
     }
 
     if (sum->reminder_count) {
-        ImGui::Dummy(ImVec2(0, 6));
+        ImGui::Dummy(ImVec2(0, px(6)));
         sized_text(18, text_color(), str("You said you'd"));
         for (i32 n = 0; n < sum->reminder_count; n++) {
             Reminder* r = &sum->reminders[n];
@@ -489,8 +501,8 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             ImVec2 row_min = ImGui::GetCursorScreenPos();
             ImGui::TextColored(weak_text(), "%.*s", (int)r->time.len, r->time.ptr);
             ImGui::SameLine();
-            f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - 3 * SLOT_BUTTON - 16;
-            if (width < 80) width = 80;
+            f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - px(3 * SLOT_BUTTON + 16);
+            if (width < px(80)) width = px(80);
             ImGui::BeginGroup();
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
             ImGui::TextUnformatted(r->text.ptr, r->text.ptr + r->text.len);
@@ -500,7 +512,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             ImGui::EndGroup();
             ImVec2 row_max = ImVec2(row_min.x + col_w, ImGui::GetItemRectMax().y);
             bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(row_min, row_max);
-            f32 x = row_min.x + col_w - (3 * SLOT_BUTTON + 8);
+            f32 x = row_min.x + col_w - px(3 * SLOT_BUTTON + 8);
             // The bell stays in view while a notification is set; the rest show on hover.
             if (hovered || set) {
                 const char* tip = set ? "Don't remind me"
@@ -513,8 +525,8 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                 }
             }
             f64 ts = moment(day, r->time);
-            if (hovered && ts && slot_button(x + SLOT_BUTTON + 4, row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, r->said);
-            if (hovered && slot_button(x + 2 * (SLOT_BUTTON + 4), row_min.y, ICON_X, "Dismiss (not a real to-do)")) {
+            if (hovered && ts && slot_button(x + px(SLOT_BUTTON + 4), row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, r->said);
+            if (hovered && slot_button(x + px(2 * (SLOT_BUTTON + 4)), row_min.y, ICON_X, "Dismiss (not a real to-do)")) {
                 // A notification that is on goes off first, while its place in the list is known.
                 if (set) reminder_set(app, scratch(), day, n, false);
                 summary_dismiss(app, day, {}, n);
@@ -524,19 +536,21 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         }
     }
 
-    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Dummy(ImVec2(0, px(6)));
     const char* meta = tmp("Written %s %s%s%.*s", day_name(sum->created_ts), hm_text(sum->created_ts), sum->model.len ? " · " : "",
                            (int)sum->model.len, sum->model.ptr);
+    // The Rewrite button at the usual size, the small print centred on it.
+    f32 frame_h = ImGui::GetFrameHeight();
+    ImVec2 at = ImGui::GetCursorPos();
     ImGui::PushFont(0, 13);
-    ImGui::AlignTextToFramePadding();
+    ImGui::SetCursorPosY(at.y + (frame_h - ImGui::GetTextLineHeight()) / 2);
     ImGui::TextColored(weak_text(), "%s", meta);
-    if (!writing) {
-        ImGui::SameLine();
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 1));
-        if (ImGui::Button(label(ICON_REFRESH, "Rewrite"))) write_now(app, day, "Rewriting the summary");
-        ImGui::PopStyleVar();
-    }
     ImGui::PopFont();
+    if (!writing) {
+        ImGui::SameLine(0, px(12));
+        ImGui::SetCursorPosY(at.y);
+        if (ImGui::Button(label(ICON_REFRESH, "Rewrite"))) write_now(app, day, "Rewriting the summary");
+    }
     never_list(app);
 }
 
@@ -564,7 +578,7 @@ static void journal_draw(App* app, JournalState* s, f32* next_frame_ms) {
     }
     bool writing = app->summary.writing;
 
-    ImGui::BeginChild("journal-left", ImVec2(248, 0));
+    ImGui::BeginChild("journal-left", ImVec2(px(248), 0));
     calendar(app, s, today);
     ImGui::Separator();
     day_list(app, s, today);
@@ -578,13 +592,13 @@ static void journal_draw(App* app, JournalState* s, f32* next_frame_ms) {
     }
 
     ImGui::BeginChild("journal-day");
-    f32 avail = ImGui::GetContentRegionAvail().x - 16;
-    f32 col_w = avail < 720 ? avail : 720;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - col_w) / 2 + 8);
+    f32 avail = ImGui::GetContentRegionAvail().x - px(16);
+    f32 col_w = avail < px(720) ? avail : px(720);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - col_w) / 2 + px(8));
     ImGui::BeginGroup();
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + col_w);
     day_view(app, s, col_w, writing, next_frame_ms);
-    ImGui::Dummy(ImVec2(0, 12));
+    ImGui::Dummy(ImVec2(0, px(12)));
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
     ImGui::EndChild();

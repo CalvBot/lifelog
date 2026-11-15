@@ -10,6 +10,7 @@
 
 #include <wincodec.h>
 
+static const f32 TL_APP_W = 120;          // the app column in the list: icon and name
 static const f32 TL_COLUMN = 1180;       // the widest the column gets; wider windows centre it
 static const f64 TL_GAP = 300;           // a gap this long between two things heard gets its own row
 static const i32 TL_SEARCH_LIMIT = 1000; // the most matches a search fetches (newest first)
@@ -1001,15 +1002,19 @@ static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
         ImU32 fill = on ? accent_u32(0.25f) : ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
         dl->AddRectFilled(p, q, fill, 12 * u);
         if (hovered) dl->AddRect(p, q, ImGui::GetColorU32(ImGuiCol_Border), 12 * u);
+        ImU32 tc = on ? ImGui::GetColorU32(ImGuiCol_Text) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
         f32 is = 16 * u;
         ImVec2 ic = ImVec2(p.x + 16 * u - is / 2, p.y + (chip_h - is) / 2);
         ImTextureID tex = str_eq(chip->speaker, str("me")) ? 0 : app_icon(app, chip->speaker);
         if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
         else {
+            // The glyph at the icons' size, centred where an icon would be.
             const char* glyph = str_eq(chip->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW;
-            dl->AddText(ImVec2(ic.x, p.y + (chip_h - ImGui::GetFontSize()) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), glyph);
+            ImFont* font = ImGui::GetFont();
+            f32 gs = 16 * u;
+            ImVec2 gsz = font->CalcTextSizeA(gs, FLT_MAX, 0, glyph);
+            dl->AddText(font, gs, ImVec2(ic.x + (is - gsz.x) / 2, p.y + (chip_h - gsz.y) / 2), tc, glyph);
         }
-        ImU32 tc = on ? ImGui::GetColorU32(ImGuiCol_Text) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
         dl->AddText(ImVec2(p.x + 29 * u, p.y + (chip_h - ImGui::GetFontSize()) / 2), tc, name.ptr, name.ptr + name.len);
         if (clicked) set_hidden(app, chip->speaker, on);
     }
@@ -1263,7 +1268,8 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     Str text = str_trim(line->text);
     f32 u = L->u;
     f32 text_h = wrap_count(text, L->text_w) * L->lh;
-    f32 inner = 24 * u > 2 * u + text_h ? 24 * u : 2 * u + text_h;
+    f32 pad = (24 * u - L->lh) / 2;  // the first line sits centred on the play button
+    f32 inner = 24 * u > pad + text_h ? 24 * u : pad + text_h;
     f32 h = 3 * u + inner + 3 * u;
     if (!draw) return h;
 
@@ -1353,18 +1359,18 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     }
     const char* clock = clock_text(line->start_ts);
     f32 cw = ImGui::CalcTextSize(clock).x;
-    f32 ty = top + (22 * u - L->lh) / 2;
+    f32 ty = top + pad;
     dl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
     f32 is = 16 * u;
-    ImVec2 ic = ImVec2(L->x_app, top + (22 * u - is) / 2);
+    ImVec2 ic = ImVec2(L->x_app, top + (24 * u - is) / 2);
     ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
     if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
     else dl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), str_eq(line->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW);
-    Str name = fit_text(app_name(line->speaker), 150 * u - is - 8 * u);
+    Str name = fit_text(app_name(line->speaker), TL_APP_W * u - is - 8 * u);
     dl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
 
     // The text: being heard, just arrived (writing itself out), or with the search marked.
-    ImVec2 tp = ImVec2(L->x_text, top + 2 * u);
+    ImVec2 tp = ImVec2(L->x_text, ty);
     Span spans[3];
     f64 reveal = -1;
     for (i32 i = 0; i < s->fresh.count; i++) {
@@ -1592,7 +1598,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     if (s->new_page && !live) ImGui::SetNextWindowScroll(ImVec2(0, 0));
     // No padding: rows are placed by hand. Popped at once so menus keep the usual style.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("##tl_list", ImVec2(0, 0), 0, 0);
+    ImGui::BeginChild("##tl_list", ImVec2(0, 0), 0, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::PopStyleVar();
     s->list_min = ImGui::GetWindowPos();
     s->list_max = ImVec2(s->list_min.x + ImGui::GetWindowSize().x, s->list_min.y + ImGui::GetWindowSize().y);
@@ -1611,7 +1617,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     L.x_play = L.left + 8 * u;
     L.x_time = L.x_play + 24 * u + 8 * u;
     L.x_app = L.x_time + 58 * u + 8 * u;
-    L.x_text = L.x_app + 150 * u + 8 * u;
+    L.x_text = L.x_app + TL_APP_W * u + 8 * u;
     L.text_w = L.right - 12 * u - L.x_text;
     if (L.text_w < 60 * u) L.text_w = 60 * u;
     L.x_file = L.x_time + 58 * u + 8 * u;
@@ -1773,13 +1779,16 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
 
     // The search bar and the Show chips, in a centred column.
     f32 u = ImGui::GetStyle().FontScaleDpi;
-    f32 avail = ImGui::GetContentRegionAvail().x;
-    f32 cw = TL_COLUMN * u < avail ? TL_COLUMN * u : avail;
-    f32 left = ImGui::GetCursorScreenPos().x + (avail - cw) / 2;
-    tl_search_bar(app, s, left, left + cw, next_frame_ms);
+    // The list's column (tl_list), less its scrollbar, which is always there so nothing jumps.
+    f32 avail = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize;
+    f32 cw = (TL_COLUMN + 24) * u < avail ? (TL_COLUMN + 24) * u : avail;
+    f32 list_left = ImGui::GetCursorScreenPos().x + (avail - cw) / 2;
+    f32 left = list_left + 14 * u;      // the play buttons' glyphs
+    f32 right = list_left + cw - 12 * u;  // the end of the text
+    tl_search_bar(app, s, left, right, next_frame_ms);
     ImGui::Dummy(ImVec2(0, 4 * u));
     if (s->rows_dirty) tl_build_rows(app, s);
-    tl_show_chips(app, s, left, left + cw);
+    tl_show_chips(app, s, left, right);
     ImGui::Dummy(ImVec2(0, 4 * u));
     if (s->filter_sig != tl_filter_sig(app) || s->rows_dirty) tl_build_rows(app, s);
 
