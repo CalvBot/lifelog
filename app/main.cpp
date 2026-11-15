@@ -563,6 +563,9 @@ static i32 run_app() {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     log_open();
+    // A notification's button opens a lifelog: link, which starts this exe with it; pass it to
+    // the running copy and exit.
+    if (__argc > 1 && wcsncmp(__wargv[1], L"lifelog", 7) == 0) return notify_forward(__wargv[1]) ? 0 : 1;
     // One lifelog at a time: a second start opens the first one's window instead.
     HANDLE single = CreateMutexW(0, TRUE, L"Local\\lifelog.cpp.running");
     if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
