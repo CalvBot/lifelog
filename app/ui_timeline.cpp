@@ -964,7 +964,9 @@ static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
     ImGui::TextColored(weak_text(), "Show");
     ImGui::SameLine();
     if (ImGui::Button(label(ICON_LIST, "All apps…"))) {
+        // Its own window, opened by the main thread (main.cpp) and drawn by timeline_apps_draw.
         s->apps_open = true;
+        ui_open_apps(app);
         arena_reset(&s->apps_arena);
         s->apps = app->storage.db ? db_speakers(app->storage.db, &s->apps_arena) : Slice<SpeakerCount>{};
     }
@@ -1014,18 +1016,15 @@ static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
     ImGui::PopFont();
 }
 
-// A window with every app ever heard: filter, Show all, Hide all, and "Show excluded apps".
-static void tl_apps_window(App* app, TimelineState* s) {
-    if (!s->apps_open) return;
+// The "All apps…" window (its own OS window, "lifelog apps"): every app ever heard, with a
+// filter, Show all, Hide all, and "Show excluded apps". False once it should close.
+static bool timeline_apps_draw(App* app, TimelineState* s) {
+    if (!s->apps_open) return false;
     f32 u = ImGui::GetStyle().FontScaleDpi;
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowSize(ImVec2(380 * u, 560 * u), ImGuiCond_Appearing);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(300 * u, 300 * u), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x / 2, vp->WorkPos.y + vp->WorkSize.y / 2), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_PopupBg));
-    bool open = true;
-    if (ImGui::Begin("lifelog apps###tl_apps", &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse)) {
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    if (ImGui::Begin("apps", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::PushFont(0, 20);
         ImGui::TextUnformatted("Apps shown in the timeline");
         ImGui::PopFont();
@@ -1076,9 +1075,7 @@ static void tl_apps_window(App* app, TimelineState* s) {
         ImGui::EndChild();
     }
     ImGui::End();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-    if (!open) s->apps_open = false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1788,7 +1785,6 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
 
     tl_list(app, s, next_frame_ms);
     tl_calendar(app, s);
-    tl_apps_window(app, s);
 }
 
 static void timeline_free(TimelineState* s) {

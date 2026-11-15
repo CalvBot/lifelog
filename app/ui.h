@@ -29,9 +29,11 @@ struct Ui {
     char jump_said[256];   // words said then, to find the exact line
     Popup want_popup;
     char popup_day[11];
+    bool want_apps;       // the timeline's "All apps…" window
 
     HWND window;          // the main window while it is open
     HWND popup;
+    HWND apps;            // the "All apps…" window while it is open
     HWND tray;            // the tray icon's message window
     DWORD main_thread;
     char toast[256];      // a short message at the bottom of the window
@@ -45,11 +47,14 @@ struct Ui {
 void ui_show(App* app, Tab tab, const char* day);
 void ui_popup(App* app, Popup popup, const char* day);
 void ui_say(App* app, const char* fmt, ...);
+void ui_open_apps(App* app);  // the timeline's "All apps…" window
 
 // For main.cpp: draw one frame of the main window or the popup, with the lock held. False when
 // it should close. `next_frame_ms`: set to 0 to draw again at once, or to a wait for an animation.
 bool ui_draw_window(App* app, f32* next_frame_ms);
 bool ui_draw_popup(App* app, f32* next_frame_ms);
+bool ui_draw_apps(App* app, f32* next_frame_ms);  // the "All apps…" window, part of the main one
+void ui_apps_closed(App* app);
 // The window's own state is made when it opens and freed when it closes.
 void ui_window_opened(App* app);
 void ui_window_closed(App* app);
