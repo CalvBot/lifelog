@@ -343,6 +343,8 @@ static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         s->frames_wanted = 3;
         return 1;
     }
+    // ImGui takes keys without saying it handled them, so wake a frame for them here.
+    if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) || msg == WM_SETFOCUS || msg == WM_KILLFOCUS) s->frames_wanted = 3;
     switch (msg) {
     case WM_SIZE:
         if (wp != SIZE_MINIMIZED && s->swap) {
