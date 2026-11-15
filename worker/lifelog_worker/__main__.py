@@ -106,7 +106,8 @@ def migrate(db: sqlite3.Connection) -> None:
 def process(model, db: sqlite3.Connection, wav: Path, language: str | None, audio_dir: Path) -> int:
     meta = json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
     lines = transcribe(model, read_wav(wav), language)
-    speaker = "me" if meta["source"] == "mic" else (meta.get("exe") or "unknown")
+    # Per-person call audio (lifelog-vencord) names the speaker; other app audio is labelled by the app
+    speaker = "me" if meta["source"] == "mic" else (meta.get("speaker") or meta.get("exe") or "unknown")
     kept = f"{time.strftime('%Y-%m-%d', time.localtime(meta['start_ts']))}/{wav.name}" if lines else None
     with db:  # one transaction per file
         db.executemany(
