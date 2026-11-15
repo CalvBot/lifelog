@@ -249,7 +249,8 @@ static bool setup_transcriber(App* app, char* error, i32 cap) {
     wchar_t cache[MAX_PATH + 16], pythons[MAX_PATH + 32];
     swprintf(cache, COUNT(cache), L"UV_CACHE_DIR=%ls\\cache", uv_dir);
     swprintf(pythons, COUNT(pythons), L"UV_PYTHON_INSTALL_DIR=%ls\\python", uv_dir);
-    const wchar_t* env[] = {cache, pythons, L"UV_NO_PROGRESS=1"};
+    // Its own Python even if one is installed, so uninstalling that one breaks nothing.
+    const wchar_t* env[] = {cache, pythons, L"UV_NO_PROGRESS=1", L"UV_PYTHON_PREFERENCE=only-managed"};
 
     wchar_t env_dir[MAX_PATH], python[MAX_PATH], cmd[4 * MAX_PATH];
     setup_dir(L"transcriber", env_dir);
