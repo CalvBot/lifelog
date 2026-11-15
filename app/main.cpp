@@ -158,28 +158,91 @@ static void load_fonts(f32 scale) {
     ImGui::GetStyle().FontScaleDpi = scale;
 }
 
+// Whether Windows' apps are set to dark (Settings > Personalisation > Colours).
+static bool system_dark() {
+    DWORD light = 1, size = sizeof(light);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                 L"AppsUseLightTheme", RRF_RT_REG_DWORD, 0, &light, &size);
+    return light == 0;
+}
+
 static void style_init(f32 scale) {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();
-    ImGui::StyleColorsLight(&st);
+    bool dark = system_dark();
+    if (dark) ImGui::StyleColorsDark(&st);
+    else ImGui::StyleColorsLight(&st);
     st.WindowRounding = 0;
-    st.FrameRounding = 4;
-    st.GrabRounding = 4;
-    st.PopupRounding = 6;
-    st.FramePadding = ImVec2(8, 5);
+    st.ChildRounding = 6;
+    st.FrameRounding = 6;
+    st.GrabRounding = 6;
+    st.PopupRounding = 8;
+    st.FramePadding = ImVec2(10, 4);
     st.ItemSpacing = ImVec2(8, 6);
     st.WindowPadding = ImVec2(12, 12);
+    st.ScrollbarSize = 12;
+    st.WindowBorderSize = 0;
     ImVec4 accent = ImVec4(0 / 255.0f, 120 / 255.0f, 212 / 255.0f, 1);
-    st.Colors[ImGuiCol_Button] = ImVec4(0.93f, 0.93f, 0.93f, 1);
-    st.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.87f, 0.87f, 0.87f, 1);
-    st.Colors[ImGuiCol_ButtonActive] = ImVec4(0.80f, 0.80f, 0.80f, 1);
-    st.Colors[ImGuiCol_CheckMark] = accent;
-    st.Colors[ImGuiCol_SliderGrab] = accent;
-    st.Colors[ImGuiCol_Tab] = ImVec4(0.95f, 0.95f, 0.95f, 1);
-    st.Colors[ImGuiCol_TabSelected] = ImVec4(1, 1, 1, 1);
-    st.Colors[ImGuiCol_TabSelectedOverline] = accent;
-    st.Colors[ImGuiCol_WindowBg] = ImVec4(1, 1, 1, 1);
+    ImVec4* c = st.Colors;
+    if (dark) {
+        c[ImGuiCol_WindowBg] = ImVec4(0.11f, 0.11f, 0.11f, 1);
+        c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+        c[ImGuiCol_PopupBg] = ImVec4(0.15f, 0.15f, 0.15f, 1);
+        c[ImGuiCol_FrameBg] = ImVec4(0.17f, 0.17f, 0.17f, 1);
+        c[ImGuiCol_FrameBgHovered] = ImVec4(0.22f, 0.22f, 0.22f, 1);
+        c[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.26f, 0.26f, 1);
+        c[ImGuiCol_Button] = ImVec4(0.20f, 0.20f, 0.20f, 1);
+        c[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.26f, 0.26f, 1);
+        c[ImGuiCol_ButtonActive] = ImVec4(0.32f, 0.32f, 0.32f, 1);
+        c[ImGuiCol_Header] = ImVec4(0.24f, 0.24f, 0.24f, 1);
+        c[ImGuiCol_HeaderHovered] = ImVec4(0.28f, 0.28f, 0.28f, 1);
+        c[ImGuiCol_HeaderActive] = ImVec4(0.32f, 0.32f, 0.32f, 1);
+        c[ImGuiCol_Border] = ImVec4(0.25f, 0.25f, 0.25f, 1);
+        c[ImGuiCol_Text] = ImVec4(0.86f, 0.86f, 0.86f, 1);
+        c[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.55f, 1);
+    } else {
+        c[ImGuiCol_WindowBg] = ImVec4(0.97f, 0.97f, 0.97f, 1);
+        c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+        c[ImGuiCol_PopupBg] = ImVec4(1, 1, 1, 1);
+        c[ImGuiCol_FrameBg] = ImVec4(1, 1, 1, 1);
+        c[ImGuiCol_FrameBgHovered] = ImVec4(0.93f, 0.93f, 0.93f, 1);
+        c[ImGuiCol_FrameBgActive] = ImVec4(0.89f, 0.89f, 0.89f, 1);
+        c[ImGuiCol_Button] = ImVec4(0.91f, 0.91f, 0.91f, 1);
+        c[ImGuiCol_ButtonHovered] = ImVec4(0.86f, 0.86f, 0.86f, 1);
+        c[ImGuiCol_ButtonActive] = ImVec4(0.80f, 0.80f, 0.80f, 1);
+        c[ImGuiCol_Header] = ImVec4(0.87f, 0.87f, 0.87f, 1);
+        c[ImGuiCol_HeaderHovered] = ImVec4(0.84f, 0.84f, 0.84f, 1);
+        c[ImGuiCol_HeaderActive] = ImVec4(0.80f, 0.80f, 0.80f, 1);
+        c[ImGuiCol_Border] = ImVec4(0.85f, 0.85f, 0.85f, 1);
+        c[ImGuiCol_TextDisabled] = ImVec4(0.45f, 0.45f, 0.45f, 1);
+    }
+    c[ImGuiCol_CheckMark] = accent;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = accent;
+    c[ImGuiCol_TextSelectedBg] = ImVec4(accent.x, accent.y, accent.z, 0.45f);
+    c[ImGuiCol_TextLink] = accent;
+    c[ImGuiCol_NavCursor] = accent;
     st.ScaleAllSizes(scale);
+}
+
+// A texture from 32-bit RGBA pixels, for app icons and image previews (ui_common.cpp).
+static ID3D11ShaderResourceView* texture_from_rgba(const u8* rgba, i32 w, i32 h) {
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = (UINT)w;
+    desc.Height = (UINT)h;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data = {rgba, (UINT)w * 4, 0};
+    ID3D11Texture2D* tex = 0;
+    if (FAILED(g_gpu.device->CreateTexture2D(&desc, &data, &tex))) return 0;
+    ID3D11ShaderResourceView* view = 0;
+    g_gpu.device->CreateShaderResourceView(tex, 0, &view);
+    tex->Release();
+    return view;
 }
 
 static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -193,7 +256,8 @@ static bool surface_open(Surface* s, const wchar_t* title, DWORD style, DWORD ex
         wc.lpfnWndProc = surface_proc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursorW(0, IDC_ARROW);
-        wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+        wc.hIcon = logo_icon(GetSystemMetrics(SM_CXICON), false);
+        wc.hIconSm = logo_icon(GetSystemMetrics(SM_CXSMICON), false);
         wc.lpszClassName = L"lifelog.surface";
         RegisterClassExW(&wc);
         registered = true;
@@ -256,7 +320,8 @@ static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
     app_unlock(&g_app);
 
     ImGui::Render();
-    f32 clear[4] = {1, 1, 1, 1};
+    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+    f32 clear[4] = {bg.x, bg.y, bg.z, 1};
     g_gpu.context->OMSetRenderTargets(1, &s->target, 0);
     g_gpu.context->ClearRenderTargetView(s->target, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -447,6 +512,7 @@ static void open_popup(Popup which) {
     CHECK(ok, "the tray menu to open (error %lu)", GetLastError());
     app_lock(&g_app);
     g_app.ui.popup = g_popup.hwnd;
+    ui_popup_opened(&g_app);
     app_unlock(&g_app);
     ShowWindow(g_popup.hwnd, SW_SHOW);
     SetForegroundWindow(g_popup.hwnd);
@@ -456,6 +522,7 @@ static void close_popup() {
     app_lock(&g_app);
     g_app.ui.popup = 0;
     g_app.ui.want_popup = POPUP_NONE;
+    ui_popup_closed(&g_app);
     app_unlock(&g_app);
     surface_close(&g_popup);
 }
@@ -493,6 +560,7 @@ static i32 run_app() {
     capture_start(app);
     worker_start(app);
     summary_start(app);
+    api_start(app);
     tray_update(app);
     app_unlock(app);
     LOG("lifelog started");
@@ -566,8 +634,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // A notification's button opens a lifelog: link, which starts this exe with it; pass it to
     // the running copy and exit.
     if (__argc > 1 && wcsncmp(__wargv[1], L"lifelog", 7) == 0) return notify_forward(__wargv[1]) ? 0 : 1;
-    // One lifelog at a time: a second start opens the first one's window instead.
-    HANDLE single = CreateMutexW(0, TRUE, L"Local\\lifelog.cpp.running");
+    // `lifelog.exe clip 15m` and the other commands: the CLI (options start with "-").
+    if (__argc > 1 && __wargv[1][0] != L'-') return cli_main(__argc, __wargv);
+    // One lifelog at a time: a second start opens the first one's window instead. A test copy
+    // (LIFELOG_CONFIG set) is one per config, so several can run beside the real one.
+    wchar_t mutex_name[96] = L"Local\\lifelog.cpp.running";
+    wchar_t test_config[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", test_config, MAX_PATH)) {
+        u32 hash = 2166136261u;
+        for (wchar_t* c = test_config; *c; c++) hash = (hash ^ towlower(*c)) * 16777619u;
+        swprintf(mutex_name, COUNT(mutex_name), L"Local\\lifelog.cpp.test.%08x", hash);
+    }
+    HANDLE single = CreateMutexW(0, TRUE, mutex_name);
     if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(L"lifelog.tray", 0);
         if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
