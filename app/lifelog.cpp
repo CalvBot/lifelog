@@ -31,6 +31,7 @@ struct App;
 #include "db.cpp"
 #include "apps.cpp"
 #include "capture.cpp"
+#include "icon.cpp"
 #include "worker.cpp"
 #include "summary.cpp"
 #include "clip.cpp"
