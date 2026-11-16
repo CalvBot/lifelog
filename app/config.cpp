@@ -22,7 +22,7 @@ gate_rms = 0.003
 # Days the audio of transcribed lines is kept, to play them back. The text is kept for good.
 keep_audio_days = 7
 # Where the VoiceStreams Vencord plugin runs its players (one per person in a Discord call).
-# Empty: %LOCALAPPDATA%\VoiceStreams. While its players run, Discord itself isn't recorded.
+# Empty: %LOCALAPPDATA%\VoiceStreams.
 voicestreams_dir = ""
 
 [processing]

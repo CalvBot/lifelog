@@ -48,20 +48,6 @@ void voicestreams_dir(Config* c, wchar_t out[MAX_PATH]) {
     for (size_t n = wcslen(out); n > 0 && (out[n - 1] == L'\\' || out[n - 1] == L'/'); n--) out[n - 1] = 0;
 }
 
-bool voice_player(u32 pid, Str exe, const wchar_t* dir) {
-    if (!voice_person(exe).len || !dir[0]) return false;
-    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!h) return false;
-    wchar_t path[MAX_PATH * 2];
-    DWORD n = COUNT(path);
-    bool ok = QueryFullProcessImageNameW(h, 0, path, &n) != 0;
-    CloseHandle(h);
-    size_t len = wcslen(dir);
-    for (DWORD i = 0; ok && i < n; i++)
-        if (path[i] == L'/') path[i] = L'\\';
-    return ok && n > len && _wcsnicmp(path, dir, len) == 0 && path[len] == L'\\';
-}
-
 void voicestreams_set_dir(App* app, Str dir) {
     dir = str_trim(dir);
     SET(app->config.capture.voicestreams_dir, dir);

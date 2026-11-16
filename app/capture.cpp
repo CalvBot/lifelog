@@ -645,53 +645,17 @@ static Pids playing_pids(IMMDeviceEnumerator* en, Arena* a) {
     return out;
 }
 
-// The lifelog-vencord plugin keeps this file fresh while it records a call one person a track.
-static bool discord_calls_recorded(const wchar_t* file) {
-    WIN32_FILE_ATTRIBUTE_DATA info = {};
-    if (!GetFileAttributesExW(file, GetFileExInfoStandard, &info)) return false;
-    FILETIME now;
-    GetSystemTimeAsFileTime(&now);
-    i64 t = (i64)(((u64)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime);
-    i64 n = (i64)(((u64)now.dwHighDateTime << 32) | now.dwLowDateTime);
-    i64 age = n - t;  // in 100 ns
-    return age >= 0 && age < 90 * 10000000LL;
-}
-
-static bool is_discord(Str exe) { return str_eq_nocase(exe, str("discord.exe")); }
-
-// Whether a VoiceStreams player runs: then the call is recorded one person per player, and
-// Discord's own mixed sound would only repeat it. Without players Discord is recorded as usual.
-static bool voice_players_running(Procs* procs, const wchar_t* dir) {
-    for (i32 i = 0; i < procs->count; i++)
-        if (voice_player(procs->items[i].pid, str(procs->items[i].exe), dir)) return true;
-    return false;
-}
-
 static DWORD WINAPI capture_watch_main(void* p) {
     App* app = (App*)p;
     CoInitializeEx(0, COINIT_MULTITHREADED);
     IMMDeviceEnumerator* en = device_enumerator();
     u32 own_pid = GetCurrentProcessId();
-    bool c_calls_last = false;
-    wchar_t calls_file[MAX_PATH];
-    app_lock(app);
-    Mark m0 = mark(scratch());
-    swprintf(calls_file, MAX_PATH, L"%s\\discord-calls.active", wide(scratch(), str(app->config.data_dir)));
-    rewind(m0);
-    app_unlock(app);
 
     do {
         Mark m = mark(scratch());
         Procs procs = processes(scratch());
         Wins wins = windows_now(scratch());
         Pids playing = playing_pids(en, scratch());
-        wchar_t vs_dir[MAX_PATH];
-        app_lock(app);
-        voicestreams_dir(&app->config, vs_dir);
-        app_unlock(app);
-        bool calls = discord_calls_recorded(calls_file) || voice_players_running(&procs, vs_dir);
-        if (calls != c_calls_last) LOG("%s", calls ? "Discord call recorded per person: Discord's own sound is not" : "Discord recorded as one app again");
-        c_calls_last = calls;
         f64 now = now_ts();
         bool changed = false;
 
@@ -711,7 +675,7 @@ static DWORD WINAPI capture_watch_main(void* p) {
             Str exe = str(proc->exe);
             AppInfo* info = app_find(app, exe);
             // lifelog's own window plays recordings back: never record those again.
-            if ((info && info->decision == DECISION_EXCLUDED) || is_own_exe(exe) || (calls && is_discord(exe))) continue;
+            if ((info && info->decision == DECISION_EXCLUDED) || is_own_exe(exe)) continue;
             u32 root = proc_root(&procs, pid);
             Stream* found = 0;
             for (i32 k = 0; k < c->streams.count && !found; k++)
@@ -739,7 +703,7 @@ static DWORD WINAPI capture_watch_main(void* p) {
             if (s->source != SOURCE_APP) continue;
             Str exe = str(s->exe);
             AppInfo* info = app_find(app, exe);
-            if ((info && info->decision == DECISION_EXCLUDED) || (calls && is_discord(exe)) || !record_apps) {
+            if ((info && info->decision == DECISION_EXCLUDED) || !record_apps) {
                 // Just excluded: stop now and drop the sentence in progress.
                 LOG("%s (pid %u): no longer recorded", s->exe, s->pid);
                 stream_end(app, i--, true);

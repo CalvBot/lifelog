@@ -90,7 +90,7 @@ C++ built with MSVC, in a plain data-oriented style:
 - Private mode (paused) records nothing and drops the sentence in progress.
 - New apps are recorded until you decide: included (keep recording) or excluded (record nothing).
 - Excluded apps can still count as games.
-- Discord calls can be recorded one track per person (the Vencord plugin); then Discord's mixed sound is skipped.
+- Discord calls can be recorded one track per person (the VoiceStreams Vencord plugin plays each person through their own app and silences them in Discord, so Discord is recorded like any other app).
 - Audio is kept 7 days for playback, then deleted. The text is kept for good.
 - If the data drive is not plugged in, it waits for it instead of recording somewhere else.
 - A second copy of the app exits straight away.

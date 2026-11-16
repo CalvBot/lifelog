@@ -66,8 +66,6 @@ Str voice_person(Str exe);
 // The folder VoiceStreams runs its players from: capture.voicestreams_dir, or by default
 // %LOCALAPPDATA%\VoiceStreams. No trailing backslash.
 void voicestreams_dir(Config* c, wchar_t out[MAX_PATH]);
-// Whether process `pid` (`exe`) is a VoiceStreams player: named like one and run from under `dir`.
-bool voice_player(u32 pid, Str exe, const wchar_t* dir);
 // Sets capture.voicestreams_dir and saves it; empty goes back to the default.
 void voicestreams_set_dir(App* app, Str dir);
 
