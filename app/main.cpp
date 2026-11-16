@@ -177,7 +177,8 @@ static void load_fonts(f32 scale) {
         io.Fonts->AddFontFromFileTTF(icons.ptr, 16.0f, &cfg);
     }
     Str bold = str_fmt(scratch(), "%.*s\\Fonts\\seguisb.ttf", (int)segoe.len, segoe.ptr);
-    g_bold = font && GetFileAttributesA(bold.ptr) != INVALID_FILE_ATTRIBUTES ? io.Fonts->AddFontFromFileTTF(bold.ptr, 16.0f) : 0;
+    // The second font, where ui_common.cpp's bold_font() finds it.
+    if (font && GetFileAttributesA(bold.ptr) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(bold.ptr, 16.0f);
     rewind(m);
     ImGui::GetStyle().FontScaleDpi = scale;
 }

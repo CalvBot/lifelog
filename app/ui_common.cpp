@@ -37,8 +37,13 @@
 #define ICON_GLOBE "\xee\x83\xab"          // U+E0EB
 #define ICON_BAN "\xee\x81\x95"            // U+E055
 #define ICON_LINK "\xee\x84\x87"           // U+E107
-// Segoe UI Semibold, for titles; null if Windows lacks it (main.cpp's load_fonts sets it).
-static ImFont* g_bold;
+// Segoe UI Semibold, for titles; null if Windows lacks it. Each window has its own ImGui context
+// and font atlas, so it is looked up in the current one: a pointer kept from another window's
+// atlas is freed when that window closes. main.cpp's load_fonts adds it second.
+static ImFont* bold_font() {
+    ImFontAtlas* fonts = ImGui::GetIO().Fonts;
+    return fonts->Fonts.Size > 1 ? fonts->Fonts[1] : 0;
+}
 
 #define ICON_TRASH "\xee\x86\x8e"          // U+E18E
 #define ICON_FOLDER "\xee\x83\x9c"         // U+E0DC

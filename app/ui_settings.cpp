@@ -83,10 +83,11 @@ static ImVec4 strong_text() {
 
 // A card's title, in bold on its own line.
 static void title(const char* text) {
-    if (g_bold) ImGui::PushFont(g_bold, 0);
+    ImFont* bold = bold_font();
+    if (bold) ImGui::PushFont(bold, 0);
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(strong_text(), "%s", text);
-    if (g_bold) ImGui::PopFont();
+    if (bold) ImGui::PopFont();
 }
 
 static void weak(const char* text) {
