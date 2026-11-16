@@ -655,6 +655,8 @@ struct WatchFacts {
     Wins wins;
     Pids playing;   // with a sound session playing; not 0 ("system sounds") or lifelog
     char (*paths)[MAX_PATH];  // each playing pid's exe path, "" when it could not be read
+    SeenPath* fresh;  // exes seen for the first time this run, with their paths
+    i32 fresh_count;
     f64 now;
 };
 
@@ -662,6 +664,7 @@ struct WatchFacts {
 static void watch_apply(App* app, Job* job) {
     if (stopping(app)) return;  // capture_stop has ended the streams
     WatchFacts* f = (WatchFacts*)job->data;
+    apps_seen(app, &f->procs, f->fresh, f->fresh_count);
     Capture* c = &app->capture;
     bool changed = false;
     bool record_apps = app->config.capture.apps;
@@ -738,12 +741,14 @@ static void watch_apply(App* app, Job* job) {
 }
 
 // Once a second: what runs, what has windows and what plays sound, gathered without the lock
-// and posted to the main thread.
+// and posted to the main thread. The one scan of the processes: the app list's "running" and the
+// game check come from it too (apps_seen).
 static DWORD WINAPI capture_watch_main(void* p) {
     App* app = (App*)p;
     CoInitializeEx(0, COINIT_MULTITHREADED);
     IMMDeviceEnumerator* en = device_enumerator();
     u32 own_pid = GetCurrentProcessId();
+    Names seen = {};  // exes whose path was read already (found or not), this run
 
     do {
         Job* job = job_new(watch_apply);
@@ -764,11 +769,26 @@ static DWORD WINAPI capture_watch_main(void* p) {
             f->playing.items[n] = pid;
             if (!proc_path(pid, f->paths[n], MAX_PATH)) f->paths[n][0] = 0;
         }
+        // Where each exe not seen before lives. Elevated processes cannot be asked; they are
+        // tried once a run.
+        i32 fresh = 0;
+        for (i32 i = 0; i < f->procs.count; i++) fresh += f->procs.items[i].pid != 0 && !names_has(&seen, str(f->procs.items[i].exe));
+        f->fresh = PUSH_ARRAY(a, SeenPath, fresh);
+        for (i32 i = 0; i < f->procs.count; i++) {
+            Proc* pr = &f->procs.items[i];
+            if (pr->pid == 0 || names_has(&seen, str(pr->exe))) continue;
+            names_set(&seen, str(pr->exe), true);
+            SeenPath* e = &f->fresh[f->fresh_count];
+            if (!proc_path(pr->pid, e->path, MAX_PATH)) continue;
+            SET(e->exe, str(pr->exe));
+            f->fresh_count++;
+        }
         f->now = now_ts();
         job->data = f;
         job_post(app, job);
     } while (sleep_unless_stopping(app, 1000));
 
+    list_free(&seen);
     if (en) en->Release();
     CoUninitialize();
     return 0;

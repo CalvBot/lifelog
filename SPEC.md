@@ -144,7 +144,9 @@ event queue, each stream's title block, the notification queue and the log file.
    polling; one watcher for processes and streams. Done so far: the transcriber (woken), and the summary, writer,
    notification links and setup, which take no lock. The summary thread still looks every 15 s, since reminders
    come due on the clock too; it only reads the database and posts what it read, and the main thread decides
-   whether to ask, count down or start. Left: the one watcher.
+   whether to ask, count down or start. Then one watcher: the capture watcher's process scan also gives the app
+   list's "running" and the game check, and paths of exes new this run; the apps thread only fetches icons and
+   line counts. Done.
 3. Database thread and file writer; nothing in a frame touches the disk.
 4. API and the small window threads on the worker pool, with the UI globals owned by the main thread; then delete
    `App.lock`, `app_lock` and `app_unlock`.

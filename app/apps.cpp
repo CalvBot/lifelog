@@ -594,80 +594,54 @@ static void lines_refresh(App* app, sqlite3* db) {
     wake_window(app);
 }
 
+void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count) {
+    // Where each exe seen for the first time this run lives.
+    Str lines = {"", 0};
+    for (i32 i = 0; i < fresh_count; i++)
+        if (!app_path(app, str(fresh[i].exe)) && learn_path(app, str(fresh[i].exe), str(fresh[i].path)))
+            lines = str_fmt(scratch(), "%s%s\t%s\n", lines.ptr, fresh[i].exe, fresh[i].path);
+    paths_append(lines);
+
+    // Which apps run, and whether a game does. A game counts even when it is excluded.
+    bool changed = false;
+    const char* game = "";
+    for (i32 i = 0; i < app->apps.list.count; i++) {
+        AppInfo* a = &app->apps.list[i];
+        bool running = false;
+        for (i32 j = 0; j < procs->count && !running; j++) running = strcmp(procs->items[j].exe, a->exe) == 0;
+        changed |= running != a->running;
+        a->running = running;
+        if (running && a->game == GAME_YES && !game[0]) game = a->exe;
+    }
+    if (strcmp(game, app->apps.game_running) != 0) {
+        if (game[0]) LOG("%s is running: transcription waits, audio keeps queueing", game);
+        else LOG("no game running any more");
+        SET(app->apps.game_running, str(game));
+        atomic_set(&app->apps.game_on, game[0] != 0);
+        worker_wake(app);
+        changed = true;
+    }
+    if (changed) wake_window(app);
+}
+
+// Once a second: icons for the apps open now, and the lines heard per app when the worker wrote
+// some (at most once a minute). Which apps run comes from the capture watcher (apps_seen).
 static DWORD WINAPI apps_watch_main(void* p) {
     App* app = (App*)p;
     CoInitializeEx(0, COINIT_APARTMENTTHREADED);  // the shell's icons want it
     paths_load(app);
-    Names seen = {};  // exes whose path was looked up already (found or not), this run
     sqlite3* db = 0;
     u64 lines_version = (u64)-1;
     f64 lines_ts = 0;
 
     while (!stopping(app)) {
-        Mark m = mark(scratch());
-        Procs procs = processes(scratch());
-
-        // Where each exe not seen before lives. Elevated processes cannot be asked; they are
-        // tried once a run.
-        List<Proc> fresh = {};
-        for (i32 i = 0; i < procs.count; i++) {
-            Proc* pr = &procs.items[i];
-            if (pr->pid == 0 || names_has(&seen, str(pr->exe))) continue;
-            names_set(&seen, str(pr->exe), true);
-            list_push(&fresh, *pr);
-        }
-        if (fresh.count) {
-            app_lock(app);
-            for (i32 i = 0; i < fresh.count; i++)
-                if (app_path(app, str(fresh[i].exe))) list_remove(&fresh, i--);
-            app_unlock(app);
-        }
-        Str lines = {"", 0};
-        for (i32 i = 0; i < fresh.count; i++) {
-            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, fresh[i].pid);
-            if (!h) continue;
-            wchar_t buf[1024];
-            DWORD len = COUNT(buf);
-            BOOL ok = QueryFullProcessImageNameW(h, 0, buf, &len);
-            CloseHandle(h);
-            if (!ok) continue;
-            Str path = narrow(scratch(), buf, len);
-            app_lock(app);
-            bool added = learn_path(app, str(fresh[i].exe), path);
-            app_unlock(app);
-            if (added) lines = str_fmt(scratch(), "%s%s\t%s\n", lines.ptr, fresh[i].exe, path.ptr);
-        }
-        list_free(&fresh);
-        paths_append(lines);
-
-        // Which apps run, and whether a game does. A game counts even when it is excluded.
-        bool changed = false;
         app_lock(app);
-        const char* game = "";
-        for (i32 i = 0; i < app->apps.list.count; i++) {
-            AppInfo* a = &app->apps.list[i];
-            bool running = false;
-            for (i32 j = 0; j < procs.count && !running; j++) running = strcmp(procs.items[j].exe, a->exe) == 0;
-            changed |= running != a->running;
-            a->running = running;
-            if (running && a->game == GAME_YES && !game[0]) game = a->exe;
-        }
-        if (strcmp(game, app->apps.game_running) != 0) {
-            if (game[0]) LOG("%s is running: transcription waits, audio keeps queueing", game);
-            else LOG("no game running any more");
-            SET(app->apps.game_running, str(game));
-            atomic_set(&app->apps.game_on, game[0] != 0);
-            worker_wake(app);
-            changed = true;
-        }
         u64 version = app->worker.lines_version;
         bool db_ready = app->storage.ready;
         app_unlock(app);
-        if (changed) wake_window(app);
 
         icons_for(app, true);
 
-        // Lines heard per app: when the worker wrote some, at most once a minute.
         f64 now = now_ts();
         if (db_ready && version != lines_version && now - lines_ts >= 60) {
             if (!db) db = db_open(app);  // reads only data_dir, which does not change while running
@@ -677,11 +651,9 @@ static DWORD WINAPI apps_watch_main(void* p) {
                 lines_ts = now;
             }
         }
-        rewind(m);
         if (!sleep_unless_stopping(app, 1000)) break;
     }
     if (db) sqlite3_close(db);
-    list_free(&seen);
     CoUninitialize();
     return 0;
 }

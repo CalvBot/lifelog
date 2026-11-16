@@ -125,6 +125,15 @@ Wins windows_now(Arena* a);
 // The title of the first window of a process named `exe`, or "".
 Str title_for(Str exe, Procs* p, Wins* w);
 
+// An exe's full path, read by the capture watcher the first time it sees the exe this run.
+struct SeenPath {
+    char exe[64];
+    char path[MAX_PATH];
+};
+// The main thread, with the lock: what the capture watcher's process scan saw (the one scan of
+// the processes). Learns the new paths and sets which apps run and whether a game does.
+void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count);
+
 // ---------------------------------------------------------------------------------------------
 // The lifelog logo (icon.cpp), drawn in code so it is sharp at every size: a speech bubble with
 // three sound-level bars. Blue while listening, grey with a pause badge in private mode.
