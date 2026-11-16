@@ -358,7 +358,7 @@ enum Sent : u8 {
 };
 
 // With our own whisper.cpp. In `a`.
-static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char* language, Str wav, Slice<Heard>* out, char* error, i32 cap) {
+static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char* language, bool mic, Str wav, Slice<Heard>* out, char* error, i32 cap) {
     *out = {};
     Slice<f32> samples = {};
     if (!wav_samples(a, wav, &samples)) {
@@ -384,6 +384,9 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char
     wp.vad = true;
     wp.vad_model_path = vad_path.ptr;
     wp.vad_params.min_silence_duration_ms = 500;
+    // The mic is only ever your own voice, close up: a lower bar than for apps (0.5), whose
+    // music and game sound would get through it.
+    if (mic) wp.vad_params.threshold = 0.35f;
     AbortCheck check = {app, 0, false};
     wp.abort_callback = whisper_should_abort;
     wp.abort_callback_user_data = &check;
@@ -531,7 +534,8 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
         return SENT_OK;
     }
     Slice<Heard> heard = {};
-    Sent sent = ctx ? transcribe_here(app, a, ctx, language, wav, &heard, error, sizeof(error))
+    bool mic = str_eq(json_text(json_get(&meta, "source")), str("mic"));
+    Sent sent = ctx ? transcribe_here(app, a, ctx, language, mic, wav, &heard, error, sizeof(error))
                     : transcribe_there(a, t, wav, &heard, error, sizeof(error));
     if (sent == SENT_RETRY || sent == SENT_ABORTED) {
         if (sent == SENT_RETRY && !stopping(app)) WARN("%s: %s; trying again later", label.ptr, error);
