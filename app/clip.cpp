@@ -494,6 +494,10 @@ ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind, 
         Slice<Line> lines = {PUSH_ARRAY(scratch(), Line, all.count), 0};
         for (i32 i = 0; i < all.count; i++)
             if (!exclude || !names_has(exclude, all.items[i].speaker)) lines.items[lines.count++] = all.items[i];
+        // Each speaker as the app list shows it ("zaddish", "Brave Browser"), not its exe.
+        app_lock(app);
+        for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), app_label(app, lines.items[i].speaker));
+        app_unlock(app);
         List<char> text = {};
         clip_format(&text, lines, from, to);
         Str body = {text.items, text.count};
