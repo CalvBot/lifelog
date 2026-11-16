@@ -112,8 +112,8 @@ static void message_label(PopupState* s) {
 
 // A menu cell: icon and text, no frame, in column `col` of `cols` across the width. Its hover
 // reaches into the window's padding on the left, so the first column's icons line up with the
-// lines above. `weak` greys the text (Restart, Quit).
-static bool menu_item(const char* icon, const char* text, i32 col, i32 cols, bool weak = false) {
+// lines above.
+static bool menu_item(const char* icon, const char* text, i32 col, i32 cols) {
     f32 pad = ImGui::GetStyle().FramePadding.x;
     f32 gap = ImGui::GetStyle().ItemSpacing.x;
     f32 left = ImGui::GetWindowContentRegionMin().x;
@@ -122,11 +122,10 @@ static bool menu_item(const char* icon, const char* text, i32 col, i32 cols, boo
     if (col) ImGui::SameLine(x);
     else ImGui::SetCursorPosX(x);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    if (weak) ImGui::PushStyleColor(ImGuiCol_Text, weak_text());
     ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
-    bool clicked = button(label(icon, text), ImVec2(cell + pad, weak ? px(28) : px(30)));
+    bool clicked = button(label(icon, text), ImVec2(cell + pad, px(30)));
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor(weak ? 2 : 1);
+    ImGui::PopStyleColor();
     return clicked;
 }
 
@@ -316,18 +315,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         ui_show(app, TAB_SETTINGS, 0);
         keep = false;
     }
-    ImGui::PopStyleVar();
-    ImGui::Dummy(ImVec2(0, 0));  // the usual gap above the line
-    ImGui::Separator();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), 0));
-    if (menu_item(ICON_REFRESH, "Restart", 0, 2, true)) {
-        app_restart(app);
-        keep = false;
-    }
-    if (menu_item(ICON_POWER, "Quit", 1, 2, true)) {
-        app_quit(app);
-        keep = false;
-    }
+    // Restart and Quit are in the tray icon's right-click menu.
     ImGui::PopStyleVar();
     return keep;
 }
