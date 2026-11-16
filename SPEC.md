@@ -14,9 +14,10 @@ threads, the window on the main thread. Transcription is whisper.cpp, loaded int
 
 **One live state, shared in memory.** The app has a single `App` value that holds what the program is doing right
 now: the settings, whether it is listening, which apps are being recorded, the transcription queue, the GPU load
-and what the summary writer is doing. The recorder threads and the window share it. There are no copies of it.
+and what the summary writer is doing. The main thread owns it; other threads never touch it (see **Threads**
+below). There are no copies of it.
 
-- The window reads `App` every time it draws. Nothing is fetched, polled or turned into JSON.
+- The window reads `App` every time it draws, with no lock. Nothing is fetched, polled or turned into JSON.
 - A button calls a method on `App`, for example `app.set_max_words(300)`. The method changes the value in memory,
   saves `config.toml` if it is a setting, and returns. The next frame draws the new value. There are no optimistic
   updates, because there is no reply to wait for.
@@ -60,6 +61,68 @@ its output per batch), and the app tells the window. **(to decide: the worker ha
 need a way in. A small local HTTP API stays for them only, and each route calls the same `App` methods. The window
 doesn't use it.
 
+## Threads: one owner, messages in (planned)
+
+Today one lock (`App.lock`) guards everything, and the window holds it for the whole of every frame. Every other
+thread waits on it: the audio threads after each packet (about every 10 ms), the transcriber, the summary writer,
+the API. The frame also runs slow work under it: database queries (timeline day, search, journal), config saves,
+`ShellExecute`. So the program runs one thing at a time. The plan below removes `App.lock`.
+
+**The main thread owns `App`.** It is the only thread that reads or writes it, so it never locks it, and a frame
+always sees one moment. The main thread does only quick things: apply messages, draw, start jobs.
+
+**Other threads send messages.** One queue from every thread to the main thread, as clipback's `events.cpp` does: a
+fixed ring of `Event { kind, a, b, text[512] }` behind a small lock that is held only to copy one event in or out. Posting
+wakes the main thread with `PostThreadMessage`; the message loop applies every queued event, then redraws the window if
+one is open. This works with the window closed, so the tray, API and notifications don't depend on it.
+
+**Bigger results come as jobs.** A job is a struct with its own arena. The main thread fills in the request (what to
+do, plus copies of whatever the thread needs from `App`), hands it to a thread, and gets it back in an event when it
+is done. The main thread copies what it keeps into `App` and frees the job's arena in one go. No thread holds a
+pointer into `App`.
+
+**Settings the threads read** come one of two ways:
+
+- **Hot flags are atomics** that the main thread writes and threads read without waiting: `paused`, `game_running`,
+  `gpu_busy`, `summary_needs_gpu`, the transcription mode, `stop`. The GPU monitor is the one writer of `gpu_busy` and
+  the GPU load, so it writes those atomics directly and wakes the main thread.
+- **Everything else is a config snapshot.** When a setting changes, the main thread copies `Config` into a new block
+  and swaps an atomic pointer to it. Threads read the current block and never see a half-made one. Old blocks are kept
+  until the program ends; settings change a few times a day, so this is a few KB.
+
+**Slow work leaves the main thread.**
+
+- **Database:** a database thread with its own connection runs every query the window needs (a timeline day, search,
+  the days with lines, the speakers, a journal day) and every write from the window (dismiss, never-mention,
+  reminders, skip). Results come back as jobs. The window shows what it had until they arrive.
+- **Files:** a writer thread does `config.toml` saves, `paths.txt` appends, the summary's Markdown file and opening
+  files and folders (`ShellExecute`). The main thread hands it the finished text, so a click never waits on the disk.
+- **Threads that already work off the main thread** (player, paste, file open, previews, copy, folder picker, setup
+  downloads) keep doing so, but report through events.
+
+**Each thread, after the change:**
+
+| Thread | Reads | Sends to the main thread |
+|---|---|---|
+| Audio streams (mic, one per app) | atomics: `paused`, `stop`; its own copy of exe, pid, device. The window title is the one value the watcher changes during a stream: it sits in the stream's own small block behind its own small lock. | segments go to disk as now; "loud at", "device", "ended" events |
+| Capture watcher (every 1 s) | config snapshot | the playing processes with their paths and titles; the main thread decides which streams to start or end and starts them |
+| Apps watcher, apps scan | config snapshot | running apps, new paths, icons and names (as a job), the line counts, installed games |
+| Transcriber | atomics, config snapshot | queue size, state, "lines written" |
+| GPU monitor | atomics | writes `gpu_busy` and the GPU load itself |
+| Summary (every 15 s) and summary writer | atomics, config snapshot; the writer gets the day's app names in its job | phase, countdown, done or failed, the new summary lists |
+| Notifications, API | none | the command as an event. The API waits for the answer (with a time-out); the main thread builds `/status` and replies. |
+| Database, file writer | the job | results as jobs |
+
+**Locks that stay** are small ones around a few bytes, never held while drawing, waiting, or touching the disk: the
+event queue, each stream's title block, the notification queue and the log file.
+
+**Order of work.** Each step builds, runs, and is used for a while before the next:
+
+1. Event queue, jobs, atomics and config snapshots; move capture (watcher and streams) and the GPU monitor onto them.
+2. Transcriber, summary and summary writer, notifications, setup.
+3. Database thread and file writer; nothing in a frame touches the disk.
+4. API and the small window threads; then delete `App.lock`, `app_lock` and `app_unlock`.
+
 ## Language: C++ with Dear ImGui
 
 C++ built with MSVC, in a plain data-oriented style:
@@ -74,6 +137,15 @@ C++ built with MSVC, in a plain data-oriented style:
   state, and a missing value reads as zero.
 - **Data-oriented.** Arrays of records laid out for how they are read, for example a day's lines as one array,
   not a list of objects pointing at each other.
+- **Memory grows in place (planned).** An arena reserves 4 GB of address space and commits pages as they are
+  reached, so nothing needs `malloc`, `realloc` or copying. Today `List` is a heap array grown with `realloc` and freed
+  by hand (about 70 `list_free` calls). `Buf`, the text builder, also pushes onto a heap list one character at a
+  time, then copies the text into an arena. The plan:
+  - **Text builders** write straight onto the end of the arena that keeps the result. Finishing adds the zero; there
+    is no copy and nothing to free. A check catches anything else pushing onto that arena mid-build.
+  - **Short-lived lists** (query results, work lists) grow the same way in the scratch, frame, day or job arena.
+  - **Long-lived lists** in `App` (apps, streams, the config's name lists) each get their own reserved block that
+    grows in place. Items never move, so a pointer to one stays good.
 - **Asserts with messages** in place of `unwrap()`: what was expected, what came instead, and the file and line.
 - Little of the C++ standard library; a few single-file libraries vendored into the repo:
   - Dear ImGui for the window, on Win32 and Direct3D 11;
