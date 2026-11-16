@@ -821,9 +821,17 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     }
     if (!ImGui::IsItemActive()) s->max_words = (i32)c->summary.max_words;
 
+    const char* edit = label(ICON_FILE_TEXT, "Edit prompt");
     const char* write = label(ICON_SCROLL_TEXT, "Write today's now");
-    f32 write_w = ImGui::CalcTextSize(write).x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - write_w);
+    ImGuiStyle& st = ImGui::GetStyle();
+    f32 edit_w = ImGui::CalcTextSize(edit).x + st.FramePadding.x * 2;
+    f32 write_w = ImGui::CalcTextSize(write).x + st.FramePadding.x * 2;
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - write_w - st.ItemSpacing.x - edit_w);
+    if (ImGui::Button(edit)) summary_edit_prompt(app);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
+                          "Changes count from the next summary. Delete the file to go back to the built-in text.");
+    ImGui::SameLine();
     if (ImGui::Button(write)) {
         Str result = summary_act(app, scratch(), "now", 0, 0);
         ui_say(app, "%s", str_eq(result, str("writing")) ? "Writing today's summary" : result.ptr);

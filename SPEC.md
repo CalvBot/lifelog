@@ -118,6 +118,9 @@ C++ built with MSVC, in a plain data-oriented style:
   endpoint set in the settings.
 - The summary is capped at a word limit (250 by default), reads the last few days' summaries so it doesn't repeat
   them, and leaves out topics on the "never mention" list.
+- The AI's instructions (tone, what to focus on) are built in, or `summary-prompt.txt` next to config.toml when it
+  has text. **Edit prompt** in the Daily summary card creates it with the built-in text and opens it; deleting it
+  goes back to the built-in one. The output format (JSON shape, reminder rules) stays in code.
 - It picks out things you said you'd do ("I'll…", "remind me to…", "we should…") as reminders, with the time you
   said them.
 - A journal day runs 04:00 to 04:00.

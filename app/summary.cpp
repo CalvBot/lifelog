@@ -732,12 +732,14 @@ static i64 my_words(Str chunk) {
 static const char* quiet_summary(i64 words) { return words == 0 ? "You were quiet all day." : "You were quiet most of the day."; }
 
 // ---------------------------------------------------------------------------------------------
-// The prompts (word for word as the old version's)
+// The prompts. SYSTEM is only the default: summary-prompt.txt replaces it (summary_prompt_path).
+// The rules and schemas below stay in code, as the parsing depends on them.
 
 static const char* SYSTEM =
     "You help one person keep a diary from an automatic transcript of their day. "
     "Lines marked 'me' are what they said into their microphone: to people in the room, on calls, or to themselves. "
-    "Call apps (like 'discord') are other people talking with them. Lines marked 'playing' are media on their PC "
+    "Lines named after a person or a call app (like 'zaddish' or 'Discord') are other people talking with them. "
+    "Lines marked 'playing' are media on their PC "
     "(films, videos, music, games): never people they talked to, never their words, only there to show what they reacted "
     "to. The window title is in brackets. "
     "The diary is only about what 'me' said and talked about. Other speakers are there only to make sense of it "
@@ -1333,6 +1335,39 @@ void summary_set_ask_at(App* app, Str hhmm) {
     config_save_string("summary", "ask_at", app->config.summary.ask_at);
 }
 
+const wchar_t* summary_prompt_path() {
+    static wchar_t path[MAX_PATH];
+    if (!path[0]) {
+        wchar_t dir[MAX_PATH];
+        swprintf(dir, MAX_PATH, L"%s", config_path());
+        wchar_t* slash = wcsrchr(dir, L'\\');
+        if (slash) *slash = 0;
+        swprintf(path, MAX_PATH, L"%s\\summary-prompt.txt", dir);
+    }
+    return path;
+}
+
+void summary_edit_prompt(App* app) {
+    const wchar_t* path = summary_prompt_path();
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !write_file(path, str(SYSTEM))) {
+        ui_say(app, "Could not write summary-prompt.txt");
+        return;
+    }
+    ShellExecuteW(0, L"open", path, 0, 0, SW_SHOWNORMAL);
+}
+
+// The system prompt: summary-prompt.txt if it has any text, else the built-in one. Read for each
+// summary, so an edit counts from the next one.
+static Str system_prompt(Arena* a) {
+    Str text = read_file(a, summary_prompt_path());
+    if (text.ptr) {
+        if (str_starts(text, str("\xEF\xBB\xBF"))) text = {text.ptr + 3, text.len - 3};  // Notepad's UTF-8 mark
+        text = str_trim(text);
+        if (text.len) return text;
+    }
+    return str(SYSTEM);
+}
+
 void summary_set_max_words(App* app, u32 words) {
     words = words < 50 ? 50 : words > 2000 ? 2000 : words;
     app->config.summary.max_words = words;
@@ -1418,6 +1453,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     Str past = history(db, a, day, never_low.items, never_low.count);
     Str rule = never_rule(a, never.items, never.count);
     Json result = {};
+    Str system = system_prompt(a);
 
     if (!chunks.count) {
         snprintf(error, cap, "nothing was transcribed that day");
@@ -1434,7 +1470,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
             phase_set_unlocked(app, "writing the summary");
             Str material = str_fmt(a, "Transcript of your day (you said %lld words in it):\n\n%s%s", words, chunks.items[0].text.ptr, flagged.ptr);
             Str prompt = summary_prompt(a, day, cfg.summary.max_words, material, past, rule);
-            if (!llm_json(&llm, a, str(SYSTEM), prompt, str(SUMMARY_SCHEMA), &result, error, cap)) goto done;
+            if (!llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap)) goto done;
         } else {
             // Long day: notes for each part, then the summary from the notes.
             Buf material = {};
@@ -1465,7 +1501,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
                 buf_cstr(&prompt, " ");
                 buf_cstr(&prompt, REMINDERS_RULE);
                 Json part = {};
-                if (!llm_json(&llm, a, str(SYSTEM), buf_take(&prompt, a), str(NOTES_SCHEMA), &part, error, cap)) {
+                if (!llm_json(&llm, a, system, buf_take(&prompt, a), str(NOTES_SCHEMA), &part, error, cap)) {
                     parts_ok = false;
                     break;
                 }
@@ -1490,7 +1526,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
                 buf_add(&material, flagged);
                 phase_set_unlocked(app, "writing the summary");
                 Str prompt = summary_prompt(a, day, cfg.summary.max_words, buf_take(&material, a), past, rule);
-                parts_ok = llm_json(&llm, a, str(SYSTEM), prompt, str(SUMMARY_SCHEMA), &result, error, cap);
+                parts_ok = llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap);
             }
             buf_free(&material);
             list_free(&candidates);

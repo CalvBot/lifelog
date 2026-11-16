@@ -98,6 +98,12 @@ void summary_set_ask_at(App* app, Str hhmm);
 void summary_set_max_words(App* app, u32 words);
 void summary_set_ask_reminders(App* app, bool on);
 
+// summary-prompt.txt next to config.toml: the AI's instructions (tone, what to focus on). No file,
+// or an empty one, means the built-in text. summary_edit_prompt writes the built-in text there if
+// the file is missing, then opens it in the default editor.
+const wchar_t* summary_prompt_path();
+void summary_edit_prompt(App* app);
+
 // One day's summary, with each reminder's notification state. Unlocked is fine.
 StoredSummary summary_get(sqlite3* db, Arena* a, const char* day);
 
