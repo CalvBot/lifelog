@@ -677,7 +677,10 @@ static DWORD WINAPI capture_watch_main(void* p) {
             if (is_own_exe(exe)) continue;
             AppInfo* info = app_get(app, exe);
             // Its folder may decide: the path is needed before the first sound is kept.
-            if (!info->path[0]) proc_path(pid, info->path, sizeof(info->path));
+            // Read every time: the same exe may now run from another folder (and so fall under
+            // another folder rule, or carry another name).
+            char where[MAX_PATH];
+            if (proc_path(pid, where, sizeof(where))) app_learn_path(app, exe, str(where));
             if (app_decision(app, info) == DECISION_EXCLUDED) continue;
             u32 root = proc_root(&procs, pid);
             Stream* found = 0;

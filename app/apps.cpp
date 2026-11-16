@@ -326,15 +326,29 @@ static void paths_append(Str lines) {
 }
 
 // Remembers where `exe` lives, and returns true if that was new. With the lock.
+// Stores where `exe` lives. True if that is new: not known, or it moved (an exe can be run from
+// another folder, like a plugin's helper after an update). paths.txt keeps the latest line.
 static bool learn_path(App* app, Str exe, Str path) {
-    if (!exe.len || !path.len || str_find(exe, str("\t")) >= 0 || app_path(app, exe)) return false;
-    ExePath* p = list_push(&app->apps.paths);
-    Mark m = mark(scratch());
-    SET(p->exe, str_lower(scratch(), exe));
-    rewind(m);
+    if (!exe.len || !path.len || str_find(exe, str("\t")) >= 0 || path.len >= MAX_PATH) return false;
+    ExePath* p = 0;
+    for (i32 i = 0; i < app->apps.paths.count && !p; i++)
+        if (str_eq_nocase(str(app->apps.paths[i].exe), exe)) p = &app->apps.paths[i];
+    if (p && str_eq_nocase(str(p->path), path)) return false;
+    bool moved = p != 0;
+    if (!p) {
+        p = list_push(&app->apps.paths);
+        Mark m = mark(scratch());
+        SET(p->exe, str_lower(scratch(), exe));
+        rewind(m);
+    }
     SET(p->path, path);
     AppInfo* a = app_find(app, exe);
-    if (a && !a->path[0]) SET(a->path, path);
+    if (a && (moved || !a->path[0])) {
+        SET(a->path, path);
+        // Its name and icon were read from the old file: read them again from the new one.
+        a->icon_recheck = true;
+        if (a->name_from_exe) a->name[0] = 0;
+    }
     return true;
 }
 
@@ -360,6 +374,13 @@ static void paths_load(App* app) {
     app_unlock(app);
     rewind(m);
     LOG("apps: %d exe paths from paths.txt", n);
+}
+
+void app_learn_path(App* app, Str exe, Str path) {
+    if (!learn_path(app, exe, path)) return;
+    Mark m = mark(scratch());
+    paths_append(str_fmt(scratch(), "%.*s\t%.*s\n", (int)exe.len, exe.ptr, (int)path.len, path.ptr));
+    rewind(m);
 }
 
 // The shell's large icon of a file as 32×32 RGBA, into `out` (4096 bytes). False if it has none.

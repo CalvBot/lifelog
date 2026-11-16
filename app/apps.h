@@ -64,6 +64,8 @@ bool is_own_exe(Str exe);
 Str app_label(App* app, Str speaker);
 // The full path of the exe process `pid` runs, into `out`. False if it can't be read.
 bool proc_path(u32 pid, char* out, i32 cap);
+// Notes that `exe` runs from `path` (with the lock), updating the app and paths.txt if it moved.
+void app_learn_path(App* app, Str exe, Str path);
 
 // Sets the decisions from the config's lists (once, at start).
 void apps_from_config(App* app);
