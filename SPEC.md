@@ -73,7 +73,8 @@ always sees one moment. The main thread does only quick things: apply messages, 
 
 **Other threads send messages.** One queue from every thread to the main thread, as clipback's `events.cpp` does: a
 fixed ring of `Event { kind, a, b, text[512] }` behind a small lock that is held only to copy one event in or out. Posting
-wakes the main thread with `PostThreadMessage`; the message loop applies every queued event, then redraws the window if
+wakes the main thread with a message to the tray window (a window message, so it still arrives while a menu or a
+window drag runs its own loop); the message loop applies every queued event, then redraws the window if
 one is open. This works with the window closed, so the tray, API and notifications don't depend on it.
 
 **Bigger results come as jobs.** A job is a struct with its own arena. The main thread fills in the request (what to
@@ -97,17 +98,35 @@ pointer into `App`.
   reminders, skip). Results come back as jobs. The window shows what it had until they arrive.
 - **Files:** a writer thread does `config.toml` saves, `paths.txt` appends, the summary's Markdown file and opening
   files and folders (`ShellExecute`). The main thread hands it the finished text, so a click never waits on the disk.
-- **Threads that already work off the main thread** (player, paste, file open, previews, copy, folder picker, setup
-  downloads) keep doing so, but report through events.
+- **Small tasks go to a pool, not a thread each.** Today paste, file open, playback, previews, timeline jobs, copy,
+  the folder picker, the journal's days and setup downloads each start their own thread with their own allocated
+  job, and hand results back through globals guarded by `App.lock` (`g_tl_jobs`, `g_tl_previews`, `g_copy`,
+  `g_heard`). Instead a few fixed worker threads take jobs from one queue and post them back as events. Playback
+  keeps its own thread, since it runs for as long as the sound does.
+
+**Fewer, quieter threads.**
+
+- **One process scan.** The apps watcher and the capture watcher both list every process once a second. One watcher
+  does it, with the windows and the playing sessions, and posts one job that the main thread uses for both the
+  running apps and the streams.
+- **Woken, not polling.** The transcriber's supervisor checks every 500 ms, and each check lists the spool folder.
+  Instead a capture thread posts "new WAV" when it writes one, the main thread keeps the queue count, and the
+  supervisor sleeps until it is told there is work or a setting changed (a long time-out stays as a safety net).
+  The summary thread waits on its own event for "ask now", "snoozed" and settings changes, with a timer for the
+  next ask instead of a 15 s check.
+- **UI state belongs to the main thread.** The globals the window files keep (`g_tl_jobs`, `g_copy`, `g_heard`,
+  `g_pick_decision` and the rest) are touched only by the main thread; the threads that fill them send events.
+- **Reused job arenas.** A thread that posts a job every second (the watcher) keeps two arenas and uses them in
+  turn, instead of reserving and freeing a new one each time.
 
 **Each thread, after the change:**
 
 | Thread | Reads | Sends to the main thread |
 |---|---|---|
 | Audio streams (mic, one per app) | atomics: `paused`, `stop`; its own copy of exe, pid, device. The window title is the one value the watcher changes during a stream: it sits in the stream's own small block behind its own small lock. | segments go to disk as now; "loud at", "device", "ended" events |
-| Capture watcher (every 1 s) | config snapshot | the playing processes with their paths and titles; the main thread decides which streams to start or end and starts them |
-| Apps watcher, apps scan | config snapshot | running apps, new paths, icons and names (as a job), the line counts, installed games |
-| Transcriber | atomics, config snapshot | queue size, state, "lines written" |
+| Watcher (every 1 s; today the capture and apps watchers, merged into one) | config snapshot | the processes, windows and playing sessions with their paths and titles; the main thread decides which streams to start or end, and which apps run |
+| Apps scan | config snapshot | new paths, icons and names (as a job), the line counts, installed games |
+| Transcriber | atomics, config snapshot; woken by "new WAV" and setting changes | state, "lines written" |
 | GPU monitor | atomics | writes `gpu_busy` and the GPU load itself |
 | Summary (every 15 s) and summary writer | atomics, config snapshot; the writer gets the day's app names in its job | phase, countdown, done or failed, the new summary lists |
 | Notifications, API | none | the command as an event. The API waits for the answer (with a time-out); the main thread builds `/status` and replies. |
@@ -121,9 +140,11 @@ event queue, each stream's title block, the notification queue and the log file.
 1. Event queue, jobs, atomics and config snapshots; move capture (watcher and streams) and the GPU monitor onto them.
    Done (`app/events.h`). For now the snapshot is published from `app_unlock`, since every config change is made
    under the lock; it moves to the main thread with step 4.
-2. Transcriber, summary and summary writer, notifications, setup.
+2. Transcriber, summary and summary writer, notifications, setup; the transcriber and summary woken instead of
+   polling; one watcher for processes and streams.
 3. Database thread and file writer; nothing in a frame touches the disk.
-4. API and the small window threads; then delete `App.lock`, `app_lock` and `app_unlock`.
+4. API and the small window threads on the worker pool, with the UI globals owned by the main thread; then delete
+   `App.lock`, `app_lock` and `app_unlock`.
 
 ## Language: C++ with Dear ImGui
 
