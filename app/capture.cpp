@@ -1,6 +1,7 @@
 // capture.cpp: see capture.h. One thread per stream (the mic, or one app's process tree) takes
 // 48 kHz stereo float from WASAPI, mixes it to mono, brings it down to 16 kHz and feeds it to its
-// segmenter. The watcher thread starts and stops the app streams once a second.
+// segmenter. Once a second the watcher thread posts what plays sound, and the main thread starts
+// and stops the app streams from that (events.h). None of these threads take App.lock.
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -439,9 +440,9 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
             props->Release();
         }
         LOG("mic: %s", name[0] ? name : "default device");
-        app_lock(app);
+        AcquireSRWLockExclusive(&s->lock);
         SET(s->device, str(name));
-        app_unlock(app);
+        ReleaseSRWLockExclusive(&s->lock);
         TRY(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void**)&client), "the mic's audio client");
         buffer = 2000000;  // 200 ms
     } else {
@@ -487,16 +488,16 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
             TRY(capture->ReleaseBuffer(frames), "a packet to be released");
         }
 
+        bool paused = atomic_get(&app->capture.paused) != 0;
         StreamMeta meta = {};
-        app_lock(app);
-        bool paused = app->capture.paused;
         meta.source = s->source;
         SET(meta.exe, str(s->exe));
         meta.pid = s->pid;
+        AcquireSRWLockExclusive(&s->lock);
         SET(meta.title, str(s->title));
         SET(meta.device, str(s->device));
         s->loud_ts = seg->loud_ts;
-        app_unlock(app);
+        ReleaseSRWLockExclusive(&s->lock);
 
         if (paused) {
             if (!was_paused) seg_discard(seg);
@@ -527,18 +528,14 @@ done:
 
 static DWORD WINAPI stream_main(void* p) {
     Stream* s = (Stream*)p;
-    App* app = s->app;
     CoInitializeEx(0, COINIT_MULTITHREADED);
     Segmenter* seg = (Segmenter*)calloc(1, sizeof(Segmenter));
     CHECK(seg, "memory for a segmenter");
     seg->samples = (f32*)malloc(sizeof(f32) * HARD_LIMIT);
     CHECK(seg->samples, "memory for %d samples", HARD_LIMIT);
     stream_name(s, seg->name);
-    app_lock(app);
-    spool_dir(&app->config, seg->spool);
-    seg->gate = app->config.capture.gate_rms;
-    s->state = seg;
-    app_unlock(app);
+    wcscpy_s(seg->spool, s->spool);
+    seg->gate = s->gate;
 
     while (!s->stop) {
         RunEnd end = stream_run(s, seg);
@@ -557,9 +554,12 @@ static DWORD WINAPI stream_main(void* p) {
     return 0;
 }
 
-// Starts `s`'s thread. With the lock.
+// Starts `s`'s thread. The main thread, with the lock.
 static void stream_start(App* app, Stream* s) {
     s->app = app;
+    s->lock = SRWLOCK_INIT;
+    spool_dir(&app->config, s->spool);
+    s->gate = app->config.capture.gate_rms;
     s->started_ts = s->playing_ts = now_ts();
     s->thread = CreateThread(0, 0, stream_main, s, 0, 0);
     CHECK(s->thread, "a capture thread to start (error %lu)", GetLastError());
@@ -645,6 +645,96 @@ static Pids playing_pids(IMMDeviceEnumerator* en, Arena* a) {
     return out;
 }
 
+// What the watcher saw this second, for the main thread to act on.
+struct WatchFacts {
+    Procs procs;
+    Wins wins;
+    Pids playing;   // with a sound session playing; not 0 ("system sounds") or lifelog
+    char (*paths)[MAX_PATH];  // each playing pid's exe path, "" when it could not be read
+    f64 now;
+};
+
+// The main thread, with the lock: starts and stops app streams from what the watcher saw.
+static void watch_apply(App* app, Job* job) {
+    if (stopping(app)) return;  // capture_stop has ended the streams
+    WatchFacts* f = (WatchFacts*)job->data;
+    Capture* c = &app->capture;
+    bool changed = false;
+    bool record_apps = app->config.capture.apps;
+    for (i32 i = 0; record_apps && i < f->playing.count; i++) {
+        u32 pid = f->playing.items[i];
+        Proc* proc = proc_find(&f->procs, pid);
+        if (!proc) continue;
+        Str exe = str(proc->exe);
+        AppInfo* info = app_get(app, exe);
+        // Its folder may decide: the path is needed before the first sound is kept. Read every
+        // time: the same exe may now run from another folder (and so fall under another folder
+        // rule, or carry another name).
+        if (f->paths[i][0]) app_learn_path(app, exe, str(f->paths[i]));
+        if (app_decision(app, info) == DECISION_EXCLUDED) continue;
+        u32 root = proc_root(&f->procs, pid);
+        Stream* found = 0;
+        for (i32 k = 0; k < c->streams.count && !found; k++)
+            if (c->streams[k]->source == SOURCE_APP && c->streams[k]->pid == root) found = c->streams[k];
+        if (found) {
+            found->playing_ts = f->now;
+            continue;
+        }
+        Stream* s = (Stream*)calloc(1, sizeof(Stream));
+        CHECK(s, "memory for a stream");
+        s->source = SOURCE_APP;
+        SET(s->exe, exe);
+        s->pid = root;
+        SET(s->title, title_for(exe, &f->procs, &f->wins));
+        list_push(&c->streams, s);
+        stream_start(app, s);
+        // Its exe may have been rebuilt with a new icon or name since it was last read.
+        app_get(app, exe)->icon_recheck = true;
+        // Removed from the lists earlier: it plays again, so it is new again.
+        app_unremove(app, exe);
+        LOG("capturing %s (pid %u): %s", s->exe, root, s->title[0] ? s->title : "no window");
+        changed = true;
+    }
+    for (i32 i = 0; i < c->streams.count; i++) {
+        Stream* s = c->streams[i];
+        if (s->source != SOURCE_APP) continue;
+        Str exe = str(s->exe);
+        AppInfo* info = app_find(app, exe);
+        if ((info && app_decision(app, info) == DECISION_EXCLUDED) || !record_apps) {
+            // Just excluded: stop now and drop the sentence in progress.
+            LOG("%s (pid %u): no longer recorded", s->exe, s->pid);
+            stream_end(app, i--, true);
+            changed = true;
+            continue;
+        }
+        // A reused pid would be a different program.
+        Proc* proc = proc_find(&f->procs, s->pid);
+        bool alive = proc && str_eq(str(proc->exe), exe);
+        if (!alive || f->now - s->playing_ts >= LINGER_SECS) {
+            LOG("%s (pid %u) went quiet", s->exe, s->pid);
+            stream_end(app, i--, false);
+            changed = true;
+            continue;
+        }
+        Str title = title_for(exe, &f->procs, &f->wins);
+        AcquireSRWLockExclusive(&s->lock);
+        SET(s->title, title);
+        ReleaseSRWLockExclusive(&s->lock);
+    }
+    // An app is "playing" while it has a stream.
+    for (i32 i = 0; i < app->apps.list.count; i++) {
+        AppInfo* a = &app->apps.list[i];
+        bool on = false;
+        for (i32 k = 0; k < c->streams.count && !on; k++) on = c->streams[k]->source == SOURCE_APP && strcmp(c->streams[k]->exe, a->exe) == 0;
+        changed |= on != a->playing;
+        a->playing = on;
+    }
+    streams_reap(app);
+    if (changed) wake_window(app);
+}
+
+// Once a second: what runs, what has windows and what plays sound, gathered without the lock
+// and posted to the main thread.
 static DWORD WINAPI capture_watch_main(void* p) {
     App* app = (App*)p;
     CoInitializeEx(0, COINIT_MULTITHREADED);
@@ -652,94 +742,27 @@ static DWORD WINAPI capture_watch_main(void* p) {
     u32 own_pid = GetCurrentProcessId();
 
     do {
-        Mark m = mark(scratch());
-        Procs procs = processes(scratch());
-        Wins wins = windows_now(scratch());
-        Pids playing = playing_pids(en, scratch());
-        f64 now = now_ts();
-        bool changed = false;
-
-        app_lock(app);
-        if (stopping(app)) {
-            app_unlock(app);
-            rewind(m);
-            break;
-        }
-        Capture* c = &app->capture;
-        bool record_apps = app->config.capture.apps;
-        for (i32 i = 0; record_apps && i < playing.count; i++) {
-            u32 pid = playing.items[i];
-            if (pid == 0 || pid == own_pid) continue;  // 0 is "system sounds"
-            Proc* proc = proc_find(&procs, pid);
-            if (!proc) continue;
-            Str exe = str(proc->exe);
+        Job* job = job_new(watch_apply);
+        Arena* a = &job->arena;
+        WatchFacts* f = PUSH(a, WatchFacts);
+        f->procs = processes(a);
+        f->wins = windows_now(a);
+        Pids all = playing_pids(en, a);
+        f->playing.items = PUSH_ARRAY(a, u32, all.count);
+        f->paths = (char(*)[MAX_PATH])arena_push(a, (u64)MAX_PATH * (all.count ? all.count : 1), 1);
+        for (i32 i = 0; i < all.count; i++) {
+            u32 pid = all.items[i];
+            if (pid == 0 || pid == own_pid) continue;
+            Proc* proc = proc_find(&f->procs, pid);
             // lifelog's own window plays recordings back: never record those again.
-            if (is_own_exe(exe)) continue;
-            AppInfo* info = app_get(app, exe);
-            // Its folder may decide: the path is needed before the first sound is kept.
-            // Read every time: the same exe may now run from another folder (and so fall under
-            // another folder rule, or carry another name).
-            char where[MAX_PATH];
-            if (proc_path(pid, where, sizeof(where))) app_learn_path(app, exe, str(where));
-            if (app_decision(app, info) == DECISION_EXCLUDED) continue;
-            u32 root = proc_root(&procs, pid);
-            Stream* found = 0;
-            for (i32 k = 0; k < c->streams.count && !found; k++)
-                if (c->streams[k]->source == SOURCE_APP && c->streams[k]->pid == root) found = c->streams[k];
-            if (found) {
-                found->playing_ts = now;
-                continue;
-            }
-            Stream* s = (Stream*)calloc(1, sizeof(Stream));
-            CHECK(s, "memory for a stream");
-            s->source = SOURCE_APP;
-            SET(s->exe, exe);
-            s->pid = root;
-            SET(s->title, title_for(exe, &procs, &wins));
-            list_push(&c->streams, s);
-            stream_start(app, s);
-            // Its exe may have been rebuilt with a new icon or name since it was last read.
-            app_get(app, exe)->icon_recheck = true;
-            // Removed from the lists earlier: it plays again, so it is new again.
-            app_unremove(app, exe);
-            LOG("capturing %s (pid %u): %s", s->exe, root, s->title[0] ? s->title : "no window");
-            changed = true;
+            if (!proc || is_own_exe(str(proc->exe))) continue;
+            i32 n = f->playing.count++;
+            f->playing.items[n] = pid;
+            if (!proc_path(pid, f->paths[n], MAX_PATH)) f->paths[n][0] = 0;
         }
-        for (i32 i = 0; i < c->streams.count; i++) {
-            Stream* s = c->streams[i];
-            if (s->source != SOURCE_APP) continue;
-            Str exe = str(s->exe);
-            AppInfo* info = app_find(app, exe);
-            if ((info && app_decision(app, info) == DECISION_EXCLUDED) || !record_apps) {
-                // Just excluded: stop now and drop the sentence in progress.
-                LOG("%s (pid %u): no longer recorded", s->exe, s->pid);
-                stream_end(app, i--, true);
-                changed = true;
-                continue;
-            }
-            // A reused pid would be a different program.
-            Proc* proc = proc_find(&procs, s->pid);
-            bool alive = proc && str_eq(str(proc->exe), exe);
-            if (!alive || now - s->playing_ts >= LINGER_SECS) {
-                LOG("%s (pid %u) went quiet", s->exe, s->pid);
-                stream_end(app, i--, false);
-                changed = true;
-                continue;
-            }
-            SET(s->title, title_for(exe, &procs, &wins));
-        }
-        // An app is "playing" while it has a stream.
-        for (i32 i = 0; i < app->apps.list.count; i++) {
-            AppInfo* a = &app->apps.list[i];
-            bool on = false;
-            for (i32 k = 0; k < c->streams.count && !on; k++) on = c->streams[k]->source == SOURCE_APP && strcmp(c->streams[k]->exe, a->exe) == 0;
-            changed |= on != a->playing;
-            a->playing = on;
-        }
-        streams_reap(app);
-        app_unlock(app);
-        rewind(m);
-        if (changed) wake_window(app);
+        f->now = now_ts();
+        job->data = f;
+        job_post(app, job);
     } while (sleep_unless_stopping(app, 1000));
 
     if (en) en->Release();
@@ -763,8 +786,8 @@ void capture_start(App* app) {
 }
 
 void capture_set_paused(App* app, bool paused) {
-    if (app->capture.paused == paused) return;
-    app->capture.paused = paused;
+    if ((atomic_get(&app->capture.paused) != 0) == paused) return;
+    atomic_set(&app->capture.paused, paused);
     LOG("%s", paused ? "private mode: recording nothing" : "recording again");
     wake_window(app);
 }
@@ -775,7 +798,7 @@ void capture_stop(App* app) {
     while (c->streams.count) stream_end(app, 0, false);
     HANDLE watcher = c->watcher;
     c->watcher = 0;
-    // The threads take the lock as they finish, so it is let go meanwhile.
+    // Let go meanwhile, so the other threads are not held up for the seconds this can take.
     app_unlock(app);
     if (watcher) {
         WaitForSingleObject(watcher, 5000);

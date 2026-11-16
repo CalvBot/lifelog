@@ -20,9 +20,10 @@ struct Worker {
     bool missing;         // nothing to transcribe with: no endpoint, and whisper.cpp is not set up
     i32 queued;           // WAV files waiting in the spool folder
     f64 queued_secs;      // how much audio that is
-    u32 gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
-    bool gpu_busy;        // over the limit
-    bool summary_needs_gpu;  // set by the summary while it writes
+    // Atomics (events.h): the GPU monitor writes the first two without App.lock.
+    volatile LONG gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
+    volatile LONG gpu_busy;         // over the limit
+    volatile LONG summary_needs_gpu;  // set by the summary while it writes
     u64 lines_version;    // bumped each time lines are written, so the timeline reloads
     f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model

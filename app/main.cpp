@@ -21,8 +21,19 @@ static const UINT_PTR REDRAW_TIMER = 1;
 // ---------------------------------------------------------------------------------------------
 // App helpers (app.h)
 
-void app_lock(App* app) { AcquireSRWLockExclusive(&app->lock); }
-void app_unlock(App* app) { ReleaseSRWLockExclusive(&app->lock); }
+static thread_local i32 t_locked;  // this thread holds App.lock
+
+void app_lock(App* app) {
+    AcquireSRWLockExclusive(&app->lock);
+    t_locked++;
+}
+void app_unlock(App* app) {
+    // Every change to App.config is made with the lock, so the copy other threads read is
+    // brought up to date here.
+    settings_publish(app);
+    t_locked--;
+    ReleaseSRWLockExclusive(&app->lock);
+}
 
 void wake_window(App* app) {
     HWND w = app->ui.window;
@@ -432,6 +443,12 @@ void tray_update(App* app) {
 }
 
 static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_APP_EVENT) {
+        // Usually the message loop applies them; this is for while a menu or a window drag
+        // runs its own loop. Not while this thread holds the lock (it is not reentrant).
+        if (!t_locked) events_apply(&g_app);
+        return 0;
+    }
     if (msg == WM_APP_TRAY) {
         switch (LOWORD(lp)) {
         case TRAY_OPEN_WINDOW:  // a second start of lifelog.exe
@@ -618,12 +635,15 @@ static i32 run_app() {
         rewind(m);
         return 1;
     }
+    settings_publish(app);  // before any thread reads settings()
     app->storage.ready = db_init(&app->config);
     if (app->storage.ready) app->storage.db = db_open(app);
 
     ImGui_ImplWin32_EnableDpiAwareness();
     gpu_init();
     app->ui.tray = tray_window();
+    app->events.lock = SRWLOCK_INIT;
+    app->events.window = app->ui.tray;
 
     app_lock(app);
     apps_from_config(app);
@@ -663,6 +683,7 @@ static i32 run_app() {
             DispatchMessageW(&msg);
         }
         if (quit) break;
+        events_apply(app);
 
         if (g_main.hwnd && g_main.frames_wanted > 0) {
             g_main.frames_wanted--;

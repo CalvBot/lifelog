@@ -61,7 +61,7 @@ its output per batch), and the app tells the window. **(to decide: the worker ha
 need a way in. A small local HTTP API stays for them only, and each route calls the same `App` methods. The window
 doesn't use it.
 
-## Threads: one owner, messages in (planned)
+## Threads: one owner, messages in (under way)
 
 Today one lock (`App.lock`) guards everything, and the window holds it for the whole of every frame. Every other
 thread waits on it: the audio threads after each packet (about every 10 ms), the transcriber, the summary writer,
@@ -119,6 +119,8 @@ event queue, each stream's title block, the notification queue and the log file.
 **Order of work.** Each step builds, runs, and is used for a while before the next:
 
 1. Event queue, jobs, atomics and config snapshots; move capture (watcher and streams) and the GPU monitor onto them.
+   Done (`app/events.h`). For now the snapshot is published from `app_unlock`, since every config change is made
+   under the lock; it moves to the main thread with step 4.
 2. Transcriber, summary and summary writer, notifications, setup.
 3. Database thread and file writer; nothing in a frame touches the disk.
 4. API and the small window threads; then delete `App.lock`, `app_lock` and `app_unlock`.

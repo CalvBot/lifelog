@@ -136,14 +136,19 @@ static void status_json(App* app, Buf* b) {
         Stream* s = app->capture.streams.items[i];
         if (i) buf_cstr(b, ",");
         bool mic = s->source == SOURCE_MIC;
+        char device[128], title[256];
+        AcquireSRWLockShared(&s->lock);
+        SET(device, str(s->device));
+        SET(title, str(s->title));
+        ReleaseSRWLockShared(&s->lock);
         buf_cstr(b, "{\"device\":");
-        json_text_or_null(b, mic ? s->device : 0);
+        json_text_or_null(b, mic ? device : 0);
         buf_cstr(b, ",\"exe\":");
         json_text_or_null(b, mic ? 0 : s->exe);
         if (mic) buf_cstr(b, ",\"pid\":null");
         else buf_fmt(b, ",\"pid\":%u", s->pid);
         buf_fmt(b, ",\"source\":\"%s\",\"title\":", mic ? "mic" : "app");
-        json_text_or_null(b, mic ? 0 : s->title);
+        json_text_or_null(b, mic ? 0 : title);
         buf_cstr(b, "}");
     }
     buf_cstr(b, "],\"summary\":{\"ask_at\":");

@@ -1,4 +1,6 @@
-// app.h: App, the one value that holds what the program is doing. Every thread shares it.
+// app.h: App, the one value that holds what the program is doing. The main thread owns it;
+// other threads hand it their results as events (events.h). That move is under way (SPEC.md,
+// "Threads"): capture and the GPU monitor are done, the rest still share App under App.lock.
 //
 // Locking: App.lock guards everything in App. A thread that reads or changes App takes it
 // (app_lock / app_unlock) for as short a time as it can, and never while it waits on the disk,
@@ -26,6 +28,7 @@ struct App {
     Setup setup;        // downloading the transcriber and the summary AI (setup.h)
     Clips clips;        // copying, pasting and playback (clip.h)
     Ui ui;              // the window and the tray menu (ui.h)
+    EventQueue events;  // results from other threads, for the main thread (events.h)
 };
 
 void app_lock(App* app);

@@ -63,31 +63,33 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
     f64 last_over = now_ts();
     while (sleep_unless_stopping(app, 2000)) {
         f64 load = 0;
-        if (!gpu3d_sample(&gpu, &load)) continue;  // sampled unlocked: it can take a while
-        app_lock(app);
+        if (!gpu3d_sample(&gpu, &load)) continue;
+        // No App.lock: the flags are atomics and the limits come from settings().
+        const Config* cfg = settings(app);
         Worker* w = &app->worker;
-        bool was_busy = w->gpu_busy;
-        u32 percent = (u32)(load + 0.5);
-        bool changed = percent != w->gpu_3d_percent;
-        w->gpu_3d_percent = percent;
-        if (w->summary_needs_gpu) {
+        bool was_busy = atomic_get(&w->gpu_busy) != 0;
+        bool busy = was_busy;
+        LONG percent = (LONG)(load + 0.5);
+        bool changed = percent != atomic_get(&w->gpu_3d_percent);
+        atomic_set(&w->gpu_3d_percent, percent);
+        if (atomic_get(&w->summary_needs_gpu)) {
             over = 0;  // the summary model's own load shows up as 3D work too; it is not a game
-        } else if (load > (f64)app->config.processing.gpu_busy_percent) {
+        } else if (load > (f64)cfg->processing.gpu_busy_percent) {
             over++;
             last_over = now_ts();
-            if (over >= 3 && !w->gpu_busy) {
-                w->gpu_busy = true;
+            if (over >= 3 && !busy) {
+                busy = true;
                 LOG("GPU busy (%.0f%% 3D): transcription waits, audio keeps queueing", load);
             }
         } else {
             over = 0;
-            if (w->gpu_busy && now_ts() - last_over >= (f64)app->config.processing.resume_after_secs) {
-                w->gpu_busy = false;
+            if (busy && now_ts() - last_over >= (f64)cfg->processing.resume_after_secs) {
+                busy = false;
                 LOG("GPU free again: transcription resumes");
             }
         }
-        changed |= was_busy != w->gpu_busy;
-        app_unlock(app);
+        atomic_set(&w->gpu_busy, busy);
+        changed |= was_busy != busy;
         if (changed) wake_window(app);
     }
     PdhCloseQuery(gpu.query);

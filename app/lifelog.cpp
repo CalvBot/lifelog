@@ -25,9 +25,11 @@ struct App;
 #include "setup.h"
 #include "clip.h"
 #include "ui.h"
+#include "events.h"
 #include "app.h"
 
 #include "base.cpp"
+#include "events.cpp"
 #include "config.cpp"
 #include "db.cpp"
 #include "apps.cpp"
