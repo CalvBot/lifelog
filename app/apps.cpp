@@ -34,27 +34,6 @@ Str voice_person(Str exe) {
     return dash > 0 ? str_sub(rest, 0, dash) : id;
 }
 
-void voicestreams_dir(Config* c, wchar_t out[MAX_PATH]) {
-    out[0] = 0;
-    if (c->capture.voicestreams_dir[0]) {
-        Mark m = mark(scratch());
-        wcsncpy_s(out, MAX_PATH, wide(scratch(), str(c->capture.voicestreams_dir)), _TRUNCATE);
-        rewind(m);
-    } else {
-        wchar_t local[MAX_PATH] = L"";
-        GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-        swprintf(out, MAX_PATH, L"%s\\VoiceStreams", local);
-    }
-    for (size_t n = wcslen(out); n > 0 && (out[n - 1] == L'\\' || out[n - 1] == L'/'); n--) out[n - 1] = 0;
-}
-
-void voicestreams_set_dir(App* app, Str dir) {
-    dir = str_trim(dir);
-    SET(app->config.capture.voicestreams_dir, dir);
-    config_save_string("capture", "voicestreams_dir", app->config.capture.voicestreams_dir);
-    LOG("VoiceStreams folder: %s", dir.len ? app->config.capture.voicestreams_dir : "the default");
-}
-
 AppInfo* app_find(App* app, Str exe) {
     for (i32 i = 0; i < app->apps.list.count; i++)
         if (str_eq_nocase(str(app->apps.list[i].exe), exe)) return &app->apps.list[i];

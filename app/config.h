@@ -24,7 +24,6 @@ struct Config {
         Names excluded_apps;
         f32 gate_rms;
         u32 keep_audio_days;
-        char voicestreams_dir[MAX_PATH];  // empty: %LOCALAPPDATA%\VoiceStreams
     } capture;
 
     struct {

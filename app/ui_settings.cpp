@@ -52,8 +52,6 @@ struct SettingsState {
     i32 max_words;
     i32 gpu;
     bool ask_at_active;
-    char vs_dir[MAX_PATH];
-    bool vs_dir_active;
     char wendpoint[512];  // transcription's own server
     bool wendpoint_active;
     char wmodel[128];
@@ -467,40 +465,15 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
 // ---------------------------------------------------------------------------------------------
 // Discord calls (the VoiceStreams plugin)
 
-static void calls_card(App* app, SettingsState* s, f32 width) {
-    Config* c = &app->config;
+static void calls_card(App* app, f32 width) {
     settings_card("calls", width);
     title("Discord calls");
     ImGui::SameLine(0, px(12));
-    Mark m = mark(scratch());
-    wchar_t dir[MAX_PATH];
-    voicestreams_dir(c, dir);
     i32 people = 0;
     for (i32 i = 0; i < app->capture.streams.count; i++)
         if (app->capture.streams[i]->source == SOURCE_APP && voice_person(str(app->capture.streams[i]->exe)).len) people++;
-    bool found = GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES;
-    weak(!found ? "VoiceStreams folder not found: Discord is recorded as one app"
-         : people ? tmp("Recording %d %s one by one", people, people == 1 ? "person" : "people")
-                  : "Each person in a call is recorded under their own name");
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("VoiceStreams folder");
-    ImGui::SameLine();
-    const char* open = label(ICON_FOLDER_OPEN, "Open");
-    f32 open_w = ImGui::CalcTextSize(open).x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - open_w - ImGui::GetStyle().ItemSpacing.x);
-    if (!s->vs_dir_active) SET(s->vs_dir, str(c->capture.voicestreams_dir));
-    wchar_t local[MAX_PATH] = L"";
-    GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    const char* hint = tmp("%s\\VoiceStreams", narrow(scratch(), local).ptr);
-    ImGui::InputTextWithHint("##vs_dir", hint, s->vs_dir, sizeof(s->vs_dir));
-    s->vs_dir_active = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit() && !str_eq(str_trim(str(s->vs_dir)), str(c->capture.voicestreams_dir))) voicestreams_set_dir(app, str(s->vs_dir));
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!found);
-    if (ImGui::Button(open)) open_path(app, dir, false);
-    ImGui::EndDisabled();
-    rewind(m);
+    weak(people ? tmp("Recording %d %s one by one", people, people == 1 ? "person" : "people")
+                : "With the VoiceStreams plugin, each person in a call is recorded under their own name");
     settings_card_end();
 }
 
@@ -749,7 +722,7 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     apps_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
-    calls_card(app, s, width);
+    calls_card(app, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     transcription_card(app, s, width);
