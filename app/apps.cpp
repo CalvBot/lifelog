@@ -19,21 +19,6 @@ bool is_own_exe(Str exe) {
     return false;
 }
 
-Str voice_person(Str exe) {
-    Str prefix = str("discord-");
-    if (exe.len <= prefix.len + 4 || !str_eq_nocase(str_sub(exe, exe.len - 4, 4), str(".exe"))) return {};
-    if (!str_eq_nocase(str_sub(exe, 0, prefix.len), prefix)) return {};
-    Str rest = str_sub(exe, prefix.len, exe.len - 4 - prefix.len);  // "zaddish-450827036068544522"
-    i64 dash = -1;
-    for (i64 i = 0; i < rest.len; i++)
-        if (rest.ptr[i] == '-') dash = i;
-    Str id = dash < 0 ? rest : str_sub(rest, dash + 1);
-    if (id.len < 1 || id.len > 20) return {};
-    for (i64 i = 0; i < id.len; i++)
-        if (id.ptr[i] < '0' || id.ptr[i] > '9') return {};
-    return dash > 0 ? str_sub(rest, 0, dash) : id;
-}
-
 AppInfo* app_find(App* app, Str exe) {
     for (i32 i = 0; i < app->apps.list.count; i++)
         if (str_eq_nocase(str(app->apps.list[i].exe), exe)) return &app->apps.list[i];
@@ -75,6 +60,28 @@ void app_set_decision(App* app, Str exe, Decision d) {
     config_save_names("capture", "excluded_apps", &c->capture.excluded_apps);
 }
 
+Str app_label(App* app, Str speaker) {
+    AppInfo* a = app_find(app, speaker);
+    if (a && a->name[0]) return str(a->name);
+    if (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE"))) return str_sub(speaker, 0, speaker.len - 4);
+    return speaker;
+}
+
+bool proc_path(u32 pid, char* out, i32 cap) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return false;
+    wchar_t path[MAX_PATH * 2];
+    DWORD n = COUNT(path);
+    bool ok = QueryFullProcessImageNameW(h, 0, path, &n) != 0;
+    CloseHandle(h);
+    if (ok) {
+        Mark m = mark(scratch());
+        set(out, cap, narrow(scratch(), path));
+        rewind(m);
+    }
+    return ok;
+}
+
 void app_set_game(App* app, Str exe, GameMark g) {
     app_get(app, exe)->game = g;
     Config* c = &app->config;
@@ -82,6 +89,83 @@ void app_set_game(App* app, Str exe, GameMark g) {
     names_set(&c->processing.not_games, exe, g == GAME_DISMISSED);
     config_save_names("processing", "games", &c->processing.games);
     config_save_names("processing", "not_games", &c->processing.not_games);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Folder rules
+
+bool path_under(Str path, Str folder) {
+    while (folder.len && (folder.ptr[folder.len - 1] == '\\' || folder.ptr[folder.len - 1] == '/')) folder.len--;
+    if (!folder.len || path.len < folder.len) return false;
+    for (i64 i = 0; i < folder.len; i++) {
+        char a = path.ptr[i] == '/' ? '\\' : path.ptr[i];
+        char b = folder.ptr[i] == '/' ? '\\' : folder.ptr[i];
+        if (tolower((u8)a) != tolower((u8)b)) return false;
+    }
+    return path.len == folder.len || path.ptr[folder.len] == '\\' || path.ptr[folder.len] == '/';
+}
+
+// `folder` with \ throughout and no trailing one.
+static Str folder_clean(Arena* a, Str folder) {
+    folder = str_trim(folder);
+    char* out = PUSH_ARRAY(a, char, folder.len + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < folder.len; i++) out[n++] = folder.ptr[i] == '/' ? '\\' : folder.ptr[i];
+    while (n && out[n - 1] == '\\') n--;
+    out[n] = 0;
+    return {out, n};
+}
+
+static bool same_folder(Str a, Str b) {
+    while (a.len && (a.ptr[a.len - 1] == '\\' || a.ptr[a.len - 1] == '/')) a.len--;
+    while (b.len && (b.ptr[b.len - 1] == '\\' || b.ptr[b.len - 1] == '/')) b.len--;
+    return a.len == b.len && path_under(a, b);
+}
+
+Decision app_decision(App* app, AppInfo* a) {
+    if (a->decision != DECISION_NEW || !a->path[0]) return a->decision;
+    Config* c = &app->config;
+    Decision d = DECISION_NEW;
+    i64 deepest = -1;
+    for (i32 list = 0; list < 2; list++) {
+        Folders* f = list ? &c->capture.excluded_folders : &c->capture.included_folders;
+        for (i32 i = 0; i < f->count; i++) {
+            Str folder = str(f->items[i].s);
+            // The same folder in both lists: excluded wins.
+            if (path_under(str(a->path), folder) && (folder.len > deepest || (list && folder.len == deepest))) {
+                deepest = folder.len;
+                d = list ? DECISION_EXCLUDED : DECISION_INCLUDED;
+            }
+        }
+    }
+    return d;
+}
+
+Decision folder_decision(Config* c, Str folder) {
+    for (i32 i = 0; i < c->capture.excluded_folders.count; i++)
+        if (same_folder(str(c->capture.excluded_folders[i].s), folder)) return DECISION_EXCLUDED;
+    for (i32 i = 0; i < c->capture.included_folders.count; i++)
+        if (same_folder(str(c->capture.included_folders[i].s), folder)) return DECISION_INCLUDED;
+    return DECISION_NEW;
+}
+
+void app_set_folder(App* app, Str folder, Decision d) {
+    Mark m = mark(scratch());
+    folder = folder_clean(scratch(), folder);
+    Config* c = &app->config;
+    for (i32 list = 0; list < 2; list++) {
+        Folders* f = list ? &c->capture.excluded_folders : &c->capture.included_folders;
+        for (i32 i = 0; i < f->count; i++)
+            if (same_folder(str(f->items[i].s), folder)) list_remove(f, i--);
+    }
+    if (folder.len && d != DECISION_NEW) {
+        PathName* f = list_push(d == DECISION_INCLUDED ? &c->capture.included_folders : &c->capture.excluded_folders);
+        SET(f->s, folder);
+    }
+    config_save_folders("capture", "included_folders", &c->capture.included_folders);
+    config_save_folders("capture", "excluded_folders", &c->capture.excluded_folders);
+    LOG("everything in %s: %s", folder.ptr, d == DECISION_INCLUDED ? "included" : d == DECISION_EXCLUDED ? "excluded" : "no rule");
+    rewind(m);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -385,8 +469,8 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
         u8* rgba = (u8*)malloc(32 * 32 * 4);
         CHECK(rgba, "memory for an icon");
         wchar_t* path = jobs[i].path[0] ? wide(scratch(), str(jobs[i].path)) : 0;
-        // A cached icon older than the exe is from before it changed (an update, or a VoiceStreams
-        // player rebuilt with the person's new avatar): read again.
+        // A cached icon older than the exe is from before it changed (an update, or an exe rebuilt
+        // with a new icon): read again.
         bool stale = path && file_time(path) > file_time(file);
         Str cached = stale ? Str{} : read_file(scratch(), file);
         bool ok = cached.ptr && cached.len == 32 * 32 * 4;
@@ -412,14 +496,18 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
         AppInfo* a = app_find(app, exe);
         bool found = a != 0;
         if (a) {
-            // A new icon, or a changed one (a player rebuilt with a new avatar).
+            // A new icon, or a changed one.
             if (rgba && (!a->icon || memcmp(a->icon, rgba, 32 * 32 * 4) != 0)) {
                 free(a->icon);
                 a->icon = rgba;
                 a->icon_version++;
                 rgba = 0;
             }
-            if (!a->name[0] && name.len) SET(a->name, name);
+            // A changed exe may carry a new description; a name from the Start menu stays.
+            if (name.len && (!a->name[0] || (stale && a->name_from_exe))) {
+                SET(a->name, name);
+                a->name_from_exe = true;
+            }
         }
         app_unlock(app);
         free(rgba);

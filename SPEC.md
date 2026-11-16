@@ -90,6 +90,9 @@ C++ built with MSVC, in a plain data-oriented style:
 - Private mode (paused) records nothing and drops the sentence in progress.
 - New apps are recorded until you decide: included (keep recording) or excluded (record nothing).
 - Excluded apps can still count as games.
+- A folder can be included or excluded as a whole: every app in it, subfolders too. An app's own
+  choice wins over its folder's, and a deeper folder's over the one above it.
+- Apps are shown by their own name (Start menu, or the exe's description), else the exe name.
 - Discord calls can be recorded one track per person (the VoiceStreams Vencord plugin plays each person through their own app and silences them in Discord, so Discord is recorded like any other app).
 - Audio is kept 7 days for playback, then deleted. The text is kept for good.
 - If the data drive is not plugged in, it waits for it instead of recording somewhere else.
@@ -177,9 +180,10 @@ The window only exists while it is open. Closing it frees its memory; the record
 
 ### Settings
 
-- **Apps:** tabs New / Included / Excluded with counts, a search box, 10 per page.
+- **Apps:** tabs New / Included / Excluded / Folders with counts, a search box, 10 per page.
   - Each row: icon, name, "N lines · x min ago", path; ✓ include, ✕ exclude; a gamepad to mark it as a game.
-  - Right-click: Add as game / Not a game, Include, Exclude, Open file location.
+  - Right-click: Add as game / Not a game, Include, Exclude, Open file location, Include / Exclude every app in its folder.
+  - Folders: each folder rule with its app count; switch it, Remove it, or add one with a folder picker.
   - Search with no match offers "Add <name>.exe".
 - **Transcription:** Auto / Always / Paused, what it is doing, minutes waiting. In Auto, the GPU limit and the
   current load.

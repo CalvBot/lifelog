@@ -144,6 +144,11 @@ void list_free(List<T>* l) {
 struct Name {
     char s[64];
 };
+// A folder's full path, for lists of folders.
+struct PathName {
+    char s[MAX_PATH];
+};
+typedef List<PathName> Folders;
 typedef List<Name> Names;
 bool names_has(Names* n, Str name);           // ignoring case
 void names_set(Names* n, Str name, bool on);  // adds or removes; kept sorted

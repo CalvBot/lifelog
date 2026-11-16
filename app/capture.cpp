@@ -673,9 +673,12 @@ static DWORD WINAPI capture_watch_main(void* p) {
             Proc* proc = proc_find(&procs, pid);
             if (!proc) continue;
             Str exe = str(proc->exe);
-            AppInfo* info = app_find(app, exe);
             // lifelog's own window plays recordings back: never record those again.
-            if ((info && info->decision == DECISION_EXCLUDED) || is_own_exe(exe)) continue;
+            if (is_own_exe(exe)) continue;
+            AppInfo* info = app_get(app, exe);
+            // Its folder may decide: the path is needed before the first sound is kept.
+            if (!info->path[0]) proc_path(pid, info->path, sizeof(info->path));
+            if (app_decision(app, info) == DECISION_EXCLUDED) continue;
             u32 root = proc_root(&procs, pid);
             Stream* found = 0;
             for (i32 k = 0; k < c->streams.count && !found; k++)
@@ -692,9 +695,8 @@ static DWORD WINAPI capture_watch_main(void* p) {
             SET(s->title, title_for(exe, &procs, &wins));
             list_push(&c->streams, s);
             stream_start(app, s);
-            AppInfo* a = app_get(app, exe);
-            // Their exe is rebuilt when their avatar changes: picked up as they start talking.
-            if (voice_person(exe).len) a->icon_recheck = true;
+            // Its exe may have been rebuilt with a new icon or name since it was last read.
+            app_get(app, exe)->icon_recheck = true;
             LOG("capturing %s (pid %u): %s", s->exe, root, s->title[0] ? s->title : "no window");
             changed = true;
         }
@@ -703,7 +705,7 @@ static DWORD WINAPI capture_watch_main(void* p) {
             if (s->source != SOURCE_APP) continue;
             Str exe = str(s->exe);
             AppInfo* info = app_find(app, exe);
-            if ((info && info->decision == DECISION_EXCLUDED) || !record_apps) {
+            if ((info && app_decision(app, info) == DECISION_EXCLUDED) || !record_apps) {
                 // Just excluded: stop now and drop the sentence in progress.
                 LOG("%s (pid %u): no longer recorded", s->exe, s->pid);
                 stream_end(app, i--, true);

@@ -17,6 +17,10 @@ apps = true
 # Games can be excluded too: they still count as games (for auto mode) but aren't recorded.
 included_apps = []
 excluded_apps = []
+# Folders (full paths) whose apps, subfolders too, are all included or excluded. An exe's own
+# decision wins over its folder's, and a deeper folder's over the one above it.
+included_folders = []
+excluded_folders = []
 # Loudness (0..1 RMS) above which audio counts as "something is playing".
 gate_rms = 0.003
 # Days the audio of transcribed lines is kept, to play them back. The text is kept for good.
@@ -167,7 +171,7 @@ struct Value {
     char s[MAX_PATH * 2];
     f64 number;
     bool on;
-    Names array;  // freed by the caller when not kept
+    Folders array;  // freed by the caller when not kept
 };
 
 static bool read_value(Toml* t, Value* v) {
@@ -186,7 +190,7 @@ static bool read_value(Toml* t, Value* v) {
                 return true;
             }
             if (peek(t) != '"' && peek(t) != '\'') return toml_fail(t, "lists may only hold strings");
-            Name item = {};
+            PathName item = {};
             if (!read_string(t, item.s, sizeof(item.s))) return false;
             list_push(&v->array, item);
             skip_blank(t);
@@ -225,6 +229,13 @@ static void take_names(Names* dst, Value* v) {
     if (v->kind != Value::ARRAY) return;
     list_free(dst);
     for (i32 i = 0; i < v->array.count; i++) names_set(dst, str(v->array.items[i].s), true);
+}
+
+static void take_folders(Folders* dst, Value* v) {
+    if (v->kind != Value::ARRAY) return;
+    list_free(dst);
+    for (i32 i = 0; i < v->array.count; i++)
+        if (v->array.items[i].s[0]) list_push(dst, v->array.items[i]);
 }
 
 static void config_defaults(Config* cfg) {
@@ -307,6 +318,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("locked_apps")) && v.kind == Value::ARRAY)
                 for (i32 i = 0; i < v.array.count; i++) names_set(&cfg->capture.included_apps, str(v.array.items[i].s), true);
             if (str_eq(k, str("excluded_apps"))) take_names(&cfg->capture.excluded_apps, &v);
+            if (str_eq(k, str("included_folders"))) take_folders(&cfg->capture.included_folders, &v);
+            if (str_eq(k, str("excluded_folders"))) take_folders(&cfg->capture.excluded_folders, &v);
             if (str_eq(k, str("gate_rms")) && v.kind == Value::NUMBER) cfg->capture.gate_rms = (f32)v.number;
             if (str_eq(k, str("keep_audio_days"))) take_u32(&cfg->capture.keep_audio_days, &v);
         } else if (str_eq(tb, str("processing"))) {
@@ -418,6 +431,24 @@ bool config_save_names(const char* table, const char* key, Names* names) {
     Str list = str("[");
     for (i32 i = 0; i < names->count; i++)
         list = str_fmt(a, "%.*s%s\"%s\"", (int)list.len, list.ptr, i ? ", " : "", names->items[i].s);
+    list = str_fmt(a, "%.*s]", (int)list.len, list.ptr);
+    bool ok = config_save_value(table, key, list);
+    rewind(m);
+    return ok;
+}
+
+bool config_save_folders(const char* table, const char* key, Folders* folders) {
+    Arena* a = scratch();
+    Mark m = mark(a);
+    Str list = str("[");
+    for (i32 i = 0; i < folders->count; i++) {
+        list = str_fmt(a, "%.*s%s\"", (int)list.len, list.ptr, i ? ", " : "");
+        for (const char* c = folders->items[i].s; *c; c++) {
+            if (*c == '"' || *c == '\\') list = str_fmt(a, "%.*s\\%c", (int)list.len, list.ptr, *c);
+            else list = str_fmt(a, "%.*s%c", (int)list.len, list.ptr, *c);
+        }
+        list = str_fmt(a, "%.*s\"", (int)list.len, list.ptr);
+    }
     list = str_fmt(a, "%.*s]", (int)list.len, list.ptr);
     bool ok = config_save_value(table, key, list);
     rewind(m);

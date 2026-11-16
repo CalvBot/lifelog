@@ -88,8 +88,6 @@ static bool has(Str hay, const char* needle) { return str_find(hay, str(needle))
 
 // `s` with every trailing ".exe" taken off (case as it is, like the old app's trim_end_matches).
 static Str trim_exe(Str s) {
-    Str person = voice_person(s);  // "discord-zaddish-4508….exe": zaddish, in a Discord call
-    if (person.len) return person;
     while (str_ends(s, str(".exe"))) s.len -= 4;
     return s;
 }
@@ -106,7 +104,6 @@ static i64 count_words(Str s) {
 }
 
 static bool is_call_app(Str speaker) {
-    if (voice_person(speaker).len) return true;  // a person in a Discord call (VoiceStreams)
     Mark m = mark(scratch());
     Str name = str_lower(scratch(), trim_exe(speaker));
     bool call = false;
@@ -551,11 +548,19 @@ struct SLine {
     f64 end_ts;
     Str source;   // "mic" | "app" | "call" (one person on a call, from lifelog-vencord)
     Str speaker;
+    Str name;     // the speaker as shown (the app's own name), from name_lines
     Str title;
     Str text;
 };
 
 static bool is_mic(const SLine* l) { return str_eq(l->source, str("mic")); }
+
+// Each line's speaker as the app list shows it: an app's own name ("Brave Browser").
+static void name_lines(App* app, Arena* a, Slice<SLine> lines) {
+    app_lock(app);
+    for (i32 i = 0; i < lines.count; i++) lines.items[i].name = str_copy(a, app_label(app, lines.items[i].speaker));
+    app_unlock(app);
+}
 
 static Slice<SLine> day_lines(sqlite3* db, Arena* a, f64 from, f64 to) {
     Slice<SLine> out = {};
@@ -674,7 +679,7 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
         // "call" lines come one person per stream (lifelog-vencord) and are named after the speaker.
         bool call = str_eq(line->source, str("call")) || is_call_app(line->speaker);
         // Media is marked as playing, so it is never read as someone talking.
-        Str name = trim_exe(line->speaker);
+        Str name = line->name;
         Str who = call ? str_copy(a, name) : str_fmt(a, "%.*s playing", (int)name.len, name.ptr);
         RunCount* run = 0;
         for (i32 k = 0; k < since_me.count; k++)
@@ -880,7 +885,7 @@ static Slice<Flag> flagged_moments(Arena* a, Slice<SLine> lines) {
             SLine* l = &lines.items[k];
             if (!(l->end_ts >= line->start_ts - 30.0 && l->start_ts <= line->end_ts + 45.0)) continue;
             if (buf_len(&context) >= 2000) continue;
-            Str who = is_mic(l) ? str("me") : trim_exe(l->speaker);
+            Str who = is_mic(l) ? str("me") : l->name;
             Str text = str_trim(l->text);
             char at[6];
             clock_text(l->start_ts, at);
@@ -1393,6 +1398,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     f64 from, to;
     day_bounds(day, &from, &to);
     Slice<SLine> lines = day_lines(db, a, from, to < now_ts() ? to : now_ts());
+    name_lines(app, a, lines);
     Slice<Chunk> chunks = transcript_chunks(a, lines);
     Slice<Flag> flags = flagged_moments(a, lines);
     Slice<Slice<Str>> mine = {PUSH_ARRAY(a, Slice<Str>, lines.count), 0};

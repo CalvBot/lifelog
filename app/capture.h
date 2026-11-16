@@ -1,10 +1,6 @@
 // capture.h: recording. One stream for the mic and one per app that plays sound (WASAPI process
 // loopback), each cut into short 16 kHz mono WAV files in the spool folder with a .json beside
 // it for the worker. Excluded apps and private mode record nothing.
-//
-// In a Discord call, vencord-voicestreams plays each person through their own player
-// (discord-<username>-<userId>.exe) and silences them in Discord meanwhile, so each player and
-// Discord itself are simply recorded as apps, with nothing heard twice.
 
 #pragma once
 

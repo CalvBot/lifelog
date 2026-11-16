@@ -33,8 +33,9 @@ struct AppInfo {
     u8* icon;            // 32×32 RGBA (malloc), or null if none was found
     u32 icon_version;    // bumped when `icon` changes, so the window makes a new texture
     bool icon_tried;     // the icon was looked for (found or not), so it is not tried again
-    bool icon_recheck;   // look again even if it has one: a VoiceStreams player started, maybe
-                         // rebuilt with the person's new avatar
+    bool icon_recheck;   // look again even if it has one: it started playing, and its exe may have
+                         // been rebuilt with a new icon or name since
+    bool name_from_exe;  // `name` is the exe's own description, so a changed exe may change it
 };
 
 // Where an exe lives, for every exe seen (not only apps). Kept in paths.txt between runs.
@@ -58,17 +59,28 @@ AppInfo* app_get(App* app, Str exe);
 const char* app_path(App* app, Str exe);
 // lifelog's own programs: never recorded (its window plays recordings back) and not listed.
 bool is_own_exe(Str exe);
-// A VoiceStreams player (the vencord-voicestreams plugin): one per person in a Discord call,
-// named "discord-<username>-<userId>.exe". Their username ("zaddish"), or their id when the name
-// had nothing safe in it; empty for any other exe. People are recorded without being included:
-// they don't wait under New, and only show in the app lists when excluded or searched for.
-Str voice_person(Str exe);
+// How a speaker is shown: an app by its own name (from the Start menu or its exe's description,
+// "Brave Browser"), else its exe without ".exe"; anything else ("me") as it is.
+Str app_label(App* app, Str speaker);
+// The full path of the exe process `pid` runs, into `out`. False if it can't be read.
+bool proc_path(u32 pid, char* out, i32 cap);
 
 // Sets the decisions from the config's lists (once, at start).
 void apps_from_config(App* app);
 // Change a decision and save the config's lists.
 void app_set_decision(App* app, Str exe, Decision d);
 void app_set_game(App* app, Str exe, GameMark g);
+
+// Folder rules (capture.included_folders and excluded_folders): every app in the folder,
+// subfolders too, unless the exe has a decision of its own; the deepest folder wins.
+// Whether `path` is `folder` or inside it, ignoring case and / against \.
+bool path_under(Str path, Str folder);
+// The decision an app follows: its own, else its folder's, else new.
+Decision app_decision(App* app, AppInfo* a);
+// The rule set for exactly `folder`: DECISION_NEW if none.
+Decision folder_decision(Config* c, Str folder);
+// Sets the rule for `folder` (DECISION_NEW removes it) and saves the config's lists.
+void app_set_folder(App* app, Str folder, Decision d);
 
 // Starts the background scan of installed apps and games (Start menu, Steam, Epic, ...), the
 // process watcher that keeps `running` and `game_running` current, and the icon cache.

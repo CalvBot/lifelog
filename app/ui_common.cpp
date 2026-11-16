@@ -197,12 +197,14 @@ static const char* size_text(i64 bytes) {
     return tmp("%.0f KB", ceil(b / 1e3));
 }
 
-// "spotify.exe" → "spotify"; the mic is "me".
-static Str app_name(Str exe) {
-    Str person = voice_person(exe);  // a person in a Discord call: their name
-    if (person.len) return person;
-    if (str_ends(exe, str(".exe")) || str_ends(exe, str(".EXE"))) return str_sub(exe, 0, exe.len - 4);
-    return exe;
+// An app's own name ("Brave Browser"), else "spotify.exe" → "spotify"; the mic is "me".
+static Str app_name(App* app, Str exe) { return app_label(app, exe); }
+
+// Whether a speaker is an excluded app, by its own decision or its folder's.
+static bool speaker_excluded(App* app, Str speaker) {
+    if (names_has(&app->config.capture.excluded_apps, speaker)) return true;
+    AppInfo* a = app_find(app, speaker);
+    return a && app_decision(app, a) == DECISION_EXCLUDED;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -213,7 +215,7 @@ static Str app_name(Str exe) {
 static bool speaker_visible(App* app, Str speaker) {
     if (names_has(&app->config.ui.hidden, speaker)) return false;
     if (app->config.ui.show_dismissed) return true;
-    return !names_has(&app->config.capture.excluded_apps, speaker);
+    return !speaker_excluded(app, speaker);
 }
 
 // The speakers left out of copies and playback: the hidden ones plus excluded apps (unless shown).
@@ -221,8 +223,8 @@ static Names hidden_speakers(App* app) {
     Names out = {};
     for (i32 i = 0; i < app->config.ui.hidden.count; i++) names_set(&out, str(app->config.ui.hidden[i].s), true);
     if (!app->config.ui.show_dismissed)
-        for (i32 i = 0; i < app->config.capture.excluded_apps.count; i++)
-            names_set(&out, str(app->config.capture.excluded_apps[i].s), true);
+        for (i32 i = 0; i < app->apps.list.count; i++)
+            if (app_decision(app, &app->apps.list[i]) == DECISION_EXCLUDED) names_set(&out, str(app->apps.list[i].exe), true);
     return out;  // the caller frees it with list_free
 }
 

@@ -520,6 +520,12 @@ static u64 tl_filter_sig(App* app) {
     };
     mix(&app->config.ui.hidden);
     mix(&app->config.capture.excluded_apps);
+    for (i32 l = 0; l < 2; l++) {
+        Folders* f = l ? &app->config.capture.excluded_folders : &app->config.capture.included_folders;
+        for (i32 i = 0; i < f->count; i++)
+            for (const char* c = f->items[i].s; *c; c++) h = (h ^ (u8)tolower((u8)*c)) * 1099511628211ull;
+        h = (h ^ 0xfe) * 1099511628211ull;
+    }
     return h ^ (app->config.ui.show_dismissed ? 1 : 0);
 }
 
@@ -982,10 +988,10 @@ static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
     ImGui::PushFont(0, 13);
     for (i32 c = 0; c < s->chips.count; c++) {
         TlChip* chip = &s->chips.items[c];
-        bool dismissed = names_has(&app->config.capture.excluded_apps, chip->speaker);
+        bool dismissed = speaker_excluded(app, chip->speaker);
         if (dismissed && !app->config.ui.show_dismissed) continue;
         bool on = !names_has(&app->config.ui.hidden, chip->speaker);
-        Str name = app_name(chip->speaker);
+        Str name = app_name(app, chip->speaker);
         f32 w = ImGui::CalcTextSize(name.ptr, name.ptr + name.len).x + 38 * u;
         // Wrap: on this line if it fits, else the next.
         f32 last_x = ImGui::GetItemRectMax().x;
@@ -1062,9 +1068,9 @@ static bool timeline_apps_draw(App* app, TimelineState* s) {
             ImGui::AlignTextToFramePadding();
             draw_app_icon(app, sc->speaker, 18 * u);
             ImGui::SameLine();
-            Str name = app_name(sc->speaker);
+            Str name = app_name(app, sc->speaker);
             ImGui::TextUnformatted(name.ptr, name.ptr + name.len);
-            if (names_has(&app->config.capture.excluded_apps, sc->speaker)) {
+            if (speaker_excluded(app, sc->speaker)) {
                 ImGui::SameLine();
                 small_begin();
                 ImGui::TextDisabled("excluded");
@@ -1366,7 +1372,7 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
     if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
     else dl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), str_eq(line->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW);
-    Str name = fit_text(app_name(line->speaker), TL_APP_W * u - is - 8 * u);
+    Str name = fit_text(app_name(app, line->speaker), TL_APP_W * u - is - 8 * u);
     dl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
 
     // The text: being heard, just arrived (writing itself out), or with the search marked.

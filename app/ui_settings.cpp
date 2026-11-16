@@ -6,12 +6,14 @@ enum AppsView : u8 {
     VIEW_NEW,
     VIEW_INCLUDED,  // recorded, games too
     VIEW_EXCLUDED,
+    VIEW_FOLDERS,   // the folder rules
 };
 
 static const i32 APPS_PER_PAGE = 10;
 
 enum UndoKind : u8 {
     UNDO_APP,        // put an app's decision and game mark back
+    UNDO_FOLDER,     // put a folder's rule back
     UNDO_MODE,
     UNDO_GPU,
     UNDO_ENABLED,
@@ -26,6 +28,7 @@ struct SettingsUndo {
     UndoKind kind;
     char label[128];  // "spotify included", for the message after undoing
     char exe[64];
+    char folder[MAX_PATH];
     Decision decision;
     GameMark game;
     u32 n;
@@ -39,7 +42,7 @@ struct SettingsState {
     AppsView view;
     i32 page;
     i32 pages;
-    i32 counts[3];
+    i32 counts[4];
     Name rows[APPS_PER_PAGE];
     i32 row_count;
     bool stale;
@@ -190,7 +193,7 @@ static SettingsUndo* remember(SettingsState* s, UndoKind kind, const char* fmt, 
 
 // Remembers how `exe` is now, before it is changed.
 static void remember_app(App* app, SettingsState* s, Str exe, const char* what) {
-    Str name = app_name(exe);
+    Str name = app_name(app, exe);
     SettingsUndo* u = remember(s, UNDO_APP, "%.*s %s", (int)name.len, name.ptr, what);
     SET(u->exe, exe);
     AppInfo* a = app_find(app, exe);
@@ -208,6 +211,7 @@ static void undo_last(App* app, SettingsState* s) {
         if (!a || a->decision != u.decision) app_set_decision(app, str(u.exe), u.decision);
         if (!a || a->game != u.game) app_set_game(app, str(u.exe), u.game);
     } break;
+    case UNDO_FOLDER: app_set_folder(app, str(u.folder), u.decision); break;
     case UNDO_MODE: worker_set_mode(app, (Mode)u.n); break;
     case UNDO_GPU: worker_set_gpu_limit(app, u.n); break;
     case UNDO_ENABLED: summary_set_enabled(app, u.on); break;
@@ -223,11 +227,10 @@ static void undo_last(App* app, SettingsState* s) {
 // ---------------------------------------------------------------------------------------------
 // Apps
 
-static AppsView view_of(AppInfo* a) {
-    if (a->game == GAME_YES || a->decision == DECISION_INCLUDED) return VIEW_INCLUDED;
-    if (a->decision == DECISION_EXCLUDED) return VIEW_EXCLUDED;
-    // People in Discord calls are included without asking.
-    if (voice_person(str(a->exe)).len) return VIEW_INCLUDED;
+static AppsView view_of(App* app, AppInfo* a) {
+    Decision d = app_decision(app, a);
+    if (a->game == GAME_YES || d == DECISION_INCLUDED) return VIEW_INCLUDED;
+    if (d == DECISION_EXCLUDED) return VIEW_EXCLUDED;
     return VIEW_NEW;
 }
 
@@ -249,15 +252,13 @@ static void apps_load(App* app, SettingsState* s) {
     Str q = str_lower(scratch(), str_trim(str(s->search)));
     List<AppRowSort> rows = {};
     s->counts[0] = s->counts[1] = s->counts[2] = 0;
+    s->counts[VIEW_FOLDERS] = app->config.capture.included_folders.count + app->config.capture.excluded_folders.count;
     f64 now = now_ts();
     for (i32 i = 0; i < app->apps.list.count; i++) {
         AppInfo* a = &app->apps.list[i];
         if (is_own_exe(str(a->exe))) continue;
         if (q.len && str_find(str(a->exe), q) < 0 && str_find(str_lower(scratch(), str(a->name)), q) < 0) continue;
-        AppsView v = view_of(a);
-        // People in Discord calls would fill the Included list one call at a time: they show there
-        // only when searched for (the Discord calls card stands for them).
-        if (v == VIEW_INCLUDED && !q.len && voice_person(str(a->exe)).len) continue;
+        AppsView v = view_of(app, a);
         // New lists what was heard, plays now, or is installed; not every exe the config names.
         if (v == VIEW_NEW && !a->playing && !a->installed && a->lines == 0 && a->last_ts == 0) continue;
         s->counts[v]++;
@@ -277,14 +278,170 @@ static void apps_load(App* app, SettingsState* s) {
 }
 
 // What a click on a row asks for; done after the rows are drawn.
-enum AppAct : u8 { ACT_NONE, ACT_INCLUDE, ACT_EXCLUDE, ACT_GAME, ACT_REVEAL };
+enum AppAct : u8 { ACT_NONE, ACT_INCLUDE, ACT_EXCLUDE, ACT_GAME, ACT_REVEAL, ACT_INCLUDE_FOLDER, ACT_EXCLUDE_FOLDER };
+
+// ---------------------------------------------------------------------------------------------
+// Folder rules
+
+static void set_folder(App* app, SettingsState* s, Str folder, Decision d) {
+    Str shown = folder;
+    while (shown.len && (shown.ptr[shown.len - 1] == '\\' || shown.ptr[shown.len - 1] == '/')) shown.len--;
+    for (i64 i = shown.len - 1; i >= 0; i--)
+        if (shown.ptr[i] == '\\' || shown.ptr[i] == '/') {
+            shown = str_sub(shown, i + 1);
+            break;
+        }
+    const char* what = d == DECISION_INCLUDED ? "included" : d == DECISION_EXCLUDED ? "excluded" : "no longer a rule";
+    SettingsUndo* u = remember(s, UNDO_FOLDER, "everything in %.*s %s", (int)(shown.len > 80 ? 80 : shown.len), shown.ptr, what);
+    SET(u->folder, folder);
+    u->decision = folder_decision(&app->config, folder);
+    app_set_folder(app, folder, d);
+    s->stale = true;
+}
+
+// The folder picker is modal, so it runs on its own thread while the window keeps drawing. It
+// hands its answer over under the lock; the next frame applies it.
+static volatile LONG g_picking;
+static Decision g_pick_decision;
+static char g_picked[MAX_PATH];
+
+static DWORD WINAPI folder_pick_main(void* p) {
+    App* app = (App*)p;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    char picked[MAX_PATH] = "";
+    IFileOpenDialog* d = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
+        DWORD o = 0;
+        d->GetOptions(&o);
+        d->SetOptions(o | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        d->SetTitle(g_pick_decision == DECISION_INCLUDED ? L"Include every app in a folder" : L"Exclude every app in a folder");
+        IShellItem* item = 0;
+        if (SUCCEEDED(d->Show(0)) && SUCCEEDED(d->GetResult(&item))) {
+            wchar_t* path = 0;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                Mark m = mark(scratch());
+                SET(picked, narrow(scratch(), path));
+                rewind(m);
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+        d->Release();
+    }
+    CoUninitialize();
+    app_lock(app);
+    SET(g_picked, str(picked));
+    g_picking = 0;
+    app_unlock(app);
+    wake_window(app);
+    return 0;
+}
+
+static void folders_view(App* app, SettingsState* s) {
+    if (!g_picking && g_picked[0]) {
+        set_folder(app, s, str(g_picked), g_pick_decision);
+        g_picked[0] = 0;
+    }
+    Config* c = &app->config;
+    Str q = str_lower(scratch(), str_trim(str(s->search)));
+    const f32 row_h = px(30);
+    ImVec2 button = ImVec2(px(40), ImGui::GetFrameHeight());
+    f32 spacing = ImGui::GetStyle().ItemSpacing.x;
+    char act_folder[MAX_PATH] = "";
+    Decision act_to = DECISION_NEW;
+    bool act = false, reveal = false;
+    i32 shown = 0;
+    for (i32 list = 0; list < 2; list++) {
+        Folders* fs = list ? &c->capture.excluded_folders : &c->capture.included_folders;
+        Decision d = list ? DECISION_EXCLUDED : DECISION_INCLUDED;
+        for (i32 i = 0; i < fs->count; i++) {
+            const char* path = fs->items[i].s;
+            if (q.len && str_find(str_lower(scratch(), str(path)), q) < 0) continue;
+            shown++;
+            ImGui::PushID(list * 100000 + i);
+            ImVec2 at = ImGui::GetCursorScreenPos();
+            f32 x = at.x + ImGui::GetContentRegionAvail().x;
+            bool clicked = false;
+            Decision to = DECISION_NEW;
+            // Where the app rows have theirs: the other choice on the right, then Remove.
+            x -= button.x;
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
+            if (ImGui::Button(d == DECISION_EXCLUDED ? ICON_CHECK "##inc" : ICON_X "##exc", button)) {
+                clicked = true;
+                to = d == DECISION_EXCLUDED ? DECISION_INCLUDED : DECISION_EXCLUDED;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d == DECISION_EXCLUDED ? "Include instead" : "Exclude instead");
+            x -= spacing;
+            const char* remove = "Remove";
+            x -= ImGui::CalcTextSize(remove).x + ImGui::GetStyle().FramePadding.x * 2;
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
+            if (ImGui::Button(remove)) {
+                clicked = true;
+                to = DECISION_NEW;
+            }
+            x -= spacing;
+
+            i32 apps = 0;
+            for (i32 k = 0; k < app->apps.list.count; k++)
+                if (app->apps.list[k].path[0] && path_under(str(app->apps.list[k].path), str(path))) apps++;
+            const char* what = tmp("%s · %d %s", d == DECISION_INCLUDED ? "included" : "excluded", apps, apps == 1 ? "app" : "apps");
+            ImGui::PushFont(0, small_size());
+            f32 what_w = ImGui::CalcTextSize(what).x;
+            ImGui::PopFont();
+            f32 text_y = at.y + (row_h - ImGui::GetTextLineHeight()) / 2;
+            ImGui::SetCursorScreenPos(ImVec2(at.x, text_y));
+            ImGui::BeginGroup();
+            ImGui::TextColored(weak_text(), "%s", ICON_FOLDER);
+            ImGui::SameLine();
+            f32 left = x - ImGui::GetCursorScreenPos().x - what_w - spacing;
+            ImGui::TextUnformatted(fit(path, left));
+            ImGui::SameLine();
+            ImGui::PushFont(0, small_size());
+            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, at.y + (row_h - ImGui::GetTextLineHeight()) / 2 + px(1)));
+            ImGui::TextColored(weak_text(), "%s", what);
+            ImGui::PopFont();
+            ImGui::EndGroup();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path);
+            if (ImGui::BeginPopupContextItem("menu")) {
+                if (ImGui::MenuItem(label(ICON_FOLDER_OPEN, "Open folder"))) reveal = true;
+                if (ImGui::MenuItem(label(ICON_X, "Remove rule"))) {
+                    clicked = true;
+                    to = DECISION_NEW;
+                }
+                ImGui::EndPopup();
+            }
+            if ((clicked || reveal) && !act_folder[0]) {
+                SET(act_folder, str(path));
+                act = clicked;
+                act_to = to;
+            }
+            ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + row_h));
+            ImGui::Dummy(ImVec2(0, 0));
+            ImGui::PopID();
+        }
+    }
+    if (!shown) weak(q.len ? "No match." : "None. A folder's rule covers every app in it, subfolders too; an app's own choice wins.");
+    ImGui::BeginDisabled(g_picking != 0);
+    for (i32 k = 0; k < 2; k++) {
+        if (k) ImGui::SameLine();
+        if (ImGui::Button(label(ICON_PLUS, k ? "Exclude a folder" : "Include a folder"))) {
+            g_pick_decision = k ? DECISION_EXCLUDED : DECISION_INCLUDED;
+            g_picked[0] = 0;
+            g_picking = 1;
+            start_thread(app, "folder picker", folder_pick_main);
+        }
+    }
+    ImGui::EndDisabled();
+    if (act) set_folder(app, s, str(act_folder), act_to);
+    else if (act_folder[0]) open_path(app, wide(scratch(), str(act_folder)), false);
+}
 
 static void apps_card(App* app, SettingsState* s, f32 width) {
     settings_card("apps", width);
     title("Apps");
     ImGui::SameLine(0, px(16));
-    const char* names[] = {"New", "Included", "Excluded"};
-    for (i32 v = 0; v < 3; v++) {
+    const char* names[] = {"New", "Included", "Excluded", "Folders"};
+    for (i32 v = 0; v < 4; v++) {
         if (v) ImGui::SameLine();
         if (pick(tmp("%s  %d##view%d", names[v], s->counts[v], v), s->view == v, ImVec2(px(96), 0)) && s->view != v) {
             s->view = (AppsView)v;
@@ -302,6 +459,12 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         s->stale = true;
     }
     ImGui::Dummy(ImVec2(0, 0));
+
+    if (s->view == VIEW_FOLDERS) {
+        folders_view(app, s);
+        settings_card_end();
+        return;
+    }
 
     AppAct act = ACT_NONE;
     char act_exe[64] = "";
@@ -354,7 +517,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         draw_app_icon(app, exe, px(20));
         ImGui::SameLine();
         f32 left = x - ImGui::GetCursorScreenPos().x;
-        const char* name = a->name[0] && !voice_person(exe).len ? a->name : str_copy(scratch(), app_name(exe)).ptr;
+        const char* name = str_copy(scratch(), app_name(app, exe)).ptr;
         ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, text_y));
         const char* shown = fit(name, left);
         ImGui::TextUnformatted(shown);
@@ -385,6 +548,9 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
             if (s->view != VIEW_INCLUDED && ImGui::MenuItem(label(ICON_CHECK, "Include"))) act = ACT_INCLUDE;
             if (s->view != VIEW_EXCLUDED && ImGui::MenuItem(label(ICON_X, "Exclude"))) act = ACT_EXCLUDE;
             if (ImGui::MenuItem(label(ICON_FOLDER_OPEN, "Open file location"), 0, false, a->path[0] != 0)) act = ACT_REVEAL;
+            ImGui::Separator();
+            if (ImGui::MenuItem(label(ICON_FOLDER, "Include every app in its folder"), 0, false, a->path[0] != 0)) act = ACT_INCLUDE_FOLDER;
+            if (ImGui::MenuItem(label(ICON_FOLDER, "Exclude every app in its folder"), 0, false, a->path[0] != 0)) act = ACT_EXCLUDE_FOLDER;
             ImGui::EndPopup();
         }
         if (act != ACT_NONE && !act_exe[0]) SET(act_exe, exe);
@@ -452,6 +618,15 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         remember_app(app, s, exe, game ? "unmarked as a game" : "marked as a game");
         app_set_game(app, exe, game ? GAME_DISMISSED : GAME_YES);
     } break;
+    case ACT_INCLUDE_FOLDER:
+    case ACT_EXCLUDE_FOLDER: {
+        Str path = str(a->path);
+        i64 cut = path.len;
+        while (cut > 0 && path.ptr[cut - 1] != '\\' && path.ptr[cut - 1] != '/') cut--;
+        Mark m = mark(scratch());
+        set_folder(app, s, str_copy(scratch(), str_sub(path, 0, cut)), act == ACT_INCLUDE_FOLDER ? DECISION_INCLUDED : DECISION_EXCLUDED);
+        rewind(m);
+    } break;
     case ACT_REVEAL: {
         Mark m = mark(scratch());
         open_path(app, wide(scratch(), str(a->path)), true);
@@ -460,21 +635,6 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
     case ACT_NONE: break;
     }
     if (act != ACT_REVEAL) s->stale = true;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Discord calls (the VoiceStreams plugin)
-
-static void calls_card(App* app, f32 width) {
-    settings_card("calls", width);
-    title("Discord calls");
-    ImGui::SameLine(0, px(12));
-    i32 people = 0;
-    for (i32 i = 0; i < app->capture.streams.count; i++)
-        if (app->capture.streams[i]->source == SOURCE_APP && voice_person(str(app->capture.streams[i]->exe)).len) people++;
-    weak(people ? tmp("Recording %d %s one by one", people, people == 1 ? "person" : "people")
-                : "With the VoiceStreams plugin, each person in a call is recorded under their own name");
-    settings_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -720,9 +880,6 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     apps_card(app, s, width);
-    ImGui::Dummy(ImVec2(0, px(4)));
-    ImGui::SetCursorPosX(x);
-    calls_card(app, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     transcription_card(app, s, width);
