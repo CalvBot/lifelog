@@ -185,12 +185,14 @@ enum PasteKind : u8 {
 
 // What was on the clipboard, handed to the thread that saves it. Freed by that thread.
 struct PasteJob {
-    App* app;
+    App* app;     // for settings() and db_open only
     PasteKind kind;
     f64 ts;       // the moment it was pasted
-    u8* data;
+    u8* data;     // malloc'd
     i64 size;
     i32 count;    // paths, for PASTE_FILES
+    i32 saved;    // the results
+    char error[256];
 };
 
 // A copy of a clipboard handle's bytes (with two zero bytes after them, so text always ends).
@@ -327,7 +329,7 @@ static i32 paste_save(PasteJob* job, sqlite3* db, char* error, i32 cap) {
     }
 
     wchar_t dir[MAX_PATH];
-    files_dir(&app->config, dir);
+    files_dir(settings(app), dir);
     swprintf(dir + wcslen(dir), MAX_PATH - wcslen(dir), L"\\%ls", wide(scratch(), day));
     i32 made = SHCreateDirectoryExW(0, dir, 0);
     if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
@@ -398,47 +400,43 @@ static i32 paste_save(PasteJob* job, sqlite3* db, char* error, i32 cap) {
     return saved;
 }
 
-static DWORD WINAPI paste_thread(void* p) {
-    PasteJob* job = (PasteJob*)p;
-    App* app = job->app;
-    CoInitializeEx(0, COINIT_MULTITHREADED);  // for WIC
-    char error[256] = {};
-    i32 saved = 0;
-    sqlite3* db = db_open(app);
-    if (!db) snprintf(error, sizeof(error), "could not open the database");
-    else saved = paste_save(job, db, error, sizeof(error));
+static void paste_run(Job* j) {
+    PasteJob* job = (PasteJob*)j->data;
+    sqlite3* db = db_open(job->app);
+    if (!db) snprintf(job->error, sizeof(job->error), "could not open the database");
+    else job->saved = paste_save(job, db, job->error, sizeof(job->error));
     sqlite3_close(db);
-    if (error[0]) WARN("paste: %s", error);
-    app_lock(app);
-    if (saved > 0) app->storage.files_version++;
-    if (error[0]) ui_say(app, "Paste failed: %s", error);
-    else ui_say(app, "Saved %d item%s", saved, saved == 1 ? "" : "s");
-    app_unlock(app);
-    wake_window(app);
+    if (job->error[0]) WARN("paste: %s", job->error);
     free(job->data);
-    free(job);
-    CoUninitialize();
-    return 0;
+    job->data = 0;
+}
+
+static void paste_apply(App* app, Job* j) {
+    PasteJob* job = (PasteJob*)j->data;
+    if (job->saved > 0) app->storage.files_version++;
+    if (job->error[0]) ui_say(app, "Paste failed: %s", job->error);
+    else ui_say(app, "Saved %d item%s", job->saved, job->saved == 1 ? "" : "s");
 }
 
 i32 files_paste(App* app, char* error, i32 cap) {
-    PasteJob job = {};
-    job.app = app;
-    job.ts = now_ts();
-    if (!paste_read_clipboard(&job, error, cap)) return -1;
-    PasteJob* copy = (PasteJob*)malloc(sizeof(PasteJob));
-    CHECK(copy, "memory for a paste");
-    *copy = job;
-    HANDLE t = CreateThread(0, 0, paste_thread, copy, 0, 0);
-    CHECK(t, "the paste thread to start (error %lu)", GetLastError());
-    CloseHandle(t);
-    return job.kind == PASTE_FILES ? job.count : 1;
+    Job* j = job_new(paste_apply);
+    PasteJob* job = PUSH(&j->arena, PasteJob);
+    job->app = app;
+    job->ts = now_ts();
+    if (!paste_read_clipboard(job, error, cap)) {
+        job_free(j);
+        return -1;
+    }
+    i32 n = job->kind == PASTE_FILES ? job->count : 1;
+    j->data = job;
+    pool_post(j, paste_run);
+    return n;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Opening
 
-bool file_full_path(Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
+bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
     out[0] = 0;
     if (str_eq(f->kind, str("url")) || !f->path.len) return false;
     Mark m = mark(scratch());
@@ -461,13 +459,14 @@ bool file_full_path(Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
 }
 
 struct OpenJob {
-    App* app;
+    const Config* cfg;
     i64 id;
     bool in_folder;
+    char error[256];
 };
 
-static void file_open_now(App* app, i64 id, bool in_folder, char* error, i32 cap) {
-    sqlite3* db = db_open_read(&app->config);
+static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error, i32 cap) {
+    sqlite3* db = db_open_read(cfg);
     if (!db) {
         snprintf(error, cap, "could not open the database");
         return;
@@ -481,7 +480,7 @@ static void file_open_now(App* app, i64 id, bool in_folder, char* error, i32 cap
         if (!as_url(scratch(), f.path).len) snprintf(error, cap, "not a web address");
         else if ((INT_PTR)ShellExecuteW(0, L"open", wide(scratch(), f.path), 0, 0, SW_SHOWNORMAL) <= 32)
             snprintf(error, cap, "could not open %s", f.path.ptr);
-    } else if (!file_full_path(&app->config, &f, path)) {
+    } else if (!file_full_path(cfg, &f, path)) {
         snprintf(error, cap, "bad path");
     } else if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(error, cap, "the file is gone from %s", narrow(scratch(), path).ptr);
@@ -498,28 +497,23 @@ static void file_open_now(App* app, i64 id, bool in_folder, char* error, i32 cap
     sqlite3_close(db);
 }
 
-static DWORD WINAPI open_thread(void* p) {
-    OpenJob job = *(OpenJob*)p;
-    free(p);
-    // ShellExecute needs COM on the calling thread.
-    CoInitializeEx(0, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    char error[256] = {};
-    file_open_now(job.app, job.id, job.in_folder, error, sizeof(error));
-    if (error[0]) {
-        WARN("opening a pasted file: %s", error);
-        app_lock(job.app);
-        ui_say(job.app, "%s", error);
-        app_unlock(job.app);
-    }
-    CoUninitialize();
-    return 0;
+static void open_run(Job* job) {
+    OpenJob* o = (OpenJob*)job->data;
+    file_open_now(o->cfg, o->id, o->in_folder, o->error, sizeof(o->error));
+    if (o->error[0]) WARN("opening a pasted file: %s", o->error);
+}
+
+static void open_apply(App* app, Job* job) {
+    OpenJob* o = (OpenJob*)job->data;
+    if (o->error[0]) ui_say(app, "%s", o->error);
 }
 
 void file_open(App* app, i64 id, bool in_folder) {
-    OpenJob* job = (OpenJob*)malloc(sizeof(OpenJob));
-    CHECK(job, "memory for opening a file");
-    *job = {app, id, in_folder};
-    HANDLE t = CreateThread(0, 0, open_thread, job, 0, 0);
-    CHECK(t, "the thread that opens a file to start (error %lu)", GetLastError());
-    CloseHandle(t);
+    Job* job = job_new(open_apply);
+    OpenJob* o = PUSH(&job->arena, OpenJob);
+    o->cfg = settings(app);
+    o->id = id;
+    o->in_folder = in_folder;
+    job->data = o;
+    pool_post(job, open_run);
 }

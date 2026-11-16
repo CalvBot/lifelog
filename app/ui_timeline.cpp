@@ -6,7 +6,7 @@
 // (Worker.lines_version) or a file is pasted (Storage.files_version). The rows are laid out by
 // hand and only those near the screen are drawn, so a day of 20k lines stays fast; each row's
 // height is measured once per text width. Copying, image decoding and reading text previews run
-// on threads (g_tl_jobs), never under the lock.
+// on the pool.
 
 #include <wincodec.h>
 
@@ -101,28 +101,9 @@ struct TimelineState {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Jobs on threads: copying (slow: it mixes audio), the clipboard, and file previews.
+// Jobs on the pool: copying (slow: it mixes audio), the clipboard, and file previews.
 
-enum TlJobKind : u8 {
-    TL_JOB_CLIP,     // clip_copy a stretch
-    TL_JOB_TEXT,     // put `text` on the clipboard
-    TL_JOB_PREVIEW,  // decode an image or read a text file for its row
-};
-
-struct TlJob {
-    TlJobKind kind;
-    ClipKind clip;
-    f64 from, to;
-    Names exclude;     // freed by the thread
-    char* text;        // malloc'd, freed by the thread
-    char said[64];     // the toast when the text is copied
-    i64 file_id;
-    bool image;
-    wchar_t path[MAX_PATH];
-};
-static List<TlJob> g_tl_jobs;  // waiting for their thread; under App.lock
-
-// A pasted file's preview, kept while the window is open. Under App.lock.
+// A pasted file's preview, kept while the window is open. The main thread's.
 struct TlPreview {
     i64 id;
     bool done;
@@ -197,102 +178,88 @@ static i64 utf8_count(Str s) {
     return n;
 }
 
-static void tl_job_preview(App* app, TlJob* job) {
-    u8* rgba = 0;
-    i32 w = 0, h = 0;
-    char* text = 0;
-    if (job->image) {
-        CoInitializeEx(0, COINIT_MULTITHREADED);
-        tl_decode_image(job->path, &rgba, &w, &h);
-        CoUninitialize();
-    } else {
-        Arena a = {};
-        Str t = read_file(&a, job->path);
-        if (t.ptr) {
-            i64 n = utf8_offset(t, 4000);
-            text = (char*)malloc((size_t)n + 1);
-            CHECK(text, "memory for a text preview");
-            memcpy(text, t.ptr, (size_t)n);
-            text[n] = 0;
-        }
-        arena_release(&a);
+struct TlPreviewJob {
+    i64 file_id;
+    bool image;
+    wchar_t path[MAX_PATH];
+    u8* rgba;  // malloc'd
+    i32 w, h;
+    char* text;  // malloc'd
+};
+
+static void tl_preview_run(Job* job) {
+    TlPreviewJob* p = (TlPreviewJob*)job->data;
+    if (p->image) {
+        tl_decode_image(p->path, &p->rgba, &p->w, &p->h);
+        return;
     }
-    app_lock(app);
+    Str t = read_file(scratch(), p->path);
+    if (t.ptr) {
+        i64 n = utf8_offset(t, 4000);
+        p->text = (char*)malloc((size_t)n + 1);
+        CHECK(p->text, "memory for a text preview");
+        memcpy(p->text, t.ptr, (size_t)n);
+        p->text[n] = 0;
+    }
+}
+
+static void tl_preview_apply(App* app, Job* job) {
+    TlPreviewJob* j = (TlPreviewJob*)job->data;
     TlPreview* p = 0;
     for (i32 i = 0; i < g_tl_previews.count; i++)
-        if (g_tl_previews[i].id == job->file_id) p = &g_tl_previews[i];
-    if (p) {
-        p->done = true;
-        p->rgba = rgba;
-        p->w = w;
-        p->h = h;
-        p->text = text;
-    } else {
+        if (g_tl_previews[i].id == j->file_id) p = &g_tl_previews[i];
+    if (!p) {
         // The window closed meanwhile.
-        free(rgba);
-        free(text);
+        free(j->rgba);
+        free(j->text);
+        return;
     }
-    app_unlock(app);
+    p->done = true;
+    p->rgba = j->rgba;
+    p->w = j->w;
+    p->h = j->h;
+    p->text = j->text;
     wake_window(app);
 }
 
-static DWORD WINAPI tl_job_thread(void* p) {
-    App* app = (App*)p;
-    app_lock(app);
-    CHECK(g_tl_jobs.count > 0, "a timeline job waiting for the thread started for it");
-    TlJob job = g_tl_jobs.items[0];
-    list_remove(&g_tl_jobs, 0);
-    app_unlock(app);
-
-    if (job.kind == TL_JOB_CLIP) {
-        ClipResult r = clip_copy(app, job.from, job.to, &job.exclude, job.clip);
-        app_lock(app);
-        if (!r.ok) ui_say(app, "%s", r.error);
-        else if (job.clip == CLIP_TEXT) ui_say(app, "Copied %d lines", r.lines);
-        else if (job.clip == CLIP_FILE) ui_say(app, "Copied %d lines as a file", r.lines);
-        else if (r.seconds < 60) ui_say(app, "Copied %.0f s of audio", ceil(r.seconds));
-        else ui_say(app, "Copied %s of audio", duration_text(r.seconds));
-        app_unlock(app);
-    } else if (job.kind == TL_JOB_TEXT) {
-        bool ok = clipboard_set_text(str(job.text));
-        app_lock(app);
-        ui_say(app, "%s", ok ? job.said : "The clipboard is busy");
-        app_unlock(app);
-    } else {
-        tl_job_preview(app, &job);
-    }
-    list_free(&job.exclude);
-    free(job.text);
-    return 0;
-}
-
-static void tl_start_job(App* app, TlJob* job) {
-    list_push(&g_tl_jobs, *job);
-    start_thread(app, "timeline job", tl_job_thread);
+static void tl_clip_done(App* app, ClipResult* r, ClipKind kind, i64) {
+    if (!r->ok) ui_say(app, "%s", r->error);
+    else if (kind == CLIP_TEXT) ui_say(app, "Copied %d lines", r->lines);
+    else if (kind == CLIP_FILE) ui_say(app, "Copied %d lines as a file", r->lines);
+    else if (r->seconds < 60) ui_say(app, "Copied %.0f s of audio", ceil(r->seconds));
+    else ui_say(app, "Copied %s of audio", duration_text(r->seconds));
 }
 
 static void tl_copy_range(App* app, f64 from, f64 to, Names exclude, ClipKind kind) {
-    TlJob job = {};
-    job.kind = TL_JOB_CLIP;
-    job.clip = kind;
-    job.from = from - 0.05;
-    job.to = to + 0.05;
-    job.exclude = exclude;
-    tl_start_job(app, &job);
+    clip_copy_later(app, from - 0.05, to + 0.05, exclude, kind, 0, tl_clip_done, 0);
+}
+
+struct TlTextJob {
+    Str text;
+    char said[64];  // the toast when it is copied
+    bool ok;
+};
+
+static void tl_text_run(Job* job) {
+    TlTextJob* t = (TlTextJob*)job->data;
+    t->ok = clipboard_set_text(t->text);
+}
+
+static void tl_text_apply(App* app, Job* job) {
+    TlTextJob* t = (TlTextJob*)job->data;
+    ui_say(app, "%s", t->ok ? t->said : "The clipboard is busy");
 }
 
 static void tl_copy_text(App* app, Str text, const char* said) {
-    TlJob job = {};
-    job.kind = TL_JOB_TEXT;
-    job.text = (char*)malloc((size_t)text.len + 1);
-    CHECK(job.text, "memory for %lld bytes of text", text.len);
-    memcpy(job.text, text.ptr, (size_t)text.len);
-    job.text[text.len] = 0;
-    SET(job.said, str(said));
-    tl_start_job(app, &job);
+    Job* job = job_new(tl_text_apply);
+    TlTextJob* t = PUSH(&job->arena, TlTextJob);
+    t->text = str_copy(&job->arena, text);
+    SET(t->said, str(said));
+    job->data = t;
+    pool_post(job, tl_text_run);
 }
 
-// The preview of file `f`, asking a thread for it the first time. Null while it loads.
+// The preview of file `f`, asking the pool for it the first time. Null while it loads.
 static TlPreview* tl_preview(App* app, FileItem* f) {
     for (i32 i = 0; i < g_tl_previews.count; i++) {
         TlPreview* p = &g_tl_previews[i];
@@ -305,17 +272,19 @@ static TlPreview* tl_preview(App* app, FileItem* f) {
         }
         return p;
     }
-    TlJob job = {};
-    job.kind = TL_JOB_PREVIEW;
-    job.file_id = f->id;
-    job.image = str_eq(f->kind, str("image"));
     TlPreview* p = list_push(&g_tl_previews);
     p->id = f->id;
-    if (!file_full_path(&app->config, f, job.path)) {
+    Job* job = job_new(tl_preview_apply);
+    TlPreviewJob* j = PUSH(&job->arena, TlPreviewJob);
+    j->file_id = f->id;
+    j->image = str_eq(f->kind, str("image"));
+    if (!file_full_path(&app->config, f, j->path)) {
+        job_free(job);
         p->done = true;  // nothing to show
         return p;
     }
-    tl_start_job(app, &job);
+    job->data = j;
+    pool_post(job, tl_preview_run);
     return 0;
 }
 
@@ -1925,7 +1894,7 @@ static void timeline_free(TimelineState* s) {
     arena_release(&s->apps_arena);
     list_free(&s->rows);
     list_free(&s->fresh);
-    // The previews go with the window (it is called with the lock held).
+    // The previews go with the window.
     for (i32 i = 0; i < g_tl_previews.count; i++) {
         TlPreview* p = &g_tl_previews[i];
         if (p->view) p->view->Release();

@@ -177,7 +177,8 @@ static bool llm_start(App* app, const char* model, u32 ctx, Llm* llm, char* erro
 }
 
 // The AI the settings ask for: `endpoint` if one is set, else lifelog's own llama.cpp. `cfg` is a
-// copy of the settings, taken under the lock. Unlocked: it may wait minutes for the model to load.
+// copy of the settings (settings()). Not on the main thread: it may wait minutes for the model to
+// load.
 bool llm_open(App* app, const Config* cfg, u32 ctx, Llm* llm, char* error, i32 cap) {
     Str endpoint = str_trim(str(cfg->summary.endpoint));
     while (endpoint.len && endpoint.ptr[endpoint.len - 1] == '/') endpoint.len--;
@@ -190,7 +191,7 @@ bool llm_open(App* app, const Config* cfg, u32 ctx, Llm* llm, char* error, i32 c
 }
 
 // One chat turn whose answer must match `schema` (JSON text); the parsed answer goes in `out`,
-// in `a`. Unlocked.
+// in `a`. Not on the main thread.
 bool llm_json(Llm* llm, Arena* a, Str system, Str prompt, Str schema, Json* out, char* error, i32 cap) {
     Buf body = {};
     buf_cstr(&body, "{\"model\":");

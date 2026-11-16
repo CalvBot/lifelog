@@ -254,7 +254,7 @@ static List<IconTexture> g_icons;
 
 static ID3D11ShaderResourceView* texture_from_rgba(const u8* rgba, i32 w, i32 h);
 
-// The app's icon, or 0 if it has none (yet). Call with the lock held.
+// The app's icon, or 0 if it has none (yet).
 static ImTextureID app_icon(App* app, Str exe) {
     AppInfo* a = app_find(app, exe);
     if (!a || !a->icon) return 0;

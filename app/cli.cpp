@@ -125,7 +125,7 @@ static i32 cli_clip(Str range) {
         rewind(m);
         return 1;
     }
-    ClipResult c = clip_copy(&g_cli, from, now, 0, CLIP_FILE, label);
+    ClipResult c = clip_copy(&g_cli.config, 0, from, now, 0, CLIP_FILE, label);
     if (!c.ok) return cli_error("%s", c.error);
     cli_print("%d lines → %s (on the clipboard)\n", c.lines, c.path);
     return 0;

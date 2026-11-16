@@ -82,7 +82,7 @@ bool config_save_string(const char* table, const char* key, const char* s);
 bool config_write_value(const char* table, const char* key, Str value);
 
 // The paths under data_dir.
-void spool_dir(Config* cfg, wchar_t out[MAX_PATH]);
-void audio_dir(Config* cfg, wchar_t out[MAX_PATH]);
-void files_dir(Config* cfg, wchar_t out[MAX_PATH]);
-void db_path(Config* cfg, wchar_t out[MAX_PATH]);
+void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void files_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void db_path(const Config* cfg, wchar_t out[MAX_PATH]);

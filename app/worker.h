@@ -21,7 +21,7 @@ struct Worker {
     bool missing;         // nothing to transcribe with: no endpoint, and whisper.cpp is not set up
     i32 queued;           // WAV files waiting in the spool folder
     f64 queued_secs;      // how much audio that is
-    // Atomics (events.h): the GPU monitor writes the first two without App.lock.
+    // Atomics (events.h): the GPU monitor writes the first two itself.
     volatile LONG gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
     volatile LONG gpu_busy;         // over the limit
     volatile LONG summary_needs_gpu;  // set by the summary while it writes
@@ -39,11 +39,11 @@ void worker_set_gpu_limit(App* app, u32 percent);
 // Whether auto mode waits while a game runs (saved to the config).
 void worker_set_pause_for_games(App* app, bool on);
 // Your own transcription server instead of lifelog's (empty `url`: lifelog's own). Saved to
-// config.toml. With the lock.
+// config.toml. The main thread.
 void worker_set_endpoint(App* app, Str url, Str model);
 // Tells the supervisor to look again: a new WAV, a game started or ended, the GPU or the summary
-// changed, a setting changed, the transcriber was set up. Any thread, with or without the lock.
+// changed, a setting changed, the transcriber was set up. Any thread.
 void worker_wake(App* app);
 // Waits (up to 15 s) for transcription to stop after app->stop is set, when the program ends. A
-// file being transcribed stays in the queue for next time. Without the lock.
+// file being transcribed stays in the queue for next time. The main thread.
 void worker_stop(App* app);

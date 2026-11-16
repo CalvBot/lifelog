@@ -9,7 +9,7 @@
 // links and registers no link type, so it never takes over or answers the installed lifelog's.
 //
 // The toasts are shown from the notify thread, which also owns the window links are sent to; the
-// other threads only queue them, so no WinRT call is made with App.lock held.
+// other threads only queue them, so no WinRT call is made on the main thread.
 
 #include <roapi.h>
 #include <winstring.h>

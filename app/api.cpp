@@ -95,7 +95,7 @@ static void json_wide(Buf* b, const wchar_t* w) {
     rewind(m);
 }
 
-// GET /status, the same fields as the old app's. With the lock.
+// GET /status, the same fields as the old app's. The main thread.
 static void status_json(App* app, Buf* b) {
     Config* c = &app->config;
     char today[11];
@@ -208,9 +208,81 @@ static void answer_error(Answer* r, i32 code, const char* text) {
     buf_cstr(&r->body, "}");
 }
 
-// Does what `method path?query` asks. Takes the lock itself, briefly.
-static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
+// A request handed to the main thread. The API thread waits for `done`; both threads hold the
+// call (`refs`) and the last to let go frees it, so an answer that comes after the API thread
+// gave up waiting is just dropped.
+struct ApiCall {
+    volatile LONG refs;
+    HANDLE done;  // set once `r` is the answer
+    Arena arena;  // method, path and query
+    Str method, path, query;
+    Answer r;
+};
+
+static void api_release(ApiCall* c) {
+    if (InterlockedDecrement(&c->refs) != 0) return;
+    buf_free(&c->r.body);
+    arena_release(&c->arena);
+    CloseHandle(c->done);
+    free(c);
+}
+
+// The main thread: `c->r` is the answer.
+static void api_finish(ApiCall* c) {
+    SetEvent(c->done);
+    api_release(c);
+}
+
+static void api_clip_done(App*, ClipResult* r, ClipKind, i64 ctx) {
+    ApiCall* c = (ApiCall*)ctx;
+    if (!r->ok) {
+        answer_error(&c->r, 400, r->error);
+    } else {
+        buf_fmt(&c->r.body, "{\"lines\":%d,\"path\":", r->lines);
+        json_quote(&c->r.body, str(r->path));
+        buf_cstr(&c->r.body, "}");
+    }
+    api_finish(c);
+}
+
+// Whether there is such a reminder, asked of the database thread before answering it.
+struct RemindCheck {
+    ApiCall* call;
+    i64 id;
+    char action[16];
+    bool found;
+};
+
+static void remind_check_run(sqlite3* db, Job* job) {
+    RemindCheck* k = (RemindCheck*)job->data;
+    sqlite3_stmt* st = 0;
+    if (db && sqlite3_prepare_v2(db, "SELECT 1 FROM alerts WHERE id = ?1", -1, &st, 0) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, k->id);
+        k->found = sqlite3_step(st) == SQLITE_ROW;
+    }
+    sqlite3_finalize(st);
+}
+
+static void remind_check_apply(App* app, Job* job) {
+    RemindCheck* k = (RemindCheck*)job->data;
+    Answer* r = &k->call->r;
+    if (!k->found) {
+        answer_error(r, 400, str_fmt(scratch(), "no reminder %lld", k->id).ptr);
+    } else {
+        reminder_answer(app, k->id, k->action);
+        buf_cstr(&r->body, "{\"result\":");
+        json_quote(&r->body, str(k->action));
+        buf_cstr(&r->body, "}");
+    }
+    api_finish(k->call);
+}
+
+// The main thread: does what the call asks. True when `c->r` is the answer now; false when a job
+// will answer it (api_finish) once it is done.
+static bool api_handle(App* app, ApiCall* c) {
     Arena* a = scratch();
+    Str method = c->method, path = c->path, query = c->query;
+    Answer* r = &c->r;
     r->code = 200;
     bool get = str_eq(method, str("GET")), post = str_eq(method, str("POST"));
     Str exe = {};
@@ -218,14 +290,12 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
     exe = str_lower(a, str_trim(exe));
 
     if (get && str_eq(path, str("/status"))) {
-        app_lock(app);
         status_json(app, &r->body);
-        app_unlock(app);
-        return;
+        return true;
     }
     if (!post) {
         answer_error(r, 404, "not found");
-        return;
+        return true;
     }
 
     // The changes, each answering with the new status.
@@ -236,17 +306,16 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
     if (pause || resume || toggle || exclude || include || game || not_game || transcription) {
         if ((exclude || include || game || not_game) && exe.len == 0) {
             answer_error(r, 400, "say which app, e.g. spotify.exe");
-            return;
+            return true;
         }
         Mode mode = MODE_AUTO;
         if (transcription) {
             Str m = {};
             if (!query_param(a, query, "mode", &m) || !mode_from_text(m, &mode)) {
                 answer_error(r, 400, "mode must be auto, always or paused");
-                return;
+                return true;
             }
         }
-        app_lock(app);
         if (pause || resume || toggle) {
             capture_set_paused(app, toggle ? !app->capture.paused : pause);
             tray_update(app);
@@ -264,8 +333,7 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
             wake_window(app);
         }
         status_json(app, &r->body);
-        app_unlock(app);
-        return;
+        return true;
     }
 
     if (str_eq(path, str("/setup"))) {
@@ -274,14 +342,12 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         bool transcriber = str_eq(part, str("transcriber")), summary = str_eq(part, str("summary"));
         if (!transcriber && !summary) {
             answer_error(r, 400, "part must be transcriber or summary");
-            return;
+            return true;
         }
-        app_lock(app);
         setup_start(app, transcriber ? SETUP_TRANSCRIBER : SETUP_SUMMARY_AI);
         status_json(app, &r->body);
-        app_unlock(app);
         wake_window(app);
-        return;
+        return true;
     }
 
     if (str_eq(path, str("/clip"))) {
@@ -292,18 +358,11 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         if (!clip_range(range, now, &from, label, sizeof(label))) {
             Str lower = str_lower(a, str_trim(range));
             answer_error(r, 400, str_fmt(a, "range must look like 15m, 1h, 2d or today (got '%s')", lower.ptr).ptr);
-            return;
+            return true;
         }
-        // Not under the lock: it reads the database and writes a file.
-        ClipResult c = clip_copy(app, from, now, 0, CLIP_FILE, label);
-        if (!c.ok) {
-            answer_error(r, 400, c.error);
-            return;
-        }
-        buf_fmt(&r->body, "{\"lines\":%d,\"path\":", c.lines);
-        json_quote(&r->body, str(c.path));
-        buf_cstr(&r->body, "}");
-        return;
+        // On the pool: it reads the database and writes a file.
+        clip_copy_later(app, from, now, Names{}, CLIP_FILE, label, api_clip_done, (i64)c);
+        return false;
     }
 
     if (str_eq(path, str("/summary"))) {
@@ -316,23 +375,21 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         for (i32 i = 0; i < COUNT(known); i++) ok |= str_eq(action, str(known[i]));
         if (!ok) {
             answer_error(r, 400, "do must be now, later, until or skip");
-            return;
+            return true;
         }
-        app_lock(app);
         Str result = summary_act(app, a, action.ptr, day.ptr, at.len ? at.ptr : 0);
-        app_unlock(app);
         // summary_act answers in words; these ones are failures, as they were errors in the old app.
         const char* failures[] = {"bad day", "time must look like", "could not save", "do must be"};
         for (i32 i = 0; i < COUNT(failures); i++) {
             if (str_starts(result, str(failures[i]))) {
                 answer_error(r, 400, result.ptr);
-                return;
+                return true;
             }
         }
         buf_cstr(&r->body, "{\"result\":");
         json_quote(&r->body, result);
         buf_cstr(&r->body, "}");
-        return;
+        return true;
     }
 
     if (str_eq(path, str("/remind"))) {
@@ -343,38 +400,23 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         i64 id = id_text.len ? _strtoi64(id_text.ptr, &end, 10) : 0;
         if (!id_text.len || *end) {
             answer_error(r, 400, "id must be a number");
-            return;
+            return true;
         }
         const char* known[] = {"yes", "no", "done", "snooze"};
         bool ok = false;
         for (i32 i = 0; i < COUNT(known); i++) ok |= str_eq(action, str(known[i]));
         if (!ok) {
             answer_error(r, 400, "do must be yes, no, done or snooze");
-            return;
+            return true;
         }
-        // Whether there is such a reminder, read before taking the lock.
-        bool found = false;
-        sqlite3* db = db_open(app);
-        if (db) {
-            sqlite3_stmt* st = 0;
-            if (sqlite3_prepare_v2(db, "SELECT 1 FROM alerts WHERE id = ?1", -1, &st, 0) == SQLITE_OK) {
-                sqlite3_bind_int64(st, 1, id);
-                found = sqlite3_step(st) == SQLITE_ROW;
-            }
-            sqlite3_finalize(st);
-            sqlite3_close(db);
-        }
-        if (!found) {
-            answer_error(r, 400, str_fmt(a, "no reminder %lld", id).ptr);
-            return;
-        }
-        app_lock(app);
-        reminder_answer(app, id, action.ptr);
-        app_unlock(app);
-        buf_cstr(&r->body, "{\"result\":");
-        json_quote(&r->body, action);
-        buf_cstr(&r->body, "}");
-        return;
+        Job* job = job_new(remind_check_apply);
+        RemindCheck* k = PUSH(&job->arena, RemindCheck);
+        k->call = c;
+        k->id = id;
+        SET(k->action, action);
+        job->data = k;
+        db_post(job, remind_check_run);
+        return false;
     }
 
     bool show = str_eq(path, str("/show")), popup = str_eq(path, str("/popup"));
@@ -385,7 +427,6 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         bool has_day = query_param(a, query, "day", &day);
         Str shown = has_day ? str_fmt(a, "%s?day=%s", name.ptr, day.ptr) : name;
         const char* d = day.len == 10 ? day.ptr : 0;
-        app_lock(app);
         if (show) {
             Tab tab = TAB_TIMELINE;
             if (str_eq(name, str("settings"))) tab = TAB_SETTINGS;
@@ -394,24 +435,68 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         } else {
             ui_popup(app, str_eq(name, str("delay")) ? POPUP_DELAY : POPUP_TRAY, d);
         }
-        app_unlock(app);
         buf_cstr(&r->body, "{\"shown\":");
         json_quote(&r->body, shown);
         buf_cstr(&r->body, "}");
-        return;
+        return true;
     }
 
     if (str_eq(path, str("/quit"))) {
         buf_cstr(&r->body, "{\"stopping\":true}");
         r->after = AFTER_QUIT;
-        return;
+        return true;
     }
     if (str_eq(path, str("/restart"))) {
         buf_cstr(&r->body, "{\"restarting\":true}");
         r->after = AFTER_RESTART;
-        return;
+        return true;
     }
     answer_error(r, 404, "not found");
+    return true;
+}
+
+static void api_apply(App* app, Event* e) {
+    ApiCall* c = (ApiCall*)e->a;
+    Mark m = mark(scratch());
+    if (api_handle(app, c)) api_finish(c);
+    rewind(m);
+}
+
+// The main thread: an answer has gone out that asked to quit or restart.
+static void api_after_apply(App* app, Event* e) {
+    LOG("API: %s", e->a == AFTER_QUIT ? "quit" : "restart");
+    if (e->a == AFTER_QUIT) app_quit(app);
+    else app_restart(app);
+}
+
+// The API thread: hands the request to the main thread and waits for its answer.
+static void api_ask(App* app, Str method, Str path, Str query, Answer* out) {
+    ApiCall* c = (ApiCall*)calloc(1, sizeof(ApiCall));
+    CHECK(c, "memory for an API call");
+    c->refs = 2;
+    c->done = CreateEventW(0, TRUE, FALSE, 0);
+    CHECK(c->done, "an API call's event (error %lu)", GetLastError());
+    c->method = str_copy(&c->arena, method);
+    c->path = str_copy(&c->arena, path);
+    c->query = str_copy(&c->arena, query);
+    if (!event_post(app, api_apply, (i64)c, 0, 0)) {
+        c->refs = 1;
+        api_release(c);
+        answer_error(out, 503, "lifelog is busy, try again");
+        return;
+    }
+    // Copying audio can take a while; anything else is answered at once.
+    HANDLE waits[2] = {c->done, app->stop};
+    DWORD w = WaitForMultipleObjects(2, waits, FALSE, 120000);
+    if (w == WAIT_OBJECT_0) {
+        out->code = c->r.code;
+        out->after = c->r.after;
+        out->body = c->r.body;
+        c->r.body = {};
+    } else {
+        answer_error(out, 503, w == WAIT_OBJECT_0 + 1 ? "lifelog is stopping" : "lifelog did not answer in time");
+    }
+    api_release(c);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -464,6 +549,7 @@ static const char* status_text(i32 code) {
     case 400: return "Bad Request";
     case 403: return "Forbidden";
     case 404: return "Not Found";
+    case 503: return "Service Unavailable";
     }
     return "Error";
 }
@@ -505,7 +591,7 @@ static After api_serve_one(App* app, SOCKET c, u16 port) {
             i64 q = str_find(target, str("?"));
             Str path = str_copy(scratch(), q >= 0 ? str_sub(target, 0, q) : target);
             Str query = str_copy(scratch(), q >= 0 ? str_sub(target, q + 1) : Str{"", 0});
-            api_handle(app, method, path, query, &r);
+            api_ask(app, method, path, query, &r);
         }
     }
     Str body = buf_take(&r.body, scratch());
@@ -520,9 +606,7 @@ static After api_serve_one(App* app, SOCKET c, u16 port) {
 
 static DWORD WINAPI api_main(void* param) {
     App* app = (App*)param;
-    app_lock(app);
-    u16 port = app->config.api_port;
-    app_unlock(app);
+    u16 port = settings(app)->api_port;
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         ERR("API: Winsock did not start");
@@ -563,19 +647,13 @@ static DWORD WINAPI api_main(void* param) {
         After after = api_serve_one(app, c, port);
         shutdown(c, SD_SEND);
         closesocket(c);
-        if (after != AFTER_NOTHING) {
-            LOG("API: %s", after == AFTER_QUIT ? "quit" : "restart");
-            app_lock(app);
-            if (after == AFTER_QUIT) app_quit(app);
-            else app_restart(app);
-            app_unlock(app);
-        }
+        if (after != AFTER_NOTHING) event_post(app, api_after_apply, after, 0, 0);
     }
     closesocket(s);
     return 0;
 }
 
-// Starts the API thread. With the lock.
+// Starts the API thread. The main thread.
 void api_start(App* app) {
     if (!app->config.api_port) {
         WARN("api_port is 0: no API, so the CLI and the Stream Deck cannot reach lifelog");

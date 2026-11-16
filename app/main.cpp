@@ -21,18 +21,22 @@ static const UINT_PTR REDRAW_TIMER = 1;
 // ---------------------------------------------------------------------------------------------
 // App helpers (app.h)
 
-static thread_local i32 t_locked;  // this thread holds App.lock
+// The main thread is in a frame or applying events: events that arrive meanwhile (a menu or a
+// window drag running its own loop) wait for the message loop.
+static i32 g_busy;
 
-void app_lock(App* app) {
-    AcquireSRWLockExclusive(&app->lock);
-    t_locked++;
-}
-void app_unlock(App* app) {
-    // Every change to App.config is made with the lock, so the copy other threads read is
-    // brought up to date here.
+// After anything the main thread did: the copy of the settings other threads read is brought up
+// to date, and the transcriber told when it changed.
+static void settings_check(App* app) {
     if (settings_publish(app)) worker_wake(app);
-    t_locked--;
-    ReleaseSRWLockExclusive(&app->lock);
+}
+
+static void apply_events(App* app) {
+    if (g_busy) return;
+    g_busy++;
+    events_apply(app);
+    g_busy--;
+    settings_check(app);
 }
 
 void wake_window(App* app) {
@@ -335,9 +339,10 @@ static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
     ImGui::NewFrame();
 
     f32 next_ms = -1;
-    app_lock(&g_app);
+    g_busy++;
     bool keep = draw(&g_app, &next_ms);
-    app_unlock(&g_app);
+    g_busy--;
+    settings_check(&g_app);
 
     ImGui::Render();
     ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
@@ -445,29 +450,23 @@ void tray_update(App* app) {
 static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_APP_EVENT) {
         // Usually the message loop applies them; this is for while a menu or a window drag
-        // runs its own loop. Not while this thread holds the lock (it is not reentrant).
-        if (!t_locked) events_apply(&g_app);
+        // runs its own loop. Not in the middle of a frame or of other events.
+        apply_events(&g_app);
         return 0;
     }
     if (msg == WM_APP_TRAY) {
         switch (LOWORD(lp)) {
         case TRAY_OPEN_WINDOW:  // a second start of lifelog.exe
-            app_lock(&g_app);
             ui_show(&g_app, g_app.ui.want_tab, 0);
-            app_unlock(&g_app);
             return 0;
         case NIN_SELECT:
         case NIN_KEYSELECT:
-            app_lock(&g_app);
             ui_popup(&g_app, POPUP_TRAY, 0);
-            app_unlock(&g_app);
             return 0;
         case WM_CONTEXTMENU: {
             // A plain Windows menu, for when lifelog's own one is not wanted.
             enum { CMD_PAUSE = 1, CMD_RESTART, CMD_QUIT };
-            app_lock(&g_app);
             bool paused = g_app.capture.paused;
-            app_unlock(&g_app);
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, CMD_PAUSE, paused ? L"Resume" : L"Pause");
             AppendMenuW(menu, MF_STRING, CMD_RESTART, L"Restart");
@@ -477,7 +476,6 @@ static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetForegroundWindow(hwnd);  // so the menu closes when you click elsewhere
             i32 cmd = (i32)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, 0, hwnd, 0);
             DestroyMenu(menu);
-            app_lock(&g_app);
             if (cmd == CMD_PAUSE) {
                 capture_set_paused(&g_app, !g_app.capture.paused);
                 tray_update(&g_app);
@@ -486,7 +484,7 @@ static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (cmd == CMD_QUIT) {
                 app_quit(&g_app);
             }
-            app_unlock(&g_app);
+            settings_check(&g_app);
             return 0;
         }
         }
@@ -532,10 +530,8 @@ static void open_main_window() {
     i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
     bool ok = surface_open(&g_main, L"lifelog", WS_OVERLAPPEDWINDOW, 0, x, y, w, h);
     CHECK(ok, "the main window to open (error %lu)", GetLastError());
-    app_lock(&g_app);
     g_app.ui.window = g_main.hwnd;
     ui_window_opened(&g_app);
-    app_unlock(&g_app);
     ShowWindow(g_main.hwnd, SW_SHOW);
     SetForegroundWindow(g_main.hwnd);
 }
@@ -554,27 +550,21 @@ static void open_apps() {
     i32 x = r.left + (r.right - r.left - w) / 2, y = r.top + (r.bottom - r.top - h) / 2;
     bool ok = surface_open(&g_apps, L"lifelog apps", WS_OVERLAPPEDWINDOW & ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX), 0, x, y, w, h);
     CHECK(ok, "the apps window to open (error %lu)", GetLastError());
-    app_lock(&g_app);
     g_app.ui.apps = g_apps.hwnd;
-    app_unlock(&g_app);
     ShowWindow(g_apps.hwnd, SW_SHOW);
     SetForegroundWindow(g_apps.hwnd);
 }
 
 static void close_apps() {
-    app_lock(&g_app);
     g_app.ui.apps = 0;
     ui_apps_closed(&g_app);
-    app_unlock(&g_app);
     surface_close(&g_apps);
 }
 
 static void close_main_window() {
     if (g_apps.hwnd) close_apps();
-    app_lock(&g_app);
     g_app.ui.window = 0;
     ui_window_closed(&g_app);
-    app_unlock(&g_app);
     surface_close(&g_main);
 }
 
@@ -598,20 +588,16 @@ static void open_popup(Popup which) {
     if (y < mi.rcWork.top) y = mi.rcWork.top;
     bool ok = surface_open(&g_popup, L"lifelog", WS_POPUP | WS_BORDER, WS_EX_TOOLWINDOW | WS_EX_TOPMOST, x, y, w, h);
     CHECK(ok, "the tray menu to open (error %lu)", GetLastError());
-    app_lock(&g_app);
     g_app.ui.popup = g_popup.hwnd;
     ui_popup_opened(&g_app);
-    app_unlock(&g_app);
     ShowWindow(g_popup.hwnd, SW_SHOW);
     SetForegroundWindow(g_popup.hwnd);
 }
 
 static void close_popup() {
-    app_lock(&g_app);
     g_app.ui.popup = 0;
     g_app.ui.want_popup = POPUP_NONE;
     ui_popup_closed(&g_app);
-    app_unlock(&g_app);
     surface_close(&g_popup);
 }
 
@@ -620,7 +606,6 @@ static void close_popup() {
 
 static i32 run_app() {
     App* app = &g_app;
-    app->lock = SRWLOCK_INIT;
     app->stop = CreateEventW(0, TRUE, FALSE, 0);
     app->worker.wake = CreateEventW(0, FALSE, FALSE, 0);
     app->ui.main_thread = GetCurrentThreadId();
@@ -647,7 +632,7 @@ static i32 run_app() {
     app->events.window = app->ui.tray;
 
     db_thread_start(app);
-    app_lock(app);
+    pool_start(app);
     apps_from_config(app);
     apps_start(app);
     capture_start(app);
@@ -655,7 +640,7 @@ static i32 run_app() {
     summary_start(app);
     api_start(app);
     tray_update(app);
-    app_unlock(app);
+    settings_check(app);
     LOG("lifelog started");
 
     bool want_main = true;  // the window opens at start unless --tray was passed
@@ -670,13 +655,11 @@ static i32 run_app() {
         while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_APP_QUIT || msg.message == WM_QUIT) quit = true;
             if (msg.message == WM_APP_SHOW) {
-                app_lock(app);
                 bool open = app->ui.want_window;
                 Popup popup = app->ui.want_popup;
                 bool apps = app->ui.want_apps && app->ui.state;
                 app->ui.want_window = false;
                 app->ui.want_apps = false;
-                app_unlock(app);
                 if (open) open_main_window();
                 if (popup != POPUP_NONE && !g_popup.hwnd) open_popup(popup);
                 if (apps && g_main.hwnd) open_apps();
@@ -685,7 +668,7 @@ static i32 run_app() {
             DispatchMessageW(&msg);
         }
         if (quit) break;
-        events_apply(app);
+        apply_events(app);
 
         if (g_main.hwnd && g_main.frames_wanted > 0) {
             g_main.frames_wanted--;
@@ -716,9 +699,8 @@ static i32 run_app() {
     if (g_popup.hwnd) close_popup();
     if (g_main.hwnd) close_main_window();  // closes the apps window too
     Shell_NotifyIconW(NIM_DELETE, &g_tray);
-    app_lock(app);
     capture_stop(app);
-    app_unlock(app);
+    pool_stop();
     worker_stop(app);
     db_thread_stop();
     disk_stop();  // the settings and paths asked for are on disk before the program ends

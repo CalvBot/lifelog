@@ -9,7 +9,7 @@ enum Source : u8 {
     SOURCE_APP,
 };
 
-// Made and freed by the main thread; its capture thread reads it without App.lock.
+// Made and freed by the main thread; its capture thread reads it.
 struct Stream {
     Source source;
     char exe[64];       // "" for the mic

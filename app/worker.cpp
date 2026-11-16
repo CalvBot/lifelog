@@ -1,4 +1,4 @@
-// worker.cpp: see worker.h. Two threads, neither takes App.lock:
+// worker.cpp: see worker.h. Two threads, neither touches App:
 //   - the supervisor decides whether transcription may run, loads and frees the model, counts
 //     the queue and transcribes the files, oldest first; it sleeps until woken;
 //   - the GPU monitor samples the 3D engine's load every 2 s.
@@ -64,7 +64,7 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
     while (sleep_unless_stopping(app, 2000)) {
         f64 load = 0;
         if (!gpu3d_sample(&gpu, &load)) continue;
-        // No App.lock: the flags are atomics and the limits come from settings().
+        // The flags are atomics and the limits come from settings().
         const Config* cfg = settings(app);
         Worker* w = &app->worker;
         bool was_busy = atomic_get(&w->gpu_busy) != 0;
@@ -310,7 +310,7 @@ static bool wav_samples(Arena* a, Str wav, Slice<f32>* out) {
 // ---------------------------------------------------------------------------------------------
 // Transcribing one file
 
-// Where a file goes when your own server is set. Copied under the lock, used unlocked.
+// Where a file goes when your own server is set. Copied from the settings.
 struct Target {
     char url[512];  // the API base, ending in /v1
     char key[256];
@@ -508,7 +508,7 @@ static void bind_text(sqlite3_stmt* st, int i, Str s) {
 
 // Transcribes spool\<name> (with `ctx`, or your server `t` when ctx is null) and saves its lines.
 // SENT_OK also when the file was set aside; on SENT_RETRY and SENT_ABORTED the file stays where
-// it is. Unlocked.
+// it is. Not on the main thread.
 static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const char* language, Target* t, const wchar_t* spool,
                             const wchar_t* name, i32* lines_out) {
     *lines_out = 0;

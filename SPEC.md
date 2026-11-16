@@ -61,12 +61,12 @@ its output per batch), and the app tells the window. **(to decide: the worker ha
 need a way in. A small local HTTP API stays for them only, and each route calls the same `App` methods. The window
 doesn't use it.
 
-## Threads: one owner, messages in (under way)
+## Threads: one owner, messages in
 
-Today one lock (`App.lock`) guards everything, and the window holds it for the whole of every frame. Every other
-thread waits on it: the audio threads after each packet (about every 10 ms), the transcriber, the summary writer,
-the API. The frame also runs slow work under it: database queries (timeline day, search, journal), config saves,
-`ShellExecute`. So the program runs one thing at a time. The plan below removes `App.lock`.
+Before this change one lock (`App.lock`) guarded everything, and the window held it for the whole of every frame.
+Every other thread waited on it: the audio threads after each packet (about every 10 ms), the transcriber, the
+summary writer, the API. The frame also ran slow work under it: database queries (timeline day, search, journal),
+config saves, `ShellExecute`. So the program ran one thing at a time. The plan below removed `App.lock`.
 
 **The main thread owns `App`.** It is the only thread that reads or writes it, so it never locks it, and a frame
 always sees one moment. The main thread does only quick things: apply messages, draw, start jobs.
@@ -138,8 +138,7 @@ event queue, each stream's title block, the notification queue and the log file.
 **Order of work.** Each step builds, runs, and is used for a while before the next:
 
 1. Event queue, jobs, atomics and config snapshots; move capture (watcher and streams) and the GPU monitor onto them.
-   Done (`app/events.h`). For now the snapshot is published from `app_unlock`, since every config change is made
-   under the lock; it moves to the main thread with step 4.
+   Done (`app/events.h`). The snapshot is published by the main thread after each frame and each round of events.
 2. Transcriber, summary and summary writer, notifications, setup; the transcriber and summary woken instead of
    polling; one watcher for processes and streams. Done so far: the transcriber (woken), and the summary, writer,
    notification links and setup, which take no lock. The summary thread still looks every 15 s, since reminders
@@ -150,9 +149,13 @@ event queue, each stream's title block, the notification queue and the log file.
 3. Database thread and file writer; nothing in a frame touches the disk. Done (`app/disk.h`, `db_post` in
    `app/db.h`): the main thread has no connection; the window's queries and its summary changes (reminders,
    dismiss, never-mention, skip) run on the database thread, and config.toml and paths.txt are written by the
-   file writer. Opening files with `ShellExecute` keeps its own thread until the pool (step 4).
+   file writer.
 4. API and the small window threads on the worker pool, with the UI globals owned by the main thread; then delete
-   `App.lock`, `app_lock` and `app_unlock`.
+   `App.lock`, `app_lock` and `app_unlock`. Done (`app/pool.h`): copying, pasting, opening files and folders,
+   previews, the clipboard, the folder picker and app icons run on three pool threads; the API thread hands each
+   request to the main thread and waits for its answer; the apps-watch thread is gone (icons on the pool, line
+   counts on the database thread); playback posts where it is and when it ends. `App.lock` is deleted. Left: the
+   summary thread still looks every 15 s, and the watcher still makes a new arena for each post.
 
 ## Language: C++ with Dear ImGui
 

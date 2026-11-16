@@ -138,49 +138,43 @@ static const char* fit(const char* text, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Opening files: on a thread, since the shell can take a while. Windows lets the new window take
+// Opening files: on the pool, since the shell can take a while. Windows lets the new window take
 // the focus because this process just had the click.
 
 struct OpenPathJob {
-    App* app;
     wchar_t path[MAX_PATH];
     bool select;  // show it selected in its folder instead of opening it
+    bool ok;
 };
 
-static DWORD WINAPI open_path_thread(void* p) {
-    OpenPathJob job = *(OpenPathJob*)p;
-    free(p);
-    CoInitializeEx(0, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+static void open_path_run(Job* job) {
+    OpenPathJob* o = (OpenPathJob*)job->data;
     INT_PTR ok;
-    if (job.select) {
+    if (o->select) {
         wchar_t args[MAX_PATH + 16];
-        swprintf(args, COUNT(args), L"/select,\"%s\"", job.path);
+        swprintf(args, COUNT(args), L"/select,\"%s\"", o->path);
         ok = (INT_PTR)ShellExecuteW(0, L"open", L"explorer.exe", args, 0, SW_SHOWNORMAL);
     } else {
-        ok = (INT_PTR)ShellExecuteW(0, L"open", job.path, 0, 0, SW_SHOWNORMAL);
+        ok = (INT_PTR)ShellExecuteW(0, L"open", o->path, 0, 0, SW_SHOWNORMAL);
     }
-    if (ok <= 32) {
-        Mark m = mark(scratch());
-        Str path = narrow(scratch(), job.path);
-        WARN("could not open %s", path.ptr);
-        app_lock(job.app);
-        ui_say(job.app, "Could not open %s", path.ptr);
-        app_unlock(job.app);
-        rewind(m);
-    }
-    CoUninitialize();
-    return 0;
+    o->ok = ok > 32;
 }
 
-static void open_path(App* app, const wchar_t* path, bool select) {
-    OpenPathJob* job = (OpenPathJob*)calloc(1, sizeof(OpenPathJob));
-    CHECK(job, "memory for opening a path");
-    job->app = app;
-    wcsncpy_s(job->path, path, _TRUNCATE);
-    job->select = select;
-    HANDLE t = CreateThread(0, 0, open_path_thread, job, 0, 0);
-    CHECK(t, "the thread that opens a path to start (error %lu)", GetLastError());
-    CloseHandle(t);
+static void open_path_apply(App* app, Job* job) {
+    OpenPathJob* o = (OpenPathJob*)job->data;
+    if (o->ok) return;
+    Str path = narrow(scratch(), o->path);
+    WARN("could not open %s", path.ptr);
+    ui_say(app, "Could not open %s", path.ptr);
+}
+
+static void open_path(App*, const wchar_t* path, bool select) {
+    Job* job = job_new(open_path_apply);
+    OpenPathJob* o = PUSH(&job->arena, OpenPathJob);
+    wcsncpy_s(o->path, path, _TRUNCATE);
+    o->select = select;
+    job->data = o;
+    pool_post(job, open_path_run);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -315,28 +309,32 @@ static void set_folder(App* app, SettingsState* s, Str folder, Decision d) {
     s->stale = true;
 }
 
-// The folder picker is modal, so it runs on its own thread while the window keeps drawing. It
-// hands its answer over under the lock; the next frame applies it.
-static volatile LONG g_picking;
+// The folder picker is modal, so it runs on the pool while the window keeps drawing. Its answer
+// comes back as a job; the next frame applies it. These are the main thread's.
+static bool g_picking;
 static Decision g_pick_decision;
 static char g_picked[MAX_PATH];
 
-static DWORD WINAPI folder_pick_main(void* p) {
-    App* app = (App*)p;
-    CoInitializeEx(0, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    char picked[MAX_PATH] = "";
+struct PickJob {
+    Decision decision;
+    char picked[MAX_PATH];
+};
+
+static void folder_pick_run(Job* job) {
+    PickJob* j = (PickJob*)job->data;
+    char* picked = j->picked;
     IFileOpenDialog* d = 0;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
         DWORD o = 0;
         d->GetOptions(&o);
         d->SetOptions(o | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        d->SetTitle(g_pick_decision == DECISION_INCLUDED ? L"Include every app in a folder" : L"Exclude every app in a folder");
+        d->SetTitle(j->decision == DECISION_INCLUDED ? L"Include every app in a folder" : L"Exclude every app in a folder");
         IShellItem* item = 0;
         if (SUCCEEDED(d->Show(0)) && SUCCEEDED(d->GetResult(&item))) {
             wchar_t* path = 0;
             if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
                 Mark m = mark(scratch());
-                SET(picked, narrow(scratch(), path));
+                set(picked, MAX_PATH, narrow(scratch(), path));
                 rewind(m);
                 CoTaskMemFree(path);
             }
@@ -344,13 +342,13 @@ static DWORD WINAPI folder_pick_main(void* p) {
         }
         d->Release();
     }
-    CoUninitialize();
-    app_lock(app);
-    SET(g_picked, str(picked));
-    g_picking = 0;
-    app_unlock(app);
+}
+
+static void folder_pick_apply(App* app, Job* job) {
+    PickJob* j = (PickJob*)job->data;
+    SET(g_picked, str(j->picked));
+    g_picking = false;
     wake_window(app);
-    return 0;
 }
 
 static void folders_view(App* app, SettingsState* s) {
@@ -442,14 +440,18 @@ static void folders_view(App* app, SettingsState* s) {
     f32 full = APPS_PER_PAGE * (row_h + ImGui::GetStyle().ItemSpacing.y);
     f32 used = ImGui::GetCursorPosY() - rows_top;
     if (used < full) ImGui::Dummy(ImVec2(0, full - used - ImGui::GetStyle().ItemSpacing.y));
-    ImGui::BeginDisabled(g_picking != 0);
+    ImGui::BeginDisabled(g_picking);
     for (i32 k = 0; k < 2; k++) {
         if (k) ImGui::SameLine();
         if (ImGui::Button(label(ICON_PLUS, k ? "Exclude a folder" : "Include a folder"))) {
             g_pick_decision = k ? DECISION_EXCLUDED : DECISION_INCLUDED;
             g_picked[0] = 0;
-            g_picking = 1;
-            start_thread(app, "folder picker", folder_pick_main);
+            g_picking = true;
+            Job* job = job_new(folder_pick_apply);
+            PickJob* j = PUSH(&job->arena, PickJob);
+            j->decision = g_pick_decision;
+            job->data = j;
+            pool_post(job, folder_pick_run);
         }
     }
     ImGui::EndDisabled();

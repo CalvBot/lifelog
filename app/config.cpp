@@ -494,14 +494,14 @@ bool config_save_string(const char* table, const char* key, const char* s) {
 // ---------------------------------------------------------------------------------------------
 // Paths
 
-static void under_data(Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) {
+static void under_data(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) {
     Arena* a = scratch();
     Mark m = mark(a);
     swprintf(out, MAX_PATH, L"%s\\%s", wide(a, str(cfg->data_dir)), name);
     rewind(m);
 }
 
-void spool_dir(Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"spool", out); }
-void audio_dir(Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"audio", out); }
-void files_dir(Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"files", out); }
-void db_path(Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"lifelog.db", out); }
+void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"spool", out); }
+void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"audio", out); }
+void files_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"files", out); }
+void db_path(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"lifelog.db", out); }

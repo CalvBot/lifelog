@@ -43,13 +43,13 @@ struct Ui {
     Tab tab;              // the tab on screen
 };
 
-// Open the main window on `tab` (and `day`, for the journal), or a popup. Any thread, with the lock.
+// Open the main window on `tab` (and `day`, for the journal), or a popup. The main thread.
 void ui_show(App* app, Tab tab, const char* day);
 void ui_popup(App* app, Popup popup, const char* day);
 void ui_say(App* app, const char* fmt, ...);
 void ui_open_apps(App* app);  // the timeline's "All apps…" window
 
-// For main.cpp: draw one frame of the main window or the popup, with the lock held. False when
+// For main.cpp: draw one frame of the main window or the popup. False when
 // it should close. `next_frame_ms`: set to 0 to draw again at once, or to a wait for an animation.
 bool ui_draw_window(App* app, f32* next_frame_ms);
 bool ui_draw_popup(App* app, f32* next_frame_ms);
@@ -60,10 +60,10 @@ void ui_window_opened(App* app);
 void ui_window_closed(App* app);
 void ui_popup_opened(App* app);
 void ui_popup_closed(App* app);
-// Show `ts` in the timeline (switches to it). Any thread, with the lock.
+// Show `ts` in the timeline (switches to it). The main thread.
 void ui_jump(App* app, f64 ts, Str said);
 
-// Quit or restart the whole program. Any thread, with the lock.
+// Quit or restart the whole program. The main thread.
 void app_quit(App* app);
 void app_restart(App* app);
 

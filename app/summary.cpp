@@ -389,14 +389,6 @@ static void lists_publish(App* app, List<SummaryDay> days, List<NeverTopic> neve
     wake_window(app);
 }
 
-// Reads the days and never-topics again, with the lock held (short reads).
-static void lists_refresh_locked(App* app, sqlite3* db) {
-    List<SummaryDay> days = {};
-    List<NeverTopic> never = {};
-    lists_read(db, &days, &never);
-    lists_publish(app, days, never);
-}
-
 struct ListsRead {
     List<SummaryDay> days;
     List<NeverTopic> never;
@@ -405,6 +397,12 @@ struct ListsRead {
 static void lists_apply(App* app, Job* job) {
     ListsRead* r = (ListsRead*)job->data;
     lists_publish(app, r->days, r->never);  // the lists are the main thread's now
+}
+
+// At start, on the database thread.
+static void lists_run(sqlite3* db, Job* job) {
+    ListsRead* r = (ListsRead*)job->data;
+    if (db) lists_read(db, &r->days, &r->never);
 }
 
 // From the summary threads: reads them and posts them to the main thread.
@@ -572,27 +570,9 @@ struct SLine {
 
 static bool is_mic(const SLine* l) { return str_eq(l->source, str("mic")); }
 
-// The apps' own names ("Brave Browser"), copied from App.apps for the writer.
-struct AppLabel {
-    char exe[64];
-    char name[128];
-};
-struct AppLabels {
-    AppLabel* items;
-    i32 count;
-};
-
 // Each line's speaker as the app list shows it, as app_label does.
 static void name_lines(AppLabels* labels, Arena* a, Slice<SLine> lines) {
-    for (i32 i = 0; i < lines.count; i++) {
-        Str speaker = lines.items[i].speaker;
-        Str name = {};
-        for (i32 k = 0; k < labels->count && !name.len; k++)
-            if (str_eq_nocase(str(labels->items[k].exe), speaker)) name = str(labels->items[k].name);
-        if (!name.len && (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE")))) name = str_sub(speaker, 0, speaker.len - 4);
-        if (!name.len) name = speaker;
-        lines.items[i].name = str_copy(a, name);
-    }
+    for (i32 i = 0; i < lines.count; i++) lines.items[i].name = str_copy(a, label_of(labels, lines.items[i].speaker));
 }
 
 static Slice<SLine> day_lines(sqlite3* db, Arena* a, f64 from, f64 to) {
@@ -1120,7 +1100,7 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
     }
 }
 
-// Shows the reminders that have come due. Unlocked; on the summary thread.
+// Shows the reminders that have come due. On the summary thread.
 static void alerts_show_due(App* app, sqlite3* db) {
     sqlite3_stmt* st = sql(db, "SELECT id, day, text, said, said_time FROM alerts WHERE state = 'set' AND due_ts <= ?1");
     if (!st) return;
@@ -1516,7 +1496,7 @@ void summary_set_ask_reminders(App* app, bool on) {
 // Waits `ms`, false if the program is ending.
 static bool pause_ms(App* app, u32 ms) { return sleep_unless_stopping(app, ms); }
 
-// On the writer thread, without the lock. `labels` are the apps' names, from its job.
+// On the writer thread. `labels` are the apps' names, from its job.
 static bool write_day(App* app, const char* day, AppLabels* labels, char* error, i32 cap) {
     const Config* cfg = settings(app);  // the settings as they are now
     LOG("writing the summary for %s with %s", day, cfg->summary.model);
@@ -1765,20 +1745,13 @@ static DWORD WINAPI writer_main(void* param) {
     return 0;
 }
 
-// The main thread, with the lock: starts the writer on `day`, with the apps' names it needs.
+// The main thread: starts the writer on `day`, with the apps' names it needs.
 static void writer_start(App* app, const char* day) {
     Job* job = job_new(writer_done);
     WriterJob* w = PUSH(&job->arena, WriterJob);
     w->app = app;
     SET(w->day, str(day));
-    List<AppInfo>* list = &app->apps.list;
-    w->labels.items = PUSH_ARRAY(&job->arena, AppLabel, list->count);
-    for (i32 i = 0; i < list->count; i++) {
-        if (!list->items[i].name[0]) continue;
-        AppLabel* l = &w->labels.items[w->labels.count++];
-        SET(l->exe, str(list->items[i].exe));
-        SET(l->name, str(list->items[i].name));
-    }
+    w->labels = app_labels(app, &job->arena);
     job->data = w;
     HANDLE t = CreateThread(0, 0, writer_main, job, 0, 0);
     CHECK(t, "the summary writer to start (error %lu)", GetLastError());
@@ -1789,7 +1762,7 @@ static void writer_start(App* app, const char* day) {
 // ---------------------------------------------------------------------------------------------
 // Asking
 
-// The main thread, with the lock. `mine` and `apps`: today's seconds of talk, read by the
+// The main thread. `mine` and `apps`: today's seconds of talk, read by the
 // summary thread.
 static void ask(App* app, const char* day, f64 mine, f64 apps) {
     Mark m = mark(scratch());
@@ -1872,7 +1845,7 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
 // What the summary thread read this round, for the main thread's clock (summary_tick).
 static const i64 TICK_GAMING = 1, TICK_TALKED = 2, TICK_STATUS_SHIFT = 2;  // status + 1 in bits 2-3
 
-// The main thread, with the lock: asks once it is time and starts the summary when the countdown
+// The main thread: asks once it is time and starts the summary when the countdown
 // ends. a = the flags above, b = seconds of my talk << 32 | seconds of the apps', text = the day.
 static void summary_tick(App* app, Event* e) {
     const char* day = e->text;
@@ -1915,7 +1888,7 @@ static void summary_tick(App* app, Event* e) {
     else phase_set(app, "too little recorded today to sum up");
 }
 
-// Every 15 s, without the lock: shows the reminders that have come due, reads what the clock
+// Every 15 s: shows the reminders that have come due, reads what the clock
 // needs from the database, and posts it to the main thread (summary_tick).
 static DWORD WINAPI summary_main(void* param) {
     App* app = (App*)param;
@@ -1950,11 +1923,9 @@ static DWORD WINAPI summary_main(void* param) {
 
 void summary_start(App* app) {
     app->summary.notify.lock = SRWLOCK_INIT;
-    sqlite3* db = app->storage.ready ? db_open(app) : 0;
-    if (db) {
-        lists_refresh_locked(app, db);
-        sqlite3_close(db);
-    }
+    Job* job = job_new(lists_apply);
+    job->data = PUSH(&job->arena, ListsRead);
+    db_post(job, lists_run);
     if (app->config.summary.enabled) phase_set(app, "asks at %s", app->config.summary.ask_at);
     start_thread(app, "notify", notify_main);
     start_thread(app, "summary", summary_main);

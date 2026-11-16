@@ -77,11 +77,7 @@ void job_post_wait(App* app, Job* job) {
 void events_apply(App* app) {
     Event e;
     u32 dropped = 0;
-    while (event_take(&app->events, &e, &dropped)) {
-        app_lock(app);
-        e.apply(app, &e);
-        app_unlock(app);
-    }
+    while (event_take(&app->events, &e, &dropped)) e.apply(app, &e);
     if (dropped) WARN("events: %u dropped, the queue was full", dropped);
 }
 

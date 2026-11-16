@@ -48,7 +48,7 @@ bool clip_range(Str range, f64 now, f64* from, char* label, i32 label_cap) {
 // ---------------------------------------------------------------------------------------------
 // The database, read only: copying and playback never write.
 
-static sqlite3* db_open_read(Config* cfg) {
+static sqlite3* db_open_read(const Config* cfg) {
     wchar_t path[MAX_PATH];
     db_path(cfg, path);
     Mark m = mark(scratch());
@@ -444,14 +444,12 @@ static void clip_format(List<char>* t, Slice<Line> lines, f64 from, f64 to) {
     }
 }
 
-ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label) {
+ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label) {
     ClipResult r = {};
     if (!(isfinite(from) && isfinite(to) && from < to)) {
         snprintf(r.error, sizeof(r.error), "the range must end after it starts");
         return r;
     }
-    // data_dir is read without the lock: it does not change while the program runs.
-    Config* cfg = &app->config;
     sqlite3* db = db_open_read(cfg);
     if (!db) {
         snprintf(r.error, sizeof(r.error), "could not open the database");
@@ -495,9 +493,7 @@ ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind, 
         for (i32 i = 0; i < all.count; i++)
             if (!exclude || !names_has(exclude, all.items[i].speaker)) lines.items[lines.count++] = all.items[i];
         // Each speaker as the app list shows it ("zaddish", "Brave Browser"), not its exe.
-        app_lock(app);
-        for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), app_label(app, lines.items[i].speaker));
-        app_unlock(app);
+        for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), label_of(labels, lines.items[i].speaker));
         List<char> text = {};
         clip_format(&text, lines, from, to);
         Str body = {text.items, text.count};
@@ -518,4 +514,43 @@ ClipResult clip_copy(App* app, f64 from, f64 to, Names* exclude, ClipKind kind, 
     if (r.ok) LOG("copied %s to the clipboard", r.path);
     else WARN("copying failed: %s", r.error);
     return r;
+}
+
+struct ClipJob {
+    const Config* cfg;
+    AppLabels labels;
+    f64 from, to;
+    Names exclude;
+    ClipKind kind;
+    char label[64];
+    ClipDone* done;
+    i64 ctx;
+    ClipResult result;
+};
+
+static void clip_job_run(Job* job) {
+    ClipJob* c = (ClipJob*)job->data;
+    c->result = clip_copy(c->cfg, &c->labels, c->from, c->to, &c->exclude, c->kind, c->label[0] ? c->label : 0);
+    list_free(&c->exclude);
+}
+
+static void clip_job_apply(App* app, Job* job) {
+    ClipJob* c = (ClipJob*)job->data;
+    c->done(app, &c->result, c->kind, c->ctx);
+}
+
+void clip_copy_later(App* app, f64 from, f64 to, Names exclude, ClipKind kind, const char* label, ClipDone* done, i64 ctx) {
+    Job* job = job_new(clip_job_apply);
+    ClipJob* c = PUSH(&job->arena, ClipJob);
+    c->cfg = settings(app);
+    c->labels = app_labels(app, &job->arena);
+    c->from = from;
+    c->to = to;
+    c->exclude = exclude;
+    c->kind = kind;
+    if (label) SET(c->label, str(label));
+    c->done = done;
+    c->ctx = ctx;
+    job->data = c;
+    pool_post(job, clip_job_run);
 }

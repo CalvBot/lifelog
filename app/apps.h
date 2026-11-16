@@ -63,9 +63,23 @@ bool is_own_exe(Str exe);
 // How a speaker is shown: an app by its own name (from the Start menu or its exe's description,
 // "Brave Browser"), else its exe without ".exe"; anything else ("me") as it is.
 Str app_label(App* app, Str speaker);
+
+// The apps' names, copied for a thread that names speakers (the summary writer, copying).
+struct AppLabel {
+    char exe[64];
+    char name[128];
+};
+struct AppLabels {
+    AppLabel* items;
+    i32 count;
+};
+// The main thread: every app's name, into `a`.
+AppLabels app_labels(App* app, Arena* a);
+// A speaker as the app list shows it, as app_label does. Any thread.
+Str label_of(AppLabels* labels, Str speaker);
 // The full path of the exe process `pid` runs, into `out`. False if it can't be read.
 bool proc_path(u32 pid, char* out, i32 cap);
-// Notes that `exe` runs from `path` (with the lock), updating the app and paths.txt if it moved.
+// Notes that `exe` runs from `path` (the main thread), updating the app and paths.txt if it moved.
 void app_learn_path(App* app, Str exe, Str path);
 
 // Sets the decisions from the config's lists (once, at start).
@@ -130,7 +144,7 @@ struct SeenPath {
     char exe[64];
     char path[MAX_PATH];
 };
-// The main thread, with the lock: what the capture watcher's process scan saw (the one scan of
+// The main thread: what the capture watcher's process scan saw (the one scan of
 // the processes). Learns the new paths and sets which apps run and whether a game does.
 void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count);
 

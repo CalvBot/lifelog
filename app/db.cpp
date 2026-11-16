@@ -12,7 +12,7 @@ static Str schema_text(Arena* a) {
     return s;
 }
 
-static sqlite3* open_path(Config* cfg) {
+static sqlite3* open_path(const Config* cfg) {
     wchar_t path[MAX_PATH];
     db_path(cfg, path);
     Mark m = mark(scratch());
@@ -70,7 +70,7 @@ bool db_init(Config* cfg) {
 }
 
 sqlite3* db_open(App* app) {
-    return open_path(&app->config);
+    return open_path(settings(app));
 }
 
 // A column as a Str copied into `a` ("" for NULL).

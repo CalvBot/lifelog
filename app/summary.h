@@ -64,7 +64,7 @@ struct ToastJob {
 };
 
 struct Notify {
-    SRWLOCK lock;            // guards `queue` (taken with or without App.lock, never the other way round)
+    SRWLOCK lock;            // guards `queue`
     List<ToastJob> queue;
     HWND window;             // the notify thread's message window, which links are sent to
 };
@@ -104,7 +104,7 @@ void summary_set_ask_reminders(App* app, bool on);
 const wchar_t* summary_prompt_path();
 void summary_edit_prompt(App* app);
 
-// One day's summary, with each reminder's notification state. Unlocked is fine.
+// One day's summary, with each reminder's notification state. Any thread.
 StoredSummary summary_get(sqlite3* db, Arena* a, const char* day);
 
 // Takes a point out of a day's summary (it comes back if the day is rewritten). `bullet` is the
@@ -118,18 +118,19 @@ void summary_remove_never(App* app, i64 id);
 // The window then says when it will show ("tomorrow at 09:00").
 //
 // These change the database on its thread (db_post) and return at once; the window shows the
-// result when it comes. Main thread, with the lock.
+// result when it comes. The main thread.
 void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet = false);
 // A reminder notification's buttons: "yes", "no", "done", "snooze".
 void reminder_answer(App* app, i64 id, const char* action);
 
-// For the CLI's check-ai: starts the AI, asks it one thing, stops it. Unlocked.
+// For the CLI's check-ai: starts the AI, asks it one thing, stops it.
 bool summary_check_ai(App* app, char* said, i32 cap);
 
 // Notifications. Any thread; notify_show and notify_remove only queue the work.
 void notify_show(App* app, ToastJob* toast);
 void notify_remove(App* app, const char* tag);
-// A `lifelog:` link (a notification's button) in the running app, with the lock: does what it says.
+// A `lifelog:` link (a notification's button) in the running app, on the main thread: does what
+// it says.
 bool notify_open_link(App* app, Str link);
 // In a second copy of lifelog started with a link: hands it to the running one. False if none runs.
 bool notify_forward(const wchar_t* link);

@@ -9,9 +9,6 @@
 //
 // Hot flags read by many threads (private mode, the GPU load) are atomics, and the settings a
 // thread needs come from settings(): a copy of App.config that the thread may keep reading.
-//
-// Until the move is done (SPEC.md, "Threads"), App.lock still guards the rest of App, so the
-// main thread applies events with the lock held.
 
 #pragma once
 
@@ -21,7 +18,7 @@ static const UINT WM_APP_EVENT = WM_APP + 0x50;  // to the tray window: events a
 struct Event;
 typedef void EventApply(App* app, Event* e);
 struct Event {
-    EventApply* apply;  // run on the main thread, with App.lock for now
+    EventApply* apply;  // run on the main thread
     i64 a;
     i64 b;
     char text[512];
@@ -59,10 +56,10 @@ void job_free(Job* job);
 // stays readable until the arena is reset), so job_free afterwards frees nothing.
 Arena job_take_arena(Job* job);
 
-// The main thread: applies every waiting event, taking App.lock around each.
+// The main thread: applies every waiting event.
 void events_apply(App* app);
 
-// Atomics for the flags threads share without App.lock.
+// Atomics for the flags threads share.
 inline LONG atomic_get(volatile LONG* v) { return InterlockedCompareExchange(v, 0, 0); }
 inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
 
@@ -70,5 +67,6 @@ inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
 // thread). Each change makes a new copy; old ones are kept until exit, so a thread may hold on
 // to the one it has. Any thread, no lock.
 const Config* settings(App* app);
-// Makes a new copy if App.config changed, and says so. With the lock (app_unlock calls it).
+// The main thread: makes a new copy if App.config changed, and says so. main.cpp calls it after
+// each frame and each round of events.
 bool settings_publish(App* app);

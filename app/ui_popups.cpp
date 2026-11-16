@@ -3,16 +3,15 @@
 // (main.cpp closes the popup when it loses focus).
 
 // "Copy the last N min": clip_copy is slow (it reads the database, and mixing audio takes a
-// while), so it runs on a thread. Kept outside PopupState because the popup may close first.
-struct CopyJob {
+// while), so it runs on the pool. Kept outside PopupState because the popup may close first.
+// The main thread's.
+struct CopyState {
     bool busy;
     bool done;  // `result` is waiting to be shown
-    f64 from, to;
     ClipKind kind;
-    Names exclude;  // owned by the job until the thread frees it
     ClipResult result;
 };
-static CopyJob g_copy;
+static CopyState g_copy;
 
 // What a finished copy says.
 static const char* copy_message(ClipResult* r, ClipKind kind) {
@@ -22,32 +21,18 @@ static const char* copy_message(ClipResult* r, ClipKind kind) {
     return tmp("Copied %s of audio", duration_text(r->seconds));
 }
 
-static DWORD WINAPI copy_main(void* param) {
-    App* app = (App*)param;
-    app_lock(app);
-    f64 from = g_copy.from, to = g_copy.to;
-    ClipKind kind = g_copy.kind;
-    Names exclude = g_copy.exclude;
-    g_copy.exclude = {};
-    app_unlock(app);
-
-    ClipResult r = clip_copy(app, from, to, &exclude, kind);
-    list_free(&exclude);
-
-    app_lock(app);
-    g_copy.result = r;
+static void copy_done(App* app, ClipResult* r, ClipKind kind, i64) {
+    g_copy.result = *r;
     g_copy.busy = false;
     g_copy.done = true;
     // With the menu gone, the window says it instead.
     if (!app->ui.popup_state) {
         Mark m = mark(scratch());
-        ui_say(app, "%s", copy_message(&r, kind));
+        ui_say(app, "%s", copy_message(r, kind));
         rewind(m);
         g_copy.done = false;
     }
-    app_unlock(app);
     wake_window(app);
-    return 0;
 }
 
 struct PopupState {
@@ -162,12 +147,10 @@ static void start_copy(App* app, PopupState* s, f64 secs, ClipKind kind) {
     if (g_copy.busy) return;
     g_copy.busy = true;
     g_copy.done = false;
-    g_copy.to = now_ts();
-    g_copy.from = g_copy.to - secs;
     g_copy.kind = kind;
-    g_copy.exclude = hidden_speakers(app);
     s->message[0] = 0;
-    start_thread(app, "copy last", copy_main);
+    f64 to = now_ts();
+    clip_copy_later(app, to - secs, to, hidden_speakers(app), kind, 0, copy_done, 0);
 }
 
 // One frame of lifelog's menu. False when it should close.

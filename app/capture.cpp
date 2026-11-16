@@ -1,7 +1,7 @@
 // capture.cpp: see capture.h. One thread per stream (the mic, or one app's process tree) takes
 // 48 kHz stereo float from WASAPI, mixes it to mono, brings it down to 16 kHz and feeds it to its
 // segmenter. Once a second the watcher thread posts what plays sound, and the main thread starts
-// and stops the app streams from that (events.h). None of these threads take App.lock.
+// and stops the app streams from that (events.h).
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -558,7 +558,7 @@ static DWORD WINAPI stream_main(void* p) {
     return 0;
 }
 
-// Starts `s`'s thread. The main thread, with the lock.
+// Starts `s`'s thread. The main thread.
 static void stream_start(App* app, Stream* s) {
     s->app = app;
     s->lock = SRWLOCK_INIT;
@@ -575,7 +575,7 @@ static void stream_start(App* app, Stream* s) {
     rewind(m);
 }
 
-// Tells the stream at `i` to stop and moves it to `ending`. With the lock.
+// Tells the stream at `i` to stop and moves it to `ending`. The main thread.
 static void stream_end(App* app, i32 i, bool discard) {
     Stream* s = app->capture.streams[i];
     if (discard) InterlockedExchange(&s->discard, 1);
@@ -584,7 +584,7 @@ static void stream_end(App* app, i32 i, bool discard) {
     list_push(&app->capture.ending, s);
 }
 
-// Frees the streams whose threads have ended. With the lock.
+// Frees the streams whose threads have ended. The main thread.
 static void streams_reap(App* app) {
     List<Stream*>* l = &app->capture.ending;
     for (i32 i = 0; i < l->count; i++) {
@@ -660,7 +660,7 @@ struct WatchFacts {
     f64 now;
 };
 
-// The main thread, with the lock: starts and stops app streams from what the watcher saw.
+// The main thread: starts and stops app streams from what the watcher saw.
 static void watch_apply(App* app, Job* job) {
     if (stopping(app)) return;  // capture_stop has ended the streams
     WatchFacts* f = (WatchFacts*)job->data;
@@ -740,7 +740,7 @@ static void watch_apply(App* app, Job* job) {
     if (changed) wake_window(app);
 }
 
-// Once a second: what runs, what has windows and what plays sound, gathered without the lock
+// Once a second: what runs, what has windows and what plays sound, gathered on the watcher
 // and posted to the main thread. The one scan of the processes: the app list's "running" and the
 // game check come from it too (apps_seen).
 static DWORD WINAPI capture_watch_main(void* p) {
@@ -822,8 +822,6 @@ void capture_stop(App* app) {
     while (c->streams.count) stream_end(app, 0, false);
     HANDLE watcher = c->watcher;
     c->watcher = 0;
-    // Let go meanwhile, so the other threads are not held up for the seconds this can take.
-    app_unlock(app);
     if (watcher) {
         WaitForSingleObject(watcher, 5000);
         CloseHandle(watcher);
@@ -833,7 +831,6 @@ void capture_stop(App* app) {
         DWORD left = until - GetTickCount();
         WaitForSingleObject(c->ending.items[i]->thread, (i32)left > 0 ? left : 0);
     }
-    app_lock(app);
     streams_reap(app);
     if (c->ending.count) WARN("capture: %d streams did not finish in time", c->ending.count);
 }

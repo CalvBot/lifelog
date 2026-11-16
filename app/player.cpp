@@ -98,10 +98,17 @@ static f64 pieces_time(List<Piece>* pieces, i64 played) {
 static bool player_stopped(Player* pl) { return pl->stop || stopping(pl->app); }
 
 // The thread's work: returns when it is done, told to stop, or failed (with `error`).
+// The main thread: where playback is now. `a` is the Player (only compared), `b` the moment.
+static void player_at_apply(App* app, Event* e) {
+    if ((Player*)e->a != app->clips.player) return;
+    memcpy(&app->clips.play_ts, &e->b, sizeof(f64));
+    wake_window(app);
+}
+
 static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
     App* app = pl->app;
     wchar_t adir[MAX_PATH];
-    audio_dir(&app->config, adir);
+    audio_dir(settings(app), adir);
 
     // The line it starts from.
     sqlite3_stmt* st = prepare(db, "SELECT speaker, start_ts, end_ts FROM segments WHERE id = ?1");
@@ -216,10 +223,9 @@ static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
         if (now - told >= 0.05) {
             told = now;
             f64 ts = pieces_time(&pieces, played);
-            app_lock(app);
-            if (app->clips.player == pl) app->clips.play_ts = ts;
-            app_unlock(app);
-            wake_window(app);
+            i64 bits;
+            memcpy(&bits, &ts, sizeof(bits));
+            event_post(app, player_at_apply, (i64)pl, bits, 0);
         }
         WaitForSingleObject(app->stop, 15);
     }
@@ -229,30 +235,43 @@ static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
     arena_release(&own);
 }
 
+struct PlayerDone {
+    Player* pl;
+    char error[256];
+};
+
+// The main thread: the player thread has ended.
+static void player_done(App* app, Job* job) {
+    PlayerDone* d = (PlayerDone*)job->data;
+    Player* pl = d->pl;
+    if (app->clips.player == pl) {
+        app->clips.player = 0;
+        app->clips.playing_line = 0;
+        app->clips.play_ts = 0;
+        if (d->error[0] && !pl->stop) ui_say(app, "%s", d->error);
+        wake_window(app);
+    }
+    list_free(&pl->hidden);
+    free(pl);
+}
+
 static DWORD WINAPI player_thread(void* p) {
     Player* pl = (Player*)p;
     App* app = pl->app;
     SetThreadDescription(GetCurrentThread(), L"player");
     CoInitializeEx(0, COINIT_MULTITHREADED);
-    char error[256] = {};
-    sqlite3* db = db_open_read(&app->config);
-    if (!db) snprintf(error, sizeof(error), "could not open the database");
-    else player_run(pl, db, error, sizeof(error));
+    Job* job = job_new(player_done);
+    PlayerDone* d = PUSH(&job->arena, PlayerDone);
+    d->pl = pl;
+    sqlite3* db = db_open_read(settings(app));
+    if (!db) snprintf(d->error, sizeof(d->error), "could not open the database");
+    else player_run(pl, db, d->error, sizeof(d->error));
     sqlite3_close(db);
-    if (error[0]) WARN("playback: %s", error);
-    app_lock(app);
-    bool current = app->clips.player == pl;
-    if (current) {
-        app->clips.player = 0;
-        app->clips.playing_line = 0;
-        app->clips.play_ts = 0;
-        if (error[0] && !pl->stop) ui_say(app, "%s", error);
-    }
-    app_unlock(app);
-    if (current) wake_window(app);
-    list_free(&pl->hidden);
-    free(pl);
+    if (d->error[0]) WARN("playback: %s", d->error);
     CoUninitialize();
+    // From here the Player is the main thread's to free.
+    job->data = d;
+    job_post_wait(app, job);
     return 0;
 }
 
@@ -274,7 +293,7 @@ void play(App* app, i64 line_id, PlayMode mode, Names* hidden) {
 }
 
 void play_stop(App* app) {
-    // The thread only frees its state after it takes the lock and sees it is no longer current.
+    // The thread ends on its own once it sees `stop`; player_done frees its state.
     Player* pl = (Player*)app->clips.player;
     if (pl) InterlockedExchange(&pl->stop, 1);
     app->clips.player = 0;

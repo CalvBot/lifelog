@@ -29,7 +29,7 @@ struct Setup {
     SetupState part[SETUP_PARTS];
 };
 
-// Starts setting up `part` unless it is already running. With the lock.
+// Starts setting up `part` unless it is already running. The main thread.
 void setup_start(App* app, SetupPart part);
 // %LOCALAPPDATA%\lifelog\whisper: the ggml-*.bin models, and one folder per whisper.cpp build.
 void whisper_dir(wchar_t out[MAX_PATH]);
@@ -40,6 +40,6 @@ bool whisper_ready(const char* model);
 // lifelog's own summary AI is there: llama-server.exe and <model>.gguf in the llm folder.
 bool summary_ai_ready(const char* model);
 
-// Your own instead of lifelog's: saved to config.toml. With the lock. (worker_set_endpoint is in
+// Your own instead of lifelog's: saved to config.toml. The main thread. (worker_set_endpoint is in
 // worker.h.)
 void summary_set_endpoint(App* app, Str url, Str model);

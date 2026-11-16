@@ -1,8 +1,8 @@
-// apps.cpp: see apps.h. Two threads:
-//   - "apps-watch", every second: which processes run, which game runs, where each exe lives, the
-//     icons of apps that are open, and every minute or so the lines heard per app;
-//   - "apps-scan", at start and every six hours: the Start menu and the game launchers' records.
-// Both do their slow work unlocked and store the result under the lock.
+// apps.cpp: see apps.h. Which processes run, which game runs and where each exe lives come from
+// the capture watcher's scan (apps_seen, once a second); then the icons of apps that are open
+// are found on the pool, and every minute or so the database thread counts the lines heard per
+// app. The "apps-scan" thread reads paths.txt at start, then at start and every six hours the
+// Start menu and the game launchers' records; it posts what it found to the main thread.
 
 #include <tlhelp32.h>
 #include <shobjidl.h>
@@ -63,6 +63,25 @@ void app_set_decision(App* app, Str exe, Decision d) {
 Str app_label(App* app, Str speaker) {
     AppInfo* a = app_find(app, speaker);
     if (a && a->name[0]) return str(a->name);
+    if (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE"))) return str_sub(speaker, 0, speaker.len - 4);
+    return speaker;
+}
+
+AppLabels app_labels(App* app, Arena* a) {
+    List<AppInfo>* list = &app->apps.list;
+    AppLabels out = {PUSH_ARRAY(a, AppLabel, list->count), 0};
+    for (i32 i = 0; i < list->count; i++) {
+        if (!list->items[i].name[0]) continue;
+        AppLabel* l = &out.items[out.count++];
+        SET(l->exe, str(list->items[i].exe));
+        SET(l->name, str(list->items[i].name));
+    }
+    return out;
+}
+
+Str label_of(AppLabels* labels, Str speaker) {
+    for (i32 k = 0; labels && k < labels->count; k++)
+        if (str_eq_nocase(str(labels->items[k].exe), speaker)) return str(labels->items[k].name);
     if (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE"))) return str_sub(speaker, 0, speaker.len - 4);
     return speaker;
 }
@@ -317,7 +336,7 @@ static void paths_append(Str lines) {
     disk_append(file, lines);  // the file writer does it
 }
 
-// Remembers where `exe` lives, and returns true if that was new. With the lock.
+// Remembers where `exe` lives, and returns true if that was new. The main thread.
 // Stores where `exe` lives. True if that is new: not known, or it moved (an exe can be run from
 // another folder, like a plugin's helper after an update). paths.txt keeps the latest line.
 static bool learn_path(App* app, Str exe, Str path) {
@@ -344,16 +363,9 @@ static bool learn_path(App* app, Str exe, Str path) {
     return true;
 }
 
-static void paths_load(App* app) {
-    wchar_t file[MAX_PATH];
-    paths_file(file);
-    Mark m = mark(scratch());
-    Str text = read_file(scratch(), file);
-    if (!text.ptr) {
-        rewind(m);
-        return;
-    }
-    app_lock(app);
+// The main thread: the paths read from paths.txt (job->data is the Str).
+static void paths_apply(App* app, Job* job) {
+    Str text = *(Str*)job->data;
     i32 n = 0;
     for (i64 at = 0; at < text.len;) {
         i64 end = at;
@@ -363,9 +375,22 @@ static void paths_load(App* app) {
         if (tab > 0) n += learn_path(app, str_sub(line, 0, tab), str_trim(str_sub(line, tab + 1)));
         at = end + 1;
     }
-    app_unlock(app);
-    rewind(m);
     LOG("apps: %d exe paths from paths.txt", n);
+}
+
+// The scan thread, first: reads paths.txt and hands it to the main thread.
+static void paths_load(App* app) {
+    wchar_t file[MAX_PATH];
+    paths_file(file);
+    Job* job = job_new(paths_apply);
+    Str* text = PUSH(&job->arena, Str);
+    *text = read_file(&job->arena, file);
+    if (!text->ptr) {
+        job_free(job);
+        return;
+    }
+    job->data = text;
+    job_post_wait(app, job);
 }
 
 void app_learn_path(App* app, Str exe, Str path) {
@@ -484,20 +509,31 @@ static u64 file_time(const wchar_t* path) {
 struct IconJob {
     char exe[64];
     char path[MAX_PATH];
+    // Found:
+    u8* rgba;        // malloc'd; null if none
+    char name[128];  // the exe's description, "" if none
+    bool stale;      // the exe is newer than its cached icon
 };
 
-// Finds icons (from the cache, or from the exe and then cached) and missing names for `jobs`,
-// unlocked, and stores each under the lock.
-static void icons_fetch(App* app, IconJob* jobs, i32 count) {
-    for (i32 i = 0; i < count && !stopping(app); i++) {
+// Icons and missing names, found on the pool (from the cache, or from the exe and then cached).
+struct IconsJob {
+    App* app;  // for stopping() only
+    IconJob* items;
+    i32 count;
+};
+
+static void icons_run(Job* job) {
+    IconsJob* j = (IconsJob*)job->data;
+    for (i32 i = 0; i < j->count && !stopping(j->app); i++) {
+        IconJob* ic = &j->items[i];
         Mark m = mark(scratch());
-        Str exe = str(jobs[i].exe);
+        Str exe = str(ic->exe);
         wchar_t file[MAX_PATH], old_file[MAX_PATH];
         icon_file(exe, 2, file);
         icon_file(exe, 1, old_file);
         u8* rgba = (u8*)malloc(32 * 32 * 4);
         CHECK(rgba, "memory for an icon");
-        wchar_t* path = jobs[i].path[0] ? wide(scratch(), str(jobs[i].path)) : 0;
+        wchar_t* path = ic->path[0] ? wide(scratch(), str(ic->path)) : 0;
         // A cached icon older than the exe is from before it changed (an update, or an exe rebuilt
         // with a new icon): read again.
         bool stale = path && file_time(path) > file_time(file);
@@ -509,81 +545,120 @@ static void icons_fetch(App* app, IconJob* jobs, i32 count) {
             wchar_t dir[MAX_PATH];
             swprintf(dir, MAX_PATH, L"%s\\icons", cache_dir());
             CreateDirectoryW(dir, 0);
-            if (!write_file(file, {(const char*)rgba, 32 * 32 * 4})) WARN("apps: could not cache the icon of %s", jobs[i].exe);
+            if (!write_file(file, {(const char*)rgba, 32 * 32 * 4})) WARN("apps: could not cache the icon of %s", ic->exe);
         }
         if (!ok) {
             cached = read_file(scratch(), old_file);
             ok = cached.ptr && cached.len == 32 * 32 * 4;
             if (ok) memcpy(rgba, cached.ptr, 32 * 32 * 4);
         }
-        Str name = path ? exe_description(scratch(), path) : Str{"", 0};
-        if (!ok) {
-            free(rgba);
-            rgba = 0;
-        }
-        app_lock(app);
-        AppInfo* a = app_find(app, exe);
-        bool found = a != 0;
+        if (path) SET(ic->name, exe_description(scratch(), path));
+        if (ok) ic->rgba = rgba;
+        else free(rgba);
+        ic->stale = stale;
+        rewind(m);
+    }
+}
+
+static void icons_apply(App* app, Job* job) {
+    IconsJob* j = (IconsJob*)job->data;
+    bool found = false;
+    for (i32 i = 0; i < j->count; i++) {
+        IconJob* ic = &j->items[i];
+        AppInfo* a = app_find(app, str(ic->exe));
         if (a) {
+            found = true;
             // A new icon, or a changed one.
+            u8* rgba = ic->rgba;
             if (rgba && (!a->icon || memcmp(a->icon, rgba, 32 * 32 * 4) != 0)) {
                 free(a->icon);
                 a->icon = rgba;
                 a->icon_version++;
-                rgba = 0;
+                ic->rgba = 0;
             }
             // A changed exe may carry a new description; a name from the Start menu stays.
-            if (name.len && (!a->name[0] || (stale && a->name_from_exe))) {
-                SET(a->name, name);
+            if (ic->name[0] && (!a->name[0] || (ic->stale && a->name_from_exe))) {
+                SET(a->name, str(ic->name));
                 a->name_from_exe = true;
             }
         }
-        app_unlock(app);
-        free(rgba);
-        rewind(m);
-        if (found) wake_window(app);
+        free(ic->rgba);
     }
+    if (found) wake_window(app);
+}
+
+static bool icon_wanted(AppInfo* a, bool only_running) {
+    if ((a->icon || a->icon_tried) && !a->icon_recheck) return false;
+    return !only_running || a->running || a->playing;
 }
 
 // Icons for apps that have none yet and were not tried; with `only_running`, just the ones open
-// now. Takes the lock itself.
+// now. The main thread; they are found on the pool.
 static void icons_for(App* app, bool only_running) {
-    List<IconJob> jobs = {};
-    app_lock(app);
+    i32 n = 0;
+    for (i32 i = 0; i < app->apps.list.count; i++) n += icon_wanted(&app->apps.list[i], only_running);
+    if (!n) return;
+    Job* job = job_new(icons_apply);
+    IconsJob* j = PUSH(&job->arena, IconsJob);
+    j->app = app;
+    j->items = PUSH_ARRAY(&job->arena, IconJob, n);
     for (i32 i = 0; i < app->apps.list.count; i++) {
         AppInfo* a = &app->apps.list[i];
-        if ((a->icon || a->icon_tried) && !a->icon_recheck) continue;
-        if (only_running && !a->running && !a->playing) continue;
+        if (!icon_wanted(a, only_running)) continue;
         a->icon_tried = true;
         a->icon_recheck = false;
-        IconJob* j = list_push(&jobs);
-        SET(j->exe, str(a->exe));
-        SET(j->path, str(a->path));
+        IconJob* ic = &j->items[j->count++];
+        SET(ic->exe, str(a->exe));
+        SET(ic->path, str(a->path));
     }
-    app_unlock(app);
-    icons_fetch(app, jobs.items, jobs.count);
-    list_free(&jobs);
+    job->data = j;
+    pool_post(job, icons_run);
 }
 
 // ---------------------------------------------------------------------------------------------
-// The process watcher
+// Lines heard per app, from the database: asked for when the worker wrote some, at most once a
+// minute. The main thread's.
 
-// Lines heard per app, from the database, into the list.
-static void lines_refresh(App* app, sqlite3* db) {
-    Mark m = mark(scratch());
-    Slice<SpeakerCount> s = db_speakers(db, scratch());
-    app_lock(app);
-    for (i32 i = 0; i < s.count; i++) {
-        Str who = s.items[i].speaker;
+static u64 g_lines_version = (u64)-1;  // Worker.lines_version when last asked
+static f64 g_lines_ts;
+static bool g_lines_asked;  // a count is on the way
+
+struct LinesJob {
+    u64 version;
+    Slice<SpeakerCount> counts;
+};
+
+static void lines_run(sqlite3* db, Job* job) {
+    LinesJob* l = (LinesJob*)job->data;
+    if (db) l->counts = db_speakers(db, &job->arena);
+}
+
+static void lines_apply(App* app, Job* job) {
+    LinesJob* l = (LinesJob*)job->data;
+    g_lines_asked = false;
+    g_lines_version = l->version;
+    for (i32 i = 0; i < l->counts.count; i++) {
+        Str who = l->counts.items[i].speaker;
         // Speakers are "me", people in a call, or the exe of an app.
         if (!str_ends(str_lower(scratch(), who), str(".exe")) || is_own_exe(who)) continue;
         AppInfo* a = app_get(app, who);
-        a->lines = s.items[i].lines;
-        a->last_ts = s.items[i].last_ts;
+        a->lines = l->counts.items[i].lines;
+        a->last_ts = l->counts.items[i].last_ts;
     }
-    app_unlock(app);
-    rewind(m);
     wake_window(app);
+}
+
+static void lines_check(App* app) {
+    f64 now = now_ts();
+    u64 version = app->worker.lines_version;
+    if (g_lines_asked || !app->storage.ready || version == g_lines_version || now - g_lines_ts < 60) return;
+    g_lines_asked = true;
+    g_lines_ts = now;
+    Job* job = job_new(lines_apply);
+    LinesJob* l = PUSH(&job->arena, LinesJob);
+    l->version = version;
+    job->data = l;
+    db_post(job, lines_run);
 }
 
 void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count) {
@@ -614,40 +689,8 @@ void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count) {
         changed = true;
     }
     if (changed) wake_window(app);
-}
-
-// Once a second: icons for the apps open now, and the lines heard per app when the worker wrote
-// some (at most once a minute). Which apps run comes from the capture watcher (apps_seen).
-static DWORD WINAPI apps_watch_main(void* p) {
-    App* app = (App*)p;
-    CoInitializeEx(0, COINIT_APARTMENTTHREADED);  // the shell's icons want it
-    paths_load(app);
-    sqlite3* db = 0;
-    u64 lines_version = (u64)-1;
-    f64 lines_ts = 0;
-
-    while (!stopping(app)) {
-        app_lock(app);
-        u64 version = app->worker.lines_version;
-        bool db_ready = app->storage.ready;
-        app_unlock(app);
-
-        icons_for(app, true);
-
-        f64 now = now_ts();
-        if (db_ready && version != lines_version && now - lines_ts >= 60) {
-            if (!db) db = db_open(app);  // reads only data_dir, which does not change while running
-            if (db) {
-                lines_refresh(app, db);
-                lines_version = version;
-                lines_ts = now;
-            }
-        }
-        if (!sleep_unless_stopping(app, 1000)) break;
-    }
-    if (db) sqlite3_close(db);
-    CoUninitialize();
-    return 0;
+    icons_for(app, true);
+    lines_check(app);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1112,7 +1155,7 @@ static void start_menu(Scan* scan, Arena* a) {
     list_free(&stack);
 }
 
-// Stores what the scan found: names, paths, and games marked. With the lock.
+// Stores what the scan found: names, paths, and games marked. The main thread.
 static Str scan_store(App* app, Scan* scan, Arena* a, i32* new_games) {
     Config* c = &app->config;
     Str lines = {"", 0};
@@ -1143,45 +1186,56 @@ static Str scan_store(App* app, Scan* scan, Arena* a, i32* new_games) {
     return lines;
 }
 
+struct ScanJob {
+    Scan scan;
+    i32 games, apps;
+    f64 seconds;
+};
+
+// The main thread: what the scan found.
+static void scan_apply(App* app, Job* job) {
+    ScanJob* j = (ScanJob*)job->data;
+    i32 new_games = 0;
+    Str lines = scan_store(app, &j->scan, &job->arena, &new_games);
+    app->apps.scanned = true;
+    paths_append(lines);
+    LOG("apps: found %d installed games and %d apps in %.1f s", j->games, j->apps, j->seconds);
+    if (new_games) LOG("apps: marked %d installed games' exes as games", new_games);
+    wake_window(app);
+    list_free(&j->scan.found);
+    list_free(&j->scan.game_names);
+    icons_for(app, false);
+}
+
+// Every 6 hours: what is installed. First, the paths remembered from earlier runs.
 static DWORD WINAPI apps_scan_main(void* p) {
     App* app = (App*)p;
     CoInitializeEx(0, COINIT_APARTMENTTHREADED);  // the shell's shortcuts want it
-    Arena arena = {};
+    paths_load(app);
     do {
         f64 started = now_ts();
-        Scan scan = {};
-        steam(&scan, &arena);
-        epic(&scan, &arena);
-        gog(&scan, &arena);
-        ubisoft(&scan, &arena);
-        uninstall_entries(&scan, &arena);
-        xbox(&scan, &arena);
-        i32 games = scan.game_names.count;
-        start_menu(&scan, &arena);
-        i32 apps = scan.found.count;
-        for (i32 i = 0; i < scan.found.count; i++) apps -= scan.found.items[i].game[0] != 0;
-
-        app_lock(app);
-        i32 new_games = 0;
-        Str lines = scan_store(app, &scan, &arena, &new_games);
-        app->apps.scanned = true;
-        app_unlock(app);
-        paths_append(lines);
-        LOG("apps: found %d installed games and %d apps in %.1f s", games, apps, now_ts() - started);
-        if (new_games) LOG("apps: marked %d installed games' exes as games", new_games);
-        wake_window(app);
-
-        list_free(&scan.found);
-        list_free(&scan.game_names);
-        arena_reset(&arena);
-        icons_for(app, false);
+        Job* job = job_new(scan_apply);
+        ScanJob* j = PUSH(&job->arena, ScanJob);
+        Arena* arena = &job->arena;
+        Scan* scan = &j->scan;
+        steam(scan, arena);
+        epic(scan, arena);
+        gog(scan, arena);
+        ubisoft(scan, arena);
+        uninstall_entries(scan, arena);
+        xbox(scan, arena);
+        j->games = scan->game_names.count;
+        start_menu(scan, arena);
+        j->apps = scan->found.count;
+        for (i32 i = 0; i < scan->found.count; i++) j->apps -= scan->found.items[i].game[0] != 0;
+        j->seconds = now_ts() - started;
+        job->data = j;
+        job_post_wait(app, job);
     } while (sleep_unless_stopping(app, 6 * 3600 * 1000));
-    arena_release(&arena);
     CoUninitialize();
     return 0;
 }
 
 void apps_start(App* app) {
-    start_thread(app, "apps-watch", apps_watch_main);
     start_thread(app, "apps-scan", apps_scan_main);
 }
