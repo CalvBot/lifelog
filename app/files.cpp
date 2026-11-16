@@ -508,6 +508,63 @@ static void open_apply(App* app, Job* job) {
     if (o->error[0]) ui_say(app, "%s", o->error);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Deleting
+
+struct DeleteJob {
+    const Config* cfg;
+    i64 id;
+    bool deleted;
+    char error[256];
+};
+
+// On the database thread: the row goes, and lifelog's own copy with it (a link's original is
+// never touched). The row goes even if the copy is already gone.
+static void delete_run(sqlite3* db, Job* job) {
+    DeleteJob* d = (DeleteJob*)job->data;
+    if (!db) {
+        snprintf(d->error, sizeof(d->error), "the database is not open");
+        return;
+    }
+    Mark m = mark(scratch());
+    FileItem f = db_file(db, scratch(), d->id);
+    if (!f.id) {
+        rewind(m);
+        return;
+    }
+    wchar_t path[MAX_PATH];
+    if (!f.link && file_full_path(d->cfg, &f, path) && !DeleteFileW(path) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+        GetLastError() != ERROR_PATH_NOT_FOUND) {
+        snprintf(d->error, sizeof(d->error), "could not delete %s (error %lu)", narrow(scratch(), path).ptr, GetLastError());
+        rewind(m);
+        return;
+    }
+    sqlite3_stmt* st = prepare(db, "DELETE FROM files WHERE id = ?1");
+    if (st) {
+        sqlite3_bind_int64(st, 1, d->id);
+        d->deleted = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+    }
+    if (!d->deleted) snprintf(d->error, sizeof(d->error), "%s", sqlite3_errmsg(db));
+    else LOG("deleted the pasted %s", f.name.ptr);
+    rewind(m);
+}
+
+static void delete_apply(App* app, Job* job) {
+    DeleteJob* d = (DeleteJob*)job->data;
+    if (d->deleted) app->storage.files_version++;
+    if (d->error[0]) ui_say(app, "Delete failed: %s", d->error);
+}
+
+void file_delete(App* app, i64 id) {
+    Job* job = job_new(delete_apply);
+    DeleteJob* d = PUSH(&job->arena, DeleteJob);
+    d->cfg = settings(app);
+    d->id = id;
+    job->data = d;
+    db_post(job, delete_run);
+}
+
 void file_open(App* app, i64 id, bool in_folder) {
     Job* job = job_new(open_apply);
     OpenJob* o = PUSH(&job->arena, OpenJob);

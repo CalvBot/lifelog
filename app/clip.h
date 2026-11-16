@@ -40,6 +40,9 @@ i32 files_paste(App* app, char* error, i32 cap);
 // Opens a pasted file in its app (a link in the browser), or shows it in its folder. The main
 // thread; the work is done on the pool and failures show as a toast.
 void file_open(App* app, i64 id, bool in_folder);
+// Takes a pasted item off the timeline, and deletes lifelog's copy of it (a link's original
+// stays). The main thread; done on the database thread.
+void file_delete(App* app, i64 id);
 // Where a pasted file is on disk (its copy under data_dir\files, or what a link points at). False
 // for a web address or a bad path. Does not check that the file is still there.
 bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]);

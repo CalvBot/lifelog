@@ -1408,6 +1408,7 @@ struct TlFrame {
     i64 open_file;
     bool open_in_folder;
     i64 copy_path_file;
+    i64 delete_file;
     i64 hover_play;
     bool animating;
     // Playback and the hover preview.
@@ -1664,6 +1665,24 @@ static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
         ImGui::SameLine(0, 2 * u);
         if (icon_button(ICON_COPY, "Copy the path", "path")) f->copy_path_file = file->id;
     }
+    ImGui::SameLine(0, 2 * u);
+    if (icon_button(ICON_TRASH, "Delete", "delete")) ImGui::OpenPopup("##confirm_delete");
+    if (ImGui::BeginPopup("##confirm_delete")) {
+        ImGui::TextUnformatted(tmp("Delete %.*s?", (int)name.len, name.ptr));
+        small_begin();
+        ImGui::TextDisabled("%s", file->link ? "Only the link goes; the original is not touched." : "lifelog's copy is deleted for good.");
+        small_end();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.24f, 0.22f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.30f, 0.27f, 1));
+        if (ImGui::Button(label(ICON_TRASH, "Delete"))) {
+            f->delete_file = file->id;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
     f32 below = top + header;
     if (file->link && !url) {
         small_begin();
@@ -1904,6 +1923,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     }
     if (f.play_line) tl_play(app, &s->lines.items[f.play_line - 1], f.play_mode);
     if (f.open_file) file_open(app, f.open_file, f.open_in_folder);
+    if (f.delete_file) file_delete(app, f.delete_file);
     if (f.copy_path_file) {
         for (i32 i = 0; i < s->files.count; i++)
             if (s->files.items[i].id == f.copy_path_file) tl_copy_text(app, s->files.items[i].path, "Copied the path");
