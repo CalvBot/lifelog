@@ -1173,63 +1173,97 @@ static void alerts_show_due(App* app, sqlite3* db) {
     if (any) event_post(app, version_apply, 0, 0, 0);
 }
 
-void reminder_answer(App* app, i64 id, const char* action) {
-    sqlite3* db = db_open(app);
-    if (!db) return;
-    char tag[32];
-    snprintf(tag, sizeof(tag), "remind-%lld", id);
-    notify_remove(app, tag);
+// ---------------------------------------------------------------------------------------------
+// The window's changes: the database thread makes them (db_post), the main thread shows what
+// came of them.
+
+enum EditKind : u8 {
+    EDIT_ANSWER,        // a reminder notification's button
+    EDIT_REMIND,        // the journal's bell
+    EDIT_DISMISS,
+    EDIT_NEVER_ADD,
+    EDIT_NEVER_REMOVE,
+    EDIT_SKIP,
+};
+
+struct SummaryEdit {
+    App* app;         // for write_markdown, which reads only settings()
+    EditKind kind;
+    char day[11];
+    i64 id;           // EDIT_ANSWER: the reminder; EDIT_NEVER_REMOVE: the topic
+    i32 n;            // the reminder's place in the day's list; -1 for none
+    bool on;          // EDIT_REMIND: turn it on
+    bool quiet;       // EDIT_REMIND: say nothing
+    char action[16];  // EDIT_ANSWER
+    Str text;         // EDIT_DISMISS: the bullet; EDIT_NEVER_ADD: the topic
+    Str bullet;       // EDIT_NEVER_ADD: the point to take out too
+    // What came of it.
+    char say[200];    // shown at the bottom of the window, if anything
+    bool changed;     // the stored summaries changed: Summary.version
+    bool lists;       // `read` holds the lists read again
+    ListsRead read;
+};
+
+static void edit_say(SummaryEdit* e, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(e->say, sizeof(e->say), fmt, args);
+    va_end(args);
+}
+
+static void edit_lists(sqlite3* db, SummaryEdit* e) {
+    lists_read(db, &e->read.days, &e->read.never);
+    e->lists = true;
+}
+
+static void edit_answer(sqlite3* db, SummaryEdit* e) {
     const char* text = 0;
-    if (strcmp(action, "yes") == 0) text = "UPDATE alerts SET state = 'set' WHERE id = ?1";
-    else if (strcmp(action, "no") == 0) text = "UPDATE alerts SET state = 'no' WHERE id = ?1";
-    else if (strcmp(action, "done") == 0) text = "UPDATE alerts SET state = 'shown' WHERE id = ?1";
-    else if (strcmp(action, "snooze") == 0) text = "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1";
+    if (strcmp(e->action, "yes") == 0) text = "UPDATE alerts SET state = 'set' WHERE id = ?1";
+    else if (strcmp(e->action, "no") == 0) text = "UPDATE alerts SET state = 'no' WHERE id = ?1";
+    else if (strcmp(e->action, "done") == 0) text = "UPDATE alerts SET state = 'shown' WHERE id = ?1";
+    else if (strcmp(e->action, "snooze") == 0) text = "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1";
     if (!text) {
-        WARN("reminder answer must be yes, no, done or snooze, not \"%s\"", action);
-        sqlite3_close(db);
+        WARN("reminder answer must be yes, no, done or snooze, not \"%s\"", e->action);
         return;
     }
     sqlite3_stmt* st = sql(db, text);
     if (st) {
-        sqlite3_bind_int64(st, 1, id);
-        if (strcmp(action, "snooze") == 0) sqlite3_bind_double(st, 2, now_ts() + 3600.0);
+        sqlite3_bind_int64(st, 1, e->id);
+        if (strcmp(e->action, "snooze") == 0) sqlite3_bind_double(st, 2, now_ts() + 3600.0);
     }
     i32 changed = sql_done(db, st);
-    sqlite3_close(db);
-    if (changed == 0) WARN("no reminder %lld", id);
+    if (changed == 0) WARN("no reminder %lld", e->id);
     if (changed > 0) {
-        LOG("reminder %lld: %s", id, action);
-        app->summary.version++;
-        wake_window(app);
+        LOG("reminder %lld: %s", e->id, e->action);
+        e->changed = true;
     }
 }
 
-Str reminder_set(App* app, Arena* a, const char* day, i32 n, bool on) {
-    sqlite3* db = db_open(app);
-    if (!db) return {"", 0};
-    Mark m = mark(scratch());
-    SavedRow row = saved_row(db, scratch(), day);
-    Str result = {"", 0};
+static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
+    const char* day = e->day;
+    i32 n = e->n;
+    SavedRow row = saved_row(db, a, day);
     i32 y, mo, d;
     if (!row.found) {
-        ui_say(app, "No summary for that day");
+        edit_say(e, "No summary for that day");
     } else if (n < 0 || n >= row.reminders.count) {
-        ui_say(app, "No such reminder");
+        edit_say(e, "No such reminder");
     } else if (!parse_day(day, &y, &mo, &d)) {
-        ui_say(app, "Bad day");
+        edit_say(e, "Bad day");
     } else {
         const Json* r = &row.reminders.items[n];
         Str text = str_trim(json_text(json_get(r, "text")));
         i64 id = 0;
         f64 old_due = 0;
         Str state = {};
-        bool known = alert_find(db, scratch(), day, text, &id, &old_due, &state);
-        if (!on) {
+        bool known = alert_find(db, a, day, text, &id, &old_due, &state);
+        if (!e->on) {
             if (known) {
                 sqlite3_stmt* st = sql(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
                 if (st) sqlite3_bind_int64(st, 1, id);
                 sql_done(db, st);
             }
+            edit_say(e, "Reminder turned off");
         } else {
             f64 due = due_of(day, r);
             if (due <= now_ts()) due = next_morning();
@@ -1250,69 +1284,148 @@ Str reminder_set(App* app, Arena* a, const char* day, i32 n, bool on) {
                     sqlite3_bind_double(st, 5, due);
                 }
             }
-            if (sql_done(db, st) >= 0) result = when_text(a, due);
+            if (sql_done(db, st) >= 0) {
+                Str when = when_text(a, due);
+                edit_say(e, "I'll remind you %.*s", (int)when.len, when.ptr);
+            }
         }
-        app->summary.version++;
-        wake_window(app);
+        e->changed = true;
     }
-    rewind(m);
-    sqlite3_close(db);
-    return result;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Dismissing and the never-list
+static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bullet, i32 reminder) {
+    const char* day = e->day;
+    SavedRow row = saved_row(db, a, day);
+    if (!row.found) {
+        edit_say(e, "No summary for that day");
+        return;
+    }
+    Str text = row.summary;
+    bullet = str_trim(bullet);
+    if (bullet.len) {
+        Buf kept = {};
+        Str rest = text, line = {};
+        bool first = true;
+        while (next_line(&rest, &line)) {
+            Str b = {};
+            if (bullet_text(line, &b) && str_eq(b, bullet)) continue;
+            if (!first) buf_cstr(&kept, "\n");
+            buf_add(&kept, line);
+            first = false;
+        }
+        text = drop_empty_labels(a, buf_take(&kept, a));
+    }
+    Json* list = &row.reminders;
+    if (reminder >= 0) {
+        if (reminder >= list->count) {
+            edit_say(e, "No such reminder");
+            return;
+        }
+        memmove(&list->items[reminder], &list->items[reminder + 1], sizeof(Json) * (list->count - reminder - 1));
+        list->count--;
+    }
+    sqlite3_stmt* st = sql(db, "UPDATE summaries SET summary = ?1, reminders = ?2 WHERE day = ?3");
+    if (st) {
+        bind_str(st, 1, text);
+        bind_str(st, 2, json_string_of(a, list));
+        bind_str(st, 3, str(day));
+    }
+    if (sql_done(db, st) >= 0) {
+        i32 y, mo, d;
+        if (parse_day(day, &y, &mo, &d)) write_markdown(app, day, text, list);
+        edit_lists(db, e);
+    }
+}
+
+static void edit_run(sqlite3* db, Job* job) {
+    SummaryEdit* e = (SummaryEdit*)job->data;
+    if (!db) {
+        edit_say(e, "The database could not be opened");
+        return;
+    }
+    Arena* a = &job->arena;
+    switch (e->kind) {
+    case EDIT_ANSWER: edit_answer(db, e); break;
+    case EDIT_REMIND: edit_remind(db, a, e); break;
+    case EDIT_DISMISS: edit_dismiss(e->app, db, a, e, e->text, e->n); break;
+    case EDIT_NEVER_ADD: {
+        sqlite3_stmt* st = sql(db, "INSERT INTO summary_never (topic, created_ts) VALUES (?1, ?2)");
+        if (st) {
+            bind_str(st, 1, e->text);
+            sqlite3_bind_double(st, 2, now_ts());
+        }
+        if (sql_done(db, st) >= 0) {
+            LOG("the summary will never mention: %.*s", (int)e->text.len, e->text.ptr);
+            edit_lists(db, e);
+        }
+        if (e->day[0] && e->bullet.len) {
+            if (e->lists) {  // read again by the dismiss
+                list_free(&e->read.days);
+                list_free(&e->read.never);
+                e->lists = false;
+            }
+            edit_dismiss(e->app, db, a, e, e->bullet, -1);
+        }
+        break;
+    }
+    case EDIT_NEVER_REMOVE: {
+        sqlite3_stmt* st = sql(db, "DELETE FROM summary_never WHERE id = ?1");
+        if (st) sqlite3_bind_int64(st, 1, e->id);
+        if (sql_done(db, st) >= 0) edit_lists(db, e);
+        break;
+    }
+    case EDIT_SKIP:
+        if (save(db, e->day, "skipped", 0, {}, str("[]"))) edit_lists(db, e);
+        else edit_say(e, "Could not save the skip");
+        break;
+    }
+}
+
+static void edit_apply(App* app, Job* job) {
+    SummaryEdit* e = (SummaryEdit*)job->data;
+    if (e->lists) lists_publish(app, e->read.days, e->read.never);
+    if (e->changed) app->summary.version++;
+    if (e->say[0] && !e->quiet) ui_say(app, "%s", e->say);
+    wake_window(app);
+}
+
+static SummaryEdit* edit_new(App* app, Job** job, EditKind kind, const char* day) {
+    *job = job_new(edit_apply);
+    SummaryEdit* e = PUSH(&(*job)->arena, SummaryEdit);
+    e->app = app;
+    e->kind = kind;
+    e->n = -1;
+    if (day) SET(e->day, str(day));
+    (*job)->data = e;
+    return e;
+}
+
+void reminder_answer(App* app, i64 id, const char* action) {
+    char tag[32];
+    snprintf(tag, sizeof(tag), "remind-%lld", id);
+    notify_remove(app, tag);
+    Job* job;
+    SummaryEdit* e = edit_new(app, &job, EDIT_ANSWER, 0);
+    e->id = id;
+    SET(e->action, str(action));
+    db_post(job, edit_run);
+}
+
+void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet) {
+    Job* job;
+    SummaryEdit* e = edit_new(app, &job, EDIT_REMIND, day);
+    e->n = n;
+    e->on = on;
+    e->quiet = quiet;
+    db_post(job, edit_run);
+}
 
 void summary_dismiss(App* app, const char* day, Str bullet, i32 reminder) {
-    sqlite3* db = db_open(app);
-    if (!db) return;
-    Mark m = mark(scratch());
-    SavedRow row = saved_row(db, scratch(), day);
-    if (!row.found) {
-        ui_say(app, "No summary for that day");
-    } else {
-        Str text = row.summary;
-        bullet = str_trim(bullet);
-        if (bullet.len) {
-            Buf kept = {};
-            Str rest = text, line = {};
-            bool first = true;
-            while (next_line(&rest, &line)) {
-                Str b = {};
-                if (bullet_text(line, &b) && str_eq(b, bullet)) continue;
-                if (!first) buf_cstr(&kept, "\n");
-                buf_add(&kept, line);
-                first = false;
-            }
-            text = drop_empty_labels(scratch(), buf_take(&kept, scratch()));
-        }
-        Json* list = &row.reminders;
-        bool ok = true;
-        if (reminder >= 0) {
-            if (reminder < list->count) {
-                memmove(&list->items[reminder], &list->items[reminder + 1], sizeof(Json) * (list->count - reminder - 1));
-                list->count--;
-            } else {
-                ui_say(app, "No such reminder");
-                ok = false;
-            }
-        }
-        if (ok) {
-            sqlite3_stmt* st = sql(db, "UPDATE summaries SET summary = ?1, reminders = ?2 WHERE day = ?3");
-            if (st) {
-                bind_str(st, 1, text);
-                bind_str(st, 2, json_string_of(scratch(), list));
-                bind_str(st, 3, str(day));
-            }
-            if (sql_done(db, st) >= 0) {
-                i32 y, mo, d;
-                if (parse_day(day, &y, &mo, &d)) write_markdown(app, day, text, list);
-                lists_refresh_locked(app, db);
-            }
-        }
-    }
-    rewind(m);
-    sqlite3_close(db);
+    Job* job;
+    SummaryEdit* e = edit_new(app, &job, EDIT_DISMISS, day);
+    e->text = str_copy(&job->arena, bullet);
+    e->n = reminder;
+    db_post(job, edit_run);
 }
 
 void summary_add_never(App* app, Str topic, const char* day, Str bullet) {
@@ -1321,28 +1434,18 @@ void summary_add_never(App* app, Str topic, const char* day, Str bullet) {
         ui_say(app, "Say what to leave out");
         return;
     }
-    sqlite3* db = db_open(app);
-    if (!db) return;
-    sqlite3_stmt* st = sql(db, "INSERT INTO summary_never (topic, created_ts) VALUES (?1, ?2)");
-    if (st) {
-        bind_str(st, 1, topic);
-        sqlite3_bind_double(st, 2, now_ts());
-    }
-    if (sql_done(db, st) >= 0) {
-        LOG("the summary will never mention: %.*s", (int)topic.len, topic.ptr);
-        lists_refresh_locked(app, db);
-    }
-    sqlite3_close(db);
-    if (day && day[0] && bullet.len) summary_dismiss(app, day, bullet, -1);
+    Job* job;
+    SummaryEdit* e = edit_new(app, &job, EDIT_NEVER_ADD, day);
+    e->text = str_copy(&job->arena, topic);
+    e->bullet = str_copy(&job->arena, bullet);
+    db_post(job, edit_run);
 }
 
 void summary_remove_never(App* app, i64 id) {
-    sqlite3* db = db_open(app);
-    if (!db) return;
-    sqlite3_stmt* st = sql(db, "DELETE FROM summary_never WHERE id = ?1");
-    if (st) sqlite3_bind_int64(st, 1, id);
-    if (sql_done(db, st) >= 0) lists_refresh_locked(app, db);
-    sqlite3_close(db);
+    Job* job;
+    SummaryEdit* e = edit_new(app, &job, EDIT_NEVER_REMOVE, 0);
+    e->id = id;
+    db_post(job, edit_run);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1755,11 +1858,10 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
         return str_fmt(a, "asking again at %s", text);
     }
     if (strcmp(action, "skip") == 0) {
-        sqlite3* db = db_open(app);
-        bool saved = db && save(db, day, "skipped", 0, {}, str("[]"));
-        if (saved) lists_refresh_locked(app, db);
-        if (db) sqlite3_close(db);
-        if (!saved) return str_copy(a, str("could not save that"));
+        // Saved on the database thread; if that fails, the window says so.
+        Job* job;
+        edit_new(app, &job, EDIT_SKIP, day);
+        db_post(job, edit_run);
         LOG("summary for %s: skipped", day);
         phase_set(app, "skipped today");
         return str_copy(a, str("skipped"));

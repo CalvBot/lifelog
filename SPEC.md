@@ -147,7 +147,10 @@ event queue, each stream's title block, the notification queue and the log file.
    whether to ask, count down or start. Then one watcher: the capture watcher's process scan also gives the app
    list's "running" and the game check, and paths of exes new this run; the apps thread only fetches icons and
    line counts. Done.
-3. Database thread and file writer; nothing in a frame touches the disk.
+3. Database thread and file writer; nothing in a frame touches the disk. Done (`app/disk.h`, `db_post` in
+   `app/db.h`): the main thread has no connection; the window's queries and its summary changes (reminders,
+   dismiss, never-mention, skip) run on the database thread, and config.toml and paths.txt are written by the
+   file writer. Opening files with `ShellExecute` keeps its own thread until the pool (step 4).
 4. API and the small window threads on the worker pool, with the UI globals owned by the main thread; then delete
    `App.lock`, `app_lock` and `app_unlock`.
 

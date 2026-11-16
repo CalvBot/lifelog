@@ -543,16 +543,14 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                                 : (r->alert_when.len && r->alert_due > now_ts()) ? tmp("Remind me %.*s", (int)r->alert_when.len, r->alert_when.ptr)
                                 : "Remind me tomorrow at 09:00";
                 if (slot_button(x, row_min.y, set ? ICON_BELL_RING : ICON_BELL, tip)) {
-                    Str when = reminder_set(app, scratch(), day, n, !set);
-                    if (set) ui_say(app, "Reminder turned off");
-                    else if (when.len) ui_say(app, "I'll remind you %.*s", (int)when.len, when.ptr);
+                    reminder_set(app, day, n, !set);  // it says when
                 }
             }
             f64 ts = moment(day, r->time);
             if (hovered && ts && slot_button(x + px(SLOT_BUTTON + 4), row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, r->said);
             if (hovered && slot_button(x + px(2 * (SLOT_BUTTON + 4)), row_min.y, ICON_X, "Dismiss (not a real to-do)")) {
                 // A notification that is on goes off first, while its place in the list is known.
-                if (set) reminder_set(app, scratch(), day, n, false);
+                if (set) reminder_set(app, day, n, false, true);  // the dismiss says what happened
                 summary_dismiss(app, day, {}, n);
                 ui_say(app, "Dismissed. Rewrite brings it back");
             }

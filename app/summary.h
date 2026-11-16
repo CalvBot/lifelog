@@ -115,8 +115,11 @@ void summary_add_never(App* app, Str topic, const char* day, Str bullet);
 void summary_remove_never(App* app, i64 id);
 
 // The journal's bell: notify about reminder `n` of `day` when it is due (or tomorrow at 09:00).
-// Returns when it will show ("tomorrow at 09:00"), or empty when turned off.
-Str reminder_set(App* app, Arena* a, const char* day, i32 n, bool on);
+// The window then says when it will show ("tomorrow at 09:00").
+//
+// These change the database on its thread (db_post) and return at once; the window shows the
+// result when it comes. Main thread, with the lock.
+void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet = false);
 // A reminder notification's buttons: "yes", "no", "done", "snooze".
 void reminder_answer(App* app, i64 id, const char* action);
 
