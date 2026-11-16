@@ -1,4 +1,4 @@
-// ui_journal.cpp: the Journal tab (port of ui/src/days). Each day's summary and the things
+// ui_journal.cpp: the Journal tab. Each day's summary and the things
 // you said you'd do. A point can be dismissed, or taken out with its topic never mentioned
 // again. A month calendar on the left finds days far back.
 

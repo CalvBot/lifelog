@@ -1,4 +1,4 @@
-// cli.cpp: `lifelog.exe <command>` from a terminal (port of src/main): talks to the running
+// cli.cpp: `lifelog.exe <command>` from a terminal: talks to the running
 // lifelog through its API, or works straight from the database where the old CLI did.
 //
 // lifelog.exe is a windows-subsystem program, so it has no console of its own: it attaches to
@@ -7,7 +7,7 @@
 static const char* CLI_USAGE =
     "lifelog — always-on personal transcript\n"
     "\n"
-    "  lifelog run             run in this terminal (normally lifelogw.exe runs it from the tray)\n"
+    "  lifelog run             run in this terminal (normally it runs from the tray)\n"
     "  lifelog clip [RANGE]    copy a transcript file to the clipboard; RANGE = 15m (default), 1h, 2d, today\n"
     "  lifelog pause | resume | toggle     private mode\n"
     "  lifelog exclude APP.exe | include APP.exe     never capture an app / allow it again\n"

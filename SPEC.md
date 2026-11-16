@@ -9,7 +9,7 @@ how they get at the app's state.
 
 ## Architecture: one shared state
 
-One program, `lifelogw.exe`, started at login. The recorder, the tray icon and the summary writer run on background
+One program, `lifelog.exe`, started at login. The recorder, the tray icon and the summary writer run on background
 threads, the window on the main thread. Transcription is whisper.cpp, loaded into the app while the GPU is free.
 
 **One live state, shared in memory.** The app has a single `App` value that holds what the program is doing right
@@ -230,9 +230,8 @@ Browsers can't call it (Host and Origin are checked).
 
 ## Install
 
-- `scripts\install.ps1` builds, installs, starts at login and downloads the summary AI (skipped when an endpoint is
-  set). `-Uninstall` keeps the data.
-- **(idea)** An MSI with the programs, which downloads the worker and models on first run.
+- `scripts\build-msi.ps1` builds `lifelog-<version>.msi`, which installs per user, starts at login and holds no
+  AI; Settings downloads the transcriber and summary AI.
 
 ## Not built yet (from PLAN.md)
 

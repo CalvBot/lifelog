@@ -6,9 +6,9 @@ Nothing leaves the PC. Design and roadmap: [PLAN.md](PLAN.md).
 
 ## Parts
 
-- `src/`: the recorder (WASAPI mic and per-app loopback), the tray icon, the local API and the `lifelog.exe` CLI.
-- `ui/`: builds `lifelogw.exe`, the app itself. Recording runs on background threads and the
-  [immediate-mode](https://github.com/emilk/immediate-mode) window runs on the main thread.
+- `app/`: `lifelog.exe`, in C++ with [Dear ImGui](https://github.com/ocornut/imgui): the recorder (WASAPI mic
+  and per-app loopback), the window, the tray icon, the local API and the CLI. Recording runs on background
+  threads and the window on the main thread.
 - Transcription: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Whisper large-v3-turbo, loaded into
   the app, which writes the lines into SQLite (`schema.sql`). It steps aside while a game is running and catches up
   after.

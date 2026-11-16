@@ -83,7 +83,7 @@ static void notify_register() {
     Mark m = mark(scratch());
     swprintf(key, COUNT(key), L"Software\\Classes\\AppUserModelId\\%ls", wide(scratch(), str(notify_app_id())));
     reg_string(key, L"DisplayName", notify_test_mode() ? L"lifelog (test)" : L"lifelog");
-    // The logo the old lifelog draws; shown when it is there.
+    // The lifelog logo; shown when it is there.
     swprintf(value, COUNT(value), L"%ls\\logo.png", local_dir());
     if (GetFileAttributesW(value) != INVALID_FILE_ATTRIBUTES) reg_string(key, L"IconUri", value);
     rewind(m);

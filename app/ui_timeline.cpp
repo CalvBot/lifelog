@@ -1,4 +1,4 @@
-// ui_timeline.cpp: the Timeline tab (port of ui/src/browser). One page per day, oldest at the
+// ui_timeline.cpp: the Timeline tab. One page per day, oldest at the
 // top; today starts at the bottom and grows as lines arrive. Search, the Show filter by app,
 // picking a stretch to copy, playback, and the files pasted in.
 //

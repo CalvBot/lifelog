@@ -52,7 +52,7 @@ static void set_utf8(char* dst, i64 cap, Str s) {
     set(dst, cap, s);
 }
 
-// the old app's str::lines: splits on \n, drops a \r before it, no last empty line.
+// Splits on \n, drops a \r before it, no last empty line.
 static bool next_line(Str* rest, Str* line) {
     if (rest->len <= 0) return false;
     i64 nl = str_find(*rest, str("\n"));
@@ -86,7 +86,7 @@ static Str lower_quote(Arena* a, Str s) {
 
 static bool has(Str hay, const char* needle) { return str_find(hay, str(needle)) >= 0; }
 
-// `s` with every trailing ".exe" taken off (case as it is, like the old app's trim_end_matches).
+// `s` with every trailing ".exe" taken off (case as it is).
 static Str trim_exe(Str s) {
     while (str_ends(s, str(".exe"))) s.len -= 4;
     return s;

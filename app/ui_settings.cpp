@@ -1,4 +1,4 @@
-// ui_settings.cpp: the Settings tab (port of ui/src/settings): which apps are recorded and which
+// ui_settings.cpp: the Settings tab: which apps are recorded and which
 // are games, transcription, the daily summary, and where files live. Ctrl+Z takes back the last
 // change made here.
 
@@ -110,7 +110,7 @@ static void settings_card_end() {
     ImGui::PopStyleVar(2);
 }
 
-// A button that stays lit while `on` (the old window's selectable button). `size` is the least it takes.
+// A button that stays lit while `on` (a selectable button). `size` is the least it takes.
 static bool pick(const char* text, bool on, ImVec2 size = ImVec2(0, 0)) {
     f32 need = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
     if (size.x < need) size.x = need;

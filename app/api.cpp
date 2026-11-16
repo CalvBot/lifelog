@@ -1,5 +1,5 @@
-// api.cpp: the small HTTP API on 127.0.0.1:<api_port> for the CLI, the Stream Deck and scripts
-// (port of src/api and the routes' work in src/control). The window never uses it.
+// api.cpp: the small HTTP API on 127.0.0.1:<api_port> for the CLI, the Stream Deck and scripts.
+// The window never uses it.
 //
 //   GET  /status            what is being captured, paused or not, queue length
 //   POST /pause | /resume | /toggle     private mode
@@ -316,7 +316,7 @@ static void api_handle(App* app, Str method, Str path, Str query, Answer* r) {
         app_lock(app);
         Str result = summary_act(app, a, action.ptr, day.ptr, at.len ? at.ptr : 0);
         app_unlock(app);
-        // summary_act answers in words; these ones are failures, as they were errors natively.
+        // summary_act answers in words; these ones are failures, as they were errors in the old app.
         const char* failures[] = {"bad day", "time must look like", "could not save", "do must be"};
         for (i32 i = 0; i < COUNT(failures); i++) {
             if (str_starts(result, str(failures[i]))) {

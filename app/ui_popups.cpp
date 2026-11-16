@@ -1,6 +1,6 @@
 // ui_popups.cpp: the small windows by the tray: lifelog's own menu ("tray") and putting off the
 // daily summary (the delay box). Both close once used, on Esc, or when you click elsewhere
-// (main.cpp closes the popup when it loses focus). Port of ui/src/popups.
+// (main.cpp closes the popup when it loses focus).
 
 // "Copy the last N min": clip_copy is slow (it reads the database, and mixing audio takes a
 // while), so it runs on a thread. Kept outside PopupState because the popup may close first.

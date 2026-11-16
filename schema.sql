@@ -1,4 +1,4 @@
--- Shared by the old service (built in) and the Python worker. Must stay idempotent.
+-- Loaded by lifelog at start. Must stay idempotent.
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS segments (
