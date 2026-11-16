@@ -34,7 +34,7 @@ struct TlRow {
     f32 width;  // the text width `h` was measured at (0: not measured)
 };
 
-// An app heard on the page, for the Show chips.
+// An app heard on the page, for the Show filter.
 struct TlChip {
     Str speaker;
     i32 lines;
@@ -94,7 +94,7 @@ struct TimelineState {
     ImVec2 cal_button_min, cal_button_max;
     ImVec2 cal_min, cal_max;
 
-    bool apps_open;
+    bool show_focus;       // the Show list just opened: its search box takes the keys
     Arena apps_arena;
     Slice<SpeakerCount> apps;
     char apps_filter[64];
@@ -1043,132 +1043,207 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
 }
 
 // ---------------------------------------------------------------------------------------------
-// The Show filter
+// The Show filter: one button that says how many of the day's apps are shown. It opens a list
+// to search and tick: the day's apps first (most lines first), then every other app ever heard.
+// Excluded apps are left out unless "Show excluded apps" is on.
 
-static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
+// `speaker`'s icon at `p`, `size` square; the mic or a window glyph when it has none.
+static void tl_icon_at(App* app, ImDrawList* dl, Str speaker, ImVec2 p, f32 size, ImU32 color) {
+    bool me = str_eq(speaker, str("me"));
+    ImTextureID tex = me ? 0 : app_icon(app, speaker);
+    if (tex) {
+        dl->AddImage(ImTextureRef(tex), p, ImVec2(p.x + size, p.y + size));
+        return;
+    }
+    const char* glyph = me ? ICON_MIC : ICON_APP_WINDOW;
+    ImFont* font = ImGui::GetFont();
+    ImVec2 gsz = font->CalcTextSizeA(size, FLT_MAX, 0, glyph);
+    dl->AddText(font, size, ImVec2(p.x + (size - gsz.x) / 2, p.y + (size - gsz.y) / 2), color, glyph);
+}
+
+// Whether `speaker` belongs in the list: not an excluded app (unless those are shown), and
+// matching the search, by its exe or its name. `filter` is lower case.
+static bool tl_show_listed(App* app, Str speaker, Str filter) {
+    if (!app->config.ui.show_dismissed && speaker_excluded(app, speaker)) return false;
+    if (!filter.len) return true;
+    if (str_find(str_lower(scratch(), speaker), filter) >= 0) return true;
+    return str_find(str_lower(scratch(), app_name(app, speaker)), filter) >= 0;
+}
+
+// Whether `speaker` is one of the day's apps.
+static bool tl_on_day(TimelineState* s, Str speaker) {
+    for (i32 c = 0; c < s->chips.count; c++)
+        if (str_eq(s->chips.items[c].speaker, speaker)) return true;
+    return false;
+}
+
+// A small grey heading in the list.
+static void tl_show_heading(const char* text) {
+    small_begin();
+    ImGui::TextColored(weak_text(), "%s", text);
+    small_end();
+}
+
+// One row of the list: a tick box, the icon, the name, and `info` on the right. A click anywhere
+// on it shows or hides the app; the list stays open.
+static void tl_show_row(App* app, Str speaker, const char* info) {
+    f32 u = ImGui::GetStyle().FontScaleDpi;
+    bool on = !names_has(&app->config.ui.hidden, speaker);
+    bool excluded = speaker_excluded(app, speaker);
+    f32 h = 28 * u;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    f32 w = ImGui::GetContentRegionAvail().x;
+    ImGui::PushID(speaker.ptr, speaker.ptr + speaker.len);
+    if (ImGui::Selectable("##row", false, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(w, h))) set_hidden(app, speaker, on);
+    ImGui::PopID();
+    if (excluded) ImGui::SetItemTooltip("Excluded from recording");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImU32 text = ImGui::GetColorU32(on ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+
+    // The tick box.
+    f32 b = 16 * u;
+    ImVec2 bp = ImVec2(p.x + 4 * u, p.y + (h - b) / 2);
+    if (on) {
+        dl->AddRectFilled(bp, ImVec2(bp.x + b, bp.y + b), accent_u32(), 4 * u);
+        ImFont* font = ImGui::GetFont();
+        f32 gs = 14 * u;
+        ImVec2 gsz = font->CalcTextSizeA(gs, FLT_MAX, 0, ICON_CHECK);
+        dl->AddText(font, gs, ImVec2(bp.x + (b - gsz.x) / 2, bp.y + (b - gsz.y) / 2), IM_COL32(255, 255, 255, 255), ICON_CHECK);
+    } else {
+        dl->AddRect(bp, ImVec2(bp.x + b, bp.y + b), ImGui::GetColorU32(ImGuiCol_TextDisabled), 4 * u, 0, 1.5f * u);
+    }
+
+    f32 is = 18 * u;
+    tl_icon_at(app, dl, speaker, ImVec2(p.x + 30 * u, p.y + (h - is) / 2), is, text);
+
+    // The info on the right, then the name in what is left, cut if it is long.
+    ImGui::PushFont(0, 13);
+    ImVec2 isz = ImGui::CalcTextSize(info);
+    f32 info_x = p.x + w - isz.x - 6 * u;
+    dl->AddText(ImVec2(info_x, p.y + (h - isz.y) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), info);
+    ImGui::PopFont();
+    Str name = app_name(app, speaker);
+    const char* shown = excluded ? tmp("%.*s  · excluded", (int)name.len, name.ptr) : tmp("%.*s", (int)name.len, name.ptr);
+    f32 name_x = p.x + 56 * u;
+    ImVec2 nsz = ImGui::CalcTextSize(shown);
+    dl->PushClipRect(ImVec2(name_x, p.y), ImVec2(info_x - 8 * u, p.y + h), true);
+    dl->AddText(ImVec2(name_x, p.y + (h - nsz.y) / 2), text, shown);
+    dl->PopClipRect();
+}
+
+static void tl_show_filter(App* app, TimelineState* s, f32 left) {
     f32 u = ImGui::GetStyle().FontScaleDpi;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImGui::SetCursorScreenPos(ImVec2(left, ImGui::GetCursorScreenPos().y));
-    // The fixed controls come first, so chips appearing or going never move them.
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(weak_text(), "Show");
     ImGui::SameLine();
-    if (ImGui::Button(label(ICON_LIST, "All apps…"))) {
-        // Its own window, opened by the main thread (main.cpp) and drawn by timeline_apps_draw.
-        s->apps_open = true;
-        ui_open_apps(app);
+
+    // The button: the icons of a few apps shown, how many are, and a chevron.
+    i32 total = 0, shown = 0;
+    for (i32 c = 0; c < s->chips.count; c++) {
+        Str sp = s->chips.items[c].speaker;
+        if (!app->config.ui.show_dismissed && speaker_excluded(app, sp)) continue;
+        total++;
+        shown += !names_has(&app->config.ui.hidden, sp);
+    }
+    const char* what = total == 0 ? "Apps" : shown == total ? tmp("All %d apps", total) : tmp("%d of %d apps", shown, total);
+    i32 icons = shown < 4 ? shown : 4;
+    f32 fh = ImGui::GetFrameHeight();
+    f32 is = 18 * u, step = 22 * u, pad = 10 * u;
+    f32 icons_w = icons ? is + (icons - 1) * step + 8 * u : 0;
+    f32 text_w = ImGui::CalcTextSize(what).x;
+    f32 chev_w = ImGui::CalcTextSize(ICON_CHEVRON_DOWN).x;
+    f32 bw = pad + icons_w + text_w + 8 * u + chev_w + pad;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton("##tl_show", ImVec2(bw, fh));
+    bool open = ImGui::IsPopupOpen("##tl_show_list");
+    ImGuiCol bg = open ? ImGuiCol_FrameBgActive : ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg;
+    dl->AddRectFilled(p, ImVec2(p.x + bw, p.y + fh), ImGui::GetColorU32(bg), ImGui::GetStyle().FrameRounding);
+    f32 x = p.x + pad;
+    ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+    // The apps with the most lines first.
+    for (i32 c = 0, n = 0; c < s->chips.count && n < icons; c++) {
+        Str sp = s->chips.items[c].speaker;
+        if (names_has(&app->config.ui.hidden, sp) || (!app->config.ui.show_dismissed && speaker_excluded(app, sp))) continue;
+        ImVec2 ip = ImVec2(x + n * step, p.y + (fh - is) / 2);
+        tl_icon_at(app, dl, sp, ip, is, text);
+        n++;
+    }
+    x += icons_w;
+    f32 ty = p.y + (fh - ImGui::GetFontSize()) / 2;
+    dl->AddText(ImVec2(x, ty), text, what);
+    dl->AddText(ImVec2(x + text_w + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), ICON_CHEVRON_DOWN);
+    if (clicked) {
+        ImGui::OpenPopup("##tl_show_list");
+        s->apps_filter[0] = 0;
+        s->show_focus = true;
+        // Every app ever heard, for the second half of the list.
         if (app->storage.ready) db_post(tl_list_job(tl_apps_apply, &s->apps_asked), tl_apps_run);
     }
+
+    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + 4 * u));
+    ImGui::SetNextWindowSize(ImVec2(340 * u, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8 * u, 8 * u));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 8 * u);
+    bool list = ImGui::BeginPopup("##tl_show_list");
+    ImGui::PopStyleVar(2);
+    if (!list) return;
+
+    if (s->show_focus) {
+        ImGui::SetKeyboardFocusHere();
+        s->show_focus = false;
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##tl_show_search", tmp("%s  Search apps", ICON_SEARCH), s->apps_filter, sizeof(s->apps_filter));
+    Str filter = str_lower(scratch(), str_trim(str(s->apps_filter)));
+
+    // Show all / Hide all: of what the list shows now (all of it, or what matches the search).
+    bool show_all = ImGui::SmallButton("Show all");
     ImGui::SameLine();
-    ImVec2 at = ImGui::GetCursorScreenPos();
-    f32 fh = ImGui::GetFrameHeight();
-    dl->AddLine(ImVec2(at.x, at.y + 3 * u), ImVec2(at.x, at.y + fh - 3 * u), ImGui::GetColorU32(ImGuiCol_Separator));
-    ImGui::Dummy(ImVec2(1, fh));
-    f32 gap = 6 * u;
-    f32 chip_h = 24 * u;
-    f32 top_pad = (fh - chip_h) / 2;
-    ImGui::PushFont(0, 13);
+    bool hide_all = ImGui::SmallButton("Hide all");
+    if (show_all || hide_all) {
+        for (i32 c = 0; c < s->chips.count; c++)
+            if (tl_show_listed(app, s->chips.items[c].speaker, filter)) names_set(&app->config.ui.hidden, s->chips.items[c].speaker, hide_all);
+        for (i32 i = 0; i < s->apps.count; i++)
+            if (tl_show_listed(app, s->apps.items[i].speaker, filter)) names_set(&app->config.ui.hidden, s->apps.items[i].speaker, hide_all);
+        config_save_names("ui", "hidden", &app->config.ui.hidden);
+    }
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, 360 * u));
+    ImGui::BeginChild("##tl_show_rows", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0));
+    i32 rows = 0;
+    bool heading = false;
     for (i32 c = 0; c < s->chips.count; c++) {
         TlChip* chip = &s->chips.items[c];
-        bool dismissed = speaker_excluded(app, chip->speaker);
-        if (dismissed && !app->config.ui.show_dismissed) continue;
-        bool on = !names_has(&app->config.ui.hidden, chip->speaker);
-        Str name = app_name(app, chip->speaker);
-        f32 w = ImGui::CalcTextSize(name.ptr, name.ptr + name.len).x + 38 * u;
-        // Wrap: on this line if it fits, else the next.
-        f32 last_x = ImGui::GetItemRectMax().x;
-        if (last_x + gap + w <= right) ImGui::SameLine(0, gap);
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        p.y += top_pad;
-        ImGui::SetCursorScreenPos(p);
-        ImGui::PushID(c);
-        bool clicked = ImGui::InvisibleButton("chip", ImVec2(w, chip_h));
-        bool hovered = ImGui::IsItemHovered();
-        ImGui::SetItemTooltip("%d lines loaded%s", chip->lines, dismissed ? " · excluded" : "");
-        ImGui::PopID();
-        ImVec2 q = ImVec2(p.x + w, p.y + chip_h);
-        ImU32 fill = on ? accent_u32(0.25f) : ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
-        dl->AddRectFilled(p, q, fill, 12 * u);
-        if (hovered) dl->AddRect(p, q, ImGui::GetColorU32(ImGuiCol_Border), 12 * u);
-        ImU32 tc = on ? ImGui::GetColorU32(ImGuiCol_Text) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        f32 is = 16 * u;
-        ImVec2 ic = ImVec2(p.x + 16 * u - is / 2, p.y + (chip_h - is) / 2);
-        ImTextureID tex = str_eq(chip->speaker, str("me")) ? 0 : app_icon(app, chip->speaker);
-        if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
-        else {
-            // The glyph at the icons' size, centred where an icon would be.
-            const char* glyph = str_eq(chip->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW;
-            ImFont* font = ImGui::GetFont();
-            f32 gs = 16 * u;
-            ImVec2 gsz = font->CalcTextSizeA(gs, FLT_MAX, 0, glyph);
-            dl->AddText(font, gs, ImVec2(ic.x + (is - gsz.x) / 2, p.y + (chip_h - gsz.y) / 2), tc, glyph);
-        }
-        dl->AddText(ImVec2(p.x + 29 * u, p.y + (chip_h - ImGui::GetFontSize()) / 2), tc, name.ptr, name.ptr + name.len);
-        if (clicked) set_hidden(app, chip->speaker, on);
+        if (!tl_show_listed(app, chip->speaker, filter)) continue;
+        if (!heading) tl_show_heading(tl_is_today(s) ? "Today" : "On this day");
+        heading = true;
+        tl_show_row(app, chip->speaker, tmp("%d line%s", chip->lines, chip->lines == 1 ? "" : "s"));
+        rows++;
     }
-    ImGui::PopFont();
-}
+    heading = false;
+    for (i32 i = 0; i < s->apps.count; i++) {
+        SpeakerCount* sc = &s->apps.items[i];
+        if (tl_on_day(s, sc->speaker) || !tl_show_listed(app, sc->speaker, filter)) continue;
+        if (!heading) {
+            if (rows) ImGui::Dummy(ImVec2(0, 6 * u));
+            tl_show_heading("Other apps");
+        }
+        heading = true;
+        tl_show_row(app, sc->speaker, ago_text(sc->last_ts));
+        rows++;
+    }
+    if (!rows) ImGui::TextDisabled(filter.len ? "No apps match" : "Nothing heard yet");
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
 
-// The "All apps…" window (its own OS window, "lifelog apps"): every app ever heard, with a
-// filter, Show all, Hide all, and "Show excluded apps". False once it should close.
-static bool timeline_apps_draw(App* app, TimelineState* s) {
-    if (!s->apps_open) return false;
-    f32 u = ImGui::GetStyle().FontScaleDpi;
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize(vp->WorkSize);
-    if (ImGui::Begin("apps", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::PushFont(0, 20);
-        ImGui::TextUnformatted("Apps shown in the timeline");
-        ImGui::PopFont();
-        ImGui::Dummy(ImVec2(0, 2 * u));
-        ImGui::SetNextItemWidth(160 * u);
-        ImGui::InputTextWithHint("##tl_apps_filter", "Filter", s->apps_filter, sizeof(s->apps_filter));
-        ImGui::SameLine();
-        if (ImGui::Button("Show all")) {
-            app->config.ui.hidden.count = 0;
-            config_save_names("ui", "hidden", &app->config.ui.hidden);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Hide all")) {
-            for (i32 i = 0; i < s->apps.count; i++) names_set(&app->config.ui.hidden, s->apps.items[i].speaker, true);
-            config_save_names("ui", "hidden", &app->config.ui.hidden);
-        }
-        bool show = app->config.ui.show_dismissed;
-        if (ImGui::Checkbox("Show excluded apps", &show)) set_show_dismissed(app, show);
-        ImGui::Separator();
-        ImGui::BeginChild("##tl_apps_list");
-        if (!s->apps.count) ImGui::TextDisabled("Nothing heard yet");
-        Str filter = str_lower(scratch(), str_trim(str(s->apps_filter)));
-        for (i32 i = 0; i < s->apps.count; i++) {
-            SpeakerCount* sc = &s->apps.items[i];
-            if (filter.len && str_find(str_lower(scratch(), sc->speaker), filter) < 0) continue;
-            ImGui::PushID(i);
-            bool on = !names_has(&app->config.ui.hidden, sc->speaker);
-            if (ImGui::Checkbox("##on", &on)) set_hidden(app, sc->speaker, !on);
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            draw_app_icon(app, sc->speaker, 18 * u);
-            ImGui::SameLine();
-            Str name = app_name(app, sc->speaker);
-            ImGui::TextUnformatted(name.ptr, name.ptr + name.len);
-            if (speaker_excluded(app, sc->speaker)) {
-                ImGui::SameLine();
-                small_begin();
-                ImGui::TextDisabled("excluded");
-                small_end();
-            }
-            small_begin();
-            const char* info = tmp("%lld lines · %s", sc->lines, ago_text(sc->last_ts));
-            ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(info).x);
-            ImGui::TextDisabled("%s", info);
-            small_end();
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
-    }
-    ImGui::End();
-    return true;
+    ImGui::Separator();
+    bool excluded = app->config.ui.show_dismissed;
+    if (ImGui::Checkbox("Show excluded apps", &excluded)) set_show_dismissed(app, excluded);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1866,7 +1941,7 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
     tl_keys(app, s);
     if (s->rows_dirty) tl_build_rows(app, s);  // the keys may have opened another day
 
-    // The search bar and the Show chips, in a centred column.
+    // The search bar and the Show filter, in a centred column.
     f32 u = ImGui::GetStyle().FontScaleDpi;
     // The list's column (tl_list), less its scrollbar, which is always there so nothing jumps.
     f32 avail = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize;
@@ -1877,7 +1952,7 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
     tl_search_bar(app, s, left, right, next_frame_ms);
     ImGui::Dummy(ImVec2(0, 4 * u));
     if (s->rows_dirty) tl_build_rows(app, s);
-    tl_show_chips(app, s, left, right);
+    tl_show_filter(app, s, left);
     ImGui::Dummy(ImVec2(0, 4 * u));
     if (s->filter_sig != tl_filter_sig(app) || s->rows_dirty) tl_build_rows(app, s);
 

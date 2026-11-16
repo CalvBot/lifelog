@@ -144,20 +144,6 @@ bool ui_draw_window(App* app, f32* next_frame_ms) {
     return true;
 }
 
-bool ui_draw_apps(App* app, f32*) {
-    UiState* s = app->ui.state;
-    if (!s) return false;  // it belongs to the main window, which has closed
-    Mark m = mark(scratch());
-    bool keep = timeline_apps_draw(app, &s->timeline);
-    rewind(m);
-    return keep;
-}
-
-void ui_apps_closed(App* app) {
-    app->ui.want_apps = false;
-    if (app->ui.state) app->ui.state->timeline.apps_open = false;
-}
-
 bool ui_draw_popup(App* app, f32* next_frame_ms) {
     CHECK(app->ui.popup_state, "the popup's state to be made when it opened");
     Mark m = mark(scratch());

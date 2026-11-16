@@ -83,11 +83,6 @@ void ui_show(App* app, Tab tab, const char* day) {
     PostThreadMessageW(app->ui.main_thread, WM_APP_SHOW, 0, 0);
 }
 
-void ui_open_apps(App* app) {
-    app->ui.want_apps = true;
-    PostThreadMessageW(app->ui.main_thread, WM_APP_SHOW, 0, 0);
-}
-
 void ui_popup(App* app, Popup popup, const char* day) {
     app->ui.want_popup = popup;
     SET(app->ui.popup_day, str(day ? day : ""));
@@ -135,7 +130,6 @@ struct Surface {
 };
 static Surface g_main;
 static Surface g_popup;
-static Surface g_apps;  // the timeline's "All apps…" window
 
 static void gpu_init() {
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
@@ -537,33 +531,7 @@ static void open_main_window() {
     SetForegroundWindow(g_main.hwnd);
 }
 
-// The "All apps…" window, beside the main one.
-static void open_apps() {
-    if (g_apps.hwnd) {
-        ShowWindow(g_apps.hwnd, IsIconic(g_apps.hwnd) ? SW_RESTORE : SW_SHOW);
-        SetForegroundWindow(g_apps.hwnd);
-        return;
-    }
-    f32 scale = GetDpiForSystem() / 96.0f;
-    i32 w = (i32)(380 * scale), h = (i32)(560 * scale);
-    RECT r;
-    GetWindowRect(g_main.hwnd, &r);
-    i32 x = r.left + (r.right - r.left - w) / 2, y = r.top + (r.bottom - r.top - h) / 2;
-    bool ok = surface_open(&g_apps, L"lifelog apps", WS_OVERLAPPEDWINDOW & ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX), 0, x, y, w, h);
-    CHECK(ok, "the apps window to open (error %lu)", GetLastError());
-    g_app.ui.apps = g_apps.hwnd;
-    ShowWindow(g_apps.hwnd, SW_SHOW);
-    SetForegroundWindow(g_apps.hwnd);
-}
-
-static void close_apps() {
-    g_app.ui.apps = 0;
-    ui_apps_closed(&g_app);
-    surface_close(&g_apps);
-}
-
 static void close_main_window() {
-    if (g_apps.hwnd) close_apps();
     g_app.ui.window = 0;
     ui_window_closed(&g_app);
     surface_close(&g_main);
@@ -673,12 +641,9 @@ static i32 run_app() {
             if (msg.message == WM_APP_SHOW) {
                 bool open = app->ui.want_window;
                 Popup popup = app->ui.want_popup;
-                bool apps = app->ui.want_apps && app->ui.state;
                 app->ui.want_window = false;
-                app->ui.want_apps = false;
                 if (open) open_main_window();
                 if (popup != POPUP_NONE && !g_popup.hwnd) open_popup(popup);
-                if (apps && g_main.hwnd) open_apps();
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -697,24 +662,15 @@ static i32 run_app() {
             else popup_fit();
         }
         if (g_popup.closing) close_popup();
-        if (g_apps.hwnd && g_apps.frames_wanted > 0) {
-            g_apps.frames_wanted--;
-            if (!surface_draw(&g_apps, ui_draw_apps)) g_apps.closing = true;
-            // What it changes (apps shown or hidden) shows in the timeline behind it.
-            if (g_main.hwnd && g_main.frames_wanted < 1) g_main.frames_wanted = 1;
-        }
-        if (g_apps.closing) close_apps();
 
-        if ((g_main.hwnd && g_main.frames_wanted > 0) || (g_popup.hwnd && g_popup.frames_wanted > 0) ||
-            (g_apps.hwnd && g_apps.frames_wanted > 0))
-            continue;
+        if ((g_main.hwnd && g_main.frames_wanted > 0) || (g_popup.hwnd && g_popup.frames_wanted > 0)) continue;
         WaitMessage();
     }
 
     LOG("lifelog stopping");
     SetEvent(app->stop);
     if (g_popup.hwnd) close_popup();
-    if (g_main.hwnd) close_main_window();  // closes the apps window too
+    if (g_main.hwnd) close_main_window();
     Shell_NotifyIconW(NIM_DELETE, &g_tray);
     capture_stop(app);
     pool_stop();
