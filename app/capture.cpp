@@ -31,6 +31,19 @@ static const i32 SOFT_QUIET = 15;              // 300 ms
 static const i32 HARD_LIMIT = 30 * RATE;
 static const i32 MIN_LOUD_BLOCKS = 10;         // under 200 ms of sound is a click, not speech
 
+// The mic's gate follows its noise floor: a quiet but clean mic speaks at 0.001..0.006 RMS, so a
+// fixed gate cuts its soft words and the pauses inside a sentence close the segment.
+static const f32 FLOOR_RISE = 1.001f;          // per block: the floor doubles in ~14 s of sound
+static const f32 FLOOR_MIN = 0.0001f;
+static const f32 GATE_OVER_FLOOR = 4;
+static const f32 GATE_MIN = 0.0006f;
+
+// Each segment is brought up to a normal speaking level before it is written, so the voice
+// detector and Whisper hear a quiet mic as well as a loud app. It is only ever made louder.
+static const f32 TARGET_RMS = 0.05f;           // of the loud blocks
+static const f32 MAX_GAIN = 20;                // +26 dB
+static const f32 MAX_PEAK = 0.9f;
+
 // What a stream is; written next to each WAV so the worker can label the text.
 struct StreamMeta {
     Source source;
@@ -44,7 +57,10 @@ struct Segmenter {
     App* app;  // to wake the transcriber when a WAV is written
     wchar_t spool[MAX_PATH];
     char name[64];  // in file names only
-    f32 gate;
+    f32 gate;      // the fixed gate, or for the mic the most its moving gate can be
+    bool adaptive; // the mic: the gate follows `floor`
+    f32 floor;
+    f64 loud_sum;  // the squares of the open segment's loud blocks, for its gain
     f32 pending[BLOCK];
     i32 pending_n;
     f32 preroll[PREROLL_BLOCKS][BLOCK];  // a ring
@@ -103,6 +119,13 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
     }
     u32 data_len = (u32)seg->n * 2;
     u8* wav = PUSH_ARRAY(a, u8, 44 + data_len);
+    f32 gain = 1, peak = 0;
+    for (i32 i = 0; i < seg->n; i++) peak = fabsf(seg->samples[i]) > peak ? fabsf(seg->samples[i]) : peak;
+    f32 loud_rms = (f32)sqrt(seg->loud_sum / ((f64)seg->loud_blocks * BLOCK));
+    if (loud_rms > 0) gain = TARGET_RMS / loud_rms;
+    if (gain > MAX_GAIN) gain = MAX_GAIN;
+    if (peak > 0 && gain * peak > MAX_PEAK) gain = MAX_PEAK / peak;
+    if (gain < 1) gain = 1;
     u8* p = wav;
     auto put = [&](const void* v, u32 len) { memcpy(p, v, len), p += len; };
     u32 riff = 36 + data_len, fmt_len = 16, rate = RATE, bytes_per_sec = RATE * 2;
@@ -110,7 +133,7 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
     put("RIFF", 4), put(&riff, 4), put("WAVEfmt ", 8), put(&fmt_len, 4), put(&pcm, 2), put(&mono, 2);
     put(&rate, 4), put(&bytes_per_sec, 4), put(&align, 2), put(&bits, 2), put("data", 4), put(&data_len, 4);
     for (i32 i = 0; i < seg->n; i++) {
-        f32 s = seg->samples[i];
+        f32 s = seg->samples[i] * gain;
         s = s < -1 ? -1 : s > 1 ? 1 : s;
         i16 v = (i16)(s * 32767.0f);
         put(&v, 2);
@@ -149,7 +172,15 @@ static void seg_close(Segmenter* seg) {
 static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta* meta) {
     f32 sum = 0;
     for (i32 i = 0; i < BLOCK; i++) sum += block[i] * block[i];
-    bool loud = sqrtf(sum / BLOCK) > seg->gate;
+    f32 rms = sqrtf(sum / BLOCK);
+    f32 gate = seg->gate;
+    if (seg->adaptive) {
+        seg->floor = rms < seg->floor ? rms : seg->floor * FLOOR_RISE;
+        if (seg->floor < FLOOR_MIN) seg->floor = FLOOR_MIN;
+        f32 moving = seg->floor * GATE_OVER_FLOOR;
+        gate = moving < GATE_MIN ? GATE_MIN : moving > gate ? gate : moving;
+    }
+    bool loud = rms > gate;
     if (loud) seg->loud_ts = block_ts + (f64)BLOCK / RATE;
     if (!seg->open) {
         if (!loud) {
@@ -170,6 +201,7 @@ static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta
         seg->start_ts = block_ts - (f64)(seg->preroll_n * BLOCK) / RATE;
         seg->quiet_run = 0;
         seg->loud_blocks = 1;
+        seg->loud_sum = sum;
         seg->meta = *meta;
         seg->preroll_n = seg->preroll_first = 0;
         return;
@@ -179,6 +211,7 @@ static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta
     if (loud) {
         seg->quiet_run = 0;
         seg->loud_blocks++;
+        seg->loud_sum += sum;
     } else {
         seg->quiet_run++;
     }
@@ -540,6 +573,8 @@ static DWORD WINAPI stream_main(void* p) {
     seg->app = s->app;
     wcscpy_s(seg->spool, s->spool);
     seg->gate = s->gate;
+    seg->adaptive = s->source == SOURCE_MIC;
+    seg->floor = s->gate / GATE_OVER_FLOOR;
 
     while (!s->stop) {
         RunEnd end = stream_run(s, seg);

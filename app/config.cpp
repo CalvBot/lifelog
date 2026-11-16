@@ -24,7 +24,8 @@ excluded_folders = []
 # Apps removed from the Settings lists. They are left out of the lists until they play sound
 # again, then they show under New.
 removed_apps = []
-# Loudness (0..1 RMS) above which audio counts as "something is playing".
+# Loudness (0..1 RMS) above which audio counts as "something is playing". The mic's gate follows
+# its own background noise instead, and this is only the most it can be.
 gate_rms = 0.003
 # Days the audio of transcribed lines is kept, to play them back. The text is kept for good.
 keep_audio_days = 7
