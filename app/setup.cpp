@@ -27,13 +27,16 @@ static void setup_dir(const wchar_t* name, wchar_t out[MAX_PATH]) { swprintf(out
 
 void whisper_dir(wchar_t out[MAX_PATH]) { setup_dir(L"whisper", out); }
 
+void whisper_bin_dir(wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%ls\\whisper\\%ls", local_dir(), WHISPER_BUILD); }
+
 bool whisper_ready(const char* model) {
-    wchar_t dir[MAX_PATH], exe[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
+    wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
     whisper_dir(dir);
-    swprintf(exe, MAX_PATH, L"%ls\\Release\\whisper-server.exe", dir);
+    whisper_bin_dir(bins);
+    swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
     swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
-    return GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(bin) != INVALID_FILE_ATTRIBUTES &&
+    return GetFileAttributesW(dll) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(bin) != INVALID_FILE_ATTRIBUTES &&
            GetFileAttributesW(vad) != INVALID_FILE_ATTRIBUTES;
 }
 
@@ -223,34 +226,34 @@ static void remove_tree(const wchar_t* dir) {
 // The parts
 
 static bool setup_transcriber(App* app, char* error, i32 cap) {
-    wchar_t dir[MAX_PATH], exe[MAX_PATH], stamp[MAX_PATH];
+    // Each build gets its own folder: a running lifelog has the one it loaded open, so a new
+    // build goes beside it and is used from the next start.
+    wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH];
     whisper_dir(dir);
+    whisper_bin_dir(bins);
     CreateDirectoryW(dir, 0);
-    swprintf(exe, MAX_PATH, L"%ls\\Release\\whisper-server.exe", dir);
-    swprintf(stamp, MAX_PATH, L"%ls\\build.txt", dir);
-    Mark m = mark(scratch());
-    Str have = read_file(scratch(), stamp);
-    bool current = have.ptr && str_eq(str_trim(have), narrow(scratch(), WHISPER_BUILD));
-    rewind(m);
-    if (!exists(exe) || !current) {
-        // Our server holds its files open; the supervisor starts it again once they are in place.
-        app_lock(app);
-        worker_stop(app);
-        app_unlock(app);
-        wchar_t url[512], zip[MAX_PATH], release[MAX_PATH];
+    swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
+    if (!exists(dll)) {
+        wchar_t url[512], zip[MAX_PATH], unpacked[MAX_PATH], release[MAX_PATH];
         swprintf(url, COUNT(url), L"https://github.com/ggml-org/whisper.cpp/releases/download/%ls/%ls", WHISPER_BUILD, WHISPER_ZIP);
         swprintf(zip, MAX_PATH, L"%ls\\%ls", dir, WHISPER_ZIP);
-        swprintf(release, MAX_PATH, L"%ls\\Release", dir);
+        swprintf(unpacked, MAX_PATH, L"%ls\\unpacking", dir);
+        swprintf(release, MAX_PATH, L"%ls\\Release", unpacked);
         if (!download(app, SETUP_TRANSCRIBER, "whisper.cpp", url, zip, error, cap)) return false;
-        remove_tree(release);  // an older build
-        bool ok = unzip(app, zip, dir, error, cap);
+        remove_tree(unpacked);  // left by a try that failed
+        CreateDirectoryW(unpacked, 0);
+        bool ok = unzip(app, zip, unpacked, error, cap);
         DeleteFileW(zip);
+        if (ok && !MoveFileExW(release, bins, 0)) {
+            snprintf(error, cap, "whisper.cpp's download did not hold the Release folder (error %lu)", GetLastError());
+            ok = false;
+        }
+        remove_tree(unpacked);
         if (!ok) return false;
-        if (!exists(exe)) {
-            snprintf(error, cap, "whisper.cpp's download did not hold whisper-server.exe");
+        if (!exists(dll)) {
+            snprintf(error, cap, "whisper.cpp's download did not hold whisper.dll");
             return false;
         }
-        write_file(stamp, narrow(scratch(), WHISPER_BUILD));
     }
     wchar_t bin[MAX_PATH], vad[MAX_PATH];
     swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, WHISPER_MODEL);

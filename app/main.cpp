@@ -693,8 +693,8 @@ static i32 run_app() {
     Shell_NotifyIconW(NIM_DELETE, &g_tray);
     app_lock(app);
     capture_stop(app);
-    worker_stop(app);
     app_unlock(app);
+    worker_stop(app);
     if (app->restarting) {
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(0, exe, MAX_PATH);

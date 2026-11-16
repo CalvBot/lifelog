@@ -10,7 +10,7 @@ how they get at the app's state.
 ## Architecture: one shared state
 
 One program, `lifelogw.exe`, started at login. The recorder, the tray icon and the summary writer run on background
-threads, the window on the main thread. Transcription is a whisper.cpp server the app starts while the GPU is free.
+threads, the window on the main thread. Transcription is whisper.cpp, loaded into the app while the GPU is free.
 
 **One live state, shared in memory.** The app has a single `App` value that holds what the program is doing right
 now: the settings, whether it is listening, which apps are being recorded, the transcription queue, the GPU load
@@ -80,7 +80,7 @@ C++ built with MSVC, in a plain data-oriented style:
   - SQLite (the amalgamation);
   - a small TOML reader for `config.toml`.
 - Windows calls (WASAPI process loopback, the tray icon, notifications) made directly.
-- whisper.cpp (whisper-server) and llama.cpp (llama-server) as child processes, downloaded from Settings.
+- whisper.cpp (whisper.dll, loaded at run time) and llama.cpp (llama-server, a child process), downloaded from Settings.
 - One `lifelog.exe`.
 
 ## Recording
