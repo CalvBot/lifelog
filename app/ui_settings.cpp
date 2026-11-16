@@ -119,7 +119,7 @@ static bool pick(const char* text, bool on, ImVec2 size = ImVec2(0, 0)) {
     ImGui::PushStyleColor(ImGuiCol_Button, on ? lit : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? ImVec4(lit.x, lit.y, lit.z, 0.7f) : ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
     if (on) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-    bool clicked = ImGui::Button(text, size);
+    bool clicked = button(text, size);
     ImGui::PopStyleColor(on ? 3 : 2);
     return clicked;
 }
@@ -360,7 +360,7 @@ static void folders_view(App* app, SettingsState* s) {
     Config* c = &app->config;
     Str q = str_lower(scratch(), str_trim(str(s->search)));
     const f32 row_h = px(30);
-    ImVec2 button = ImVec2(px(40), ImGui::GetFrameHeight());
+    ImVec2 bsize = ImVec2(px(40), ImGui::GetFrameHeight());
     f32 spacing = ImGui::GetStyle().ItemSpacing.x;
     f32 rows_top = ImGui::GetCursorPosY();
     char act_folder[MAX_PATH] = "";
@@ -380,9 +380,9 @@ static void folders_view(App* app, SettingsState* s) {
             bool clicked = false;
             Decision to = DECISION_NEW;
             // Where the app rows have theirs: the other choice on the right, then Remove.
-            x -= button.x;
-            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
-            if (ImGui::Button(d == DECISION_EXCLUDED ? ICON_CHECK "##inc" : ICON_X "##exc", button)) {
+            x -= bsize.x;
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - bsize.y) / 2));
+            if (button(d == DECISION_EXCLUDED ? ICON_CHECK "##inc" : ICON_X "##exc", bsize)) {
                 clicked = true;
                 to = d == DECISION_EXCLUDED ? DECISION_INCLUDED : DECISION_EXCLUDED;
             }
@@ -390,7 +390,7 @@ static void folders_view(App* app, SettingsState* s) {
             x -= spacing;
             const char* remove = "Remove";
             x -= ImGui::CalcTextSize(remove).x + ImGui::GetStyle().FramePadding.x * 2;
-            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - bsize.y) / 2));
             if (ImGui::Button(remove)) {
                 clicked = true;
                 to = DECISION_NEW;
@@ -492,7 +492,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
     AppAct act = ACT_NONE;
     char act_exe[64] = "";
     const f32 row_h = px(30);
-    ImVec2 button = ImVec2(px(40), ImGui::GetFrameHeight());
+    ImVec2 bsize = ImVec2(px(40), ImGui::GetFrameHeight());
     f32 spacing = ImGui::GetStyle().ItemSpacing.x;
     f32 rows_top = ImGui::GetCursorPosY();
     for (i32 i = 0; i < s->row_count; i++) {
@@ -510,24 +510,24 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         bool show_include = s->view != VIEW_INCLUDED;
         bool show_exclude = s->view != VIEW_EXCLUDED;
         if (show_include) {
-            x -= button.x;
-            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
-            if (ImGui::Button(ICON_CHECK "##inc", button)) act = ACT_INCLUDE;
+            x -= bsize.x;
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - bsize.y) / 2));
+            if (button(ICON_CHECK "##inc", bsize)) act = ACT_INCLUDE;
             x -= spacing;
         }
         if (show_exclude) {
-            x -= button.x;
-            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
-            if (ImGui::Button(ICON_X "##exc", button)) act = ACT_EXCLUDE;
+            x -= bsize.x;
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - bsize.y) / 2));
+            if (button(ICON_X "##exc", bsize)) act = ACT_EXCLUDE;
             x -= spacing;
         }
         x -= px(32);
-        ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - button.y) / 2));
+        ImGui::SetCursorScreenPos(ImVec2(x, at.y + (row_h - bsize.y) / 2));
         ImVec4 pad_color = game ? ACCENT : ImVec4(weak_text().x, weak_text().y, weak_text().z, 0.6f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_Text, pad_color);
         ImGui::PushFont(0, ImGui::GetStyle().FontSizeBase * 1.12f);
-        if (ImGui::Button(ICON_GAMEPAD "##game", ImVec2(px(32), button.y))) act = ACT_GAME;
+        if (button(ICON_GAMEPAD "##game", ImVec2(px(32), bsize.y))) act = ACT_GAME;
         ImGui::PopFont();
         ImGui::PopStyleColor(2);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", game ? "Game" : "Mark as game");

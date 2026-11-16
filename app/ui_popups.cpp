@@ -124,7 +124,7 @@ static bool menu_item(const char* icon, const char* text, i32 col, i32 cols, boo
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     if (weak) ImGui::PushStyleColor(ImGuiCol_Text, weak_text());
     ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
-    bool clicked = ImGui::Button(label(icon, text), ImVec2(cell + pad, weak ? px(28) : px(30)));
+    bool clicked = button(label(icon, text), ImVec2(cell + pad, weak ? px(28) : px(30)));
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(weak ? 2 : 1);
     return clicked;
@@ -136,7 +136,7 @@ static bool choice(const char* text, bool on, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : weak_text());
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(2), ImGui::GetStyle().FramePadding.y));
-    bool clicked = ImGui::Button(text, size);
+    bool clicked = button(text, size);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
     return clicked;
@@ -285,7 +285,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         ImGui::BeginDisabled(g_copy.busy);
         for (i32 i = 0; i < COUNT(kinds); i++) {
             if (i) ImGui::SameLine();
-            if (ImGui::Button(label(kinds[i].icon, kinds[i].text), ImVec2(w, px(32)))) start_copy(app, s, secs, kinds[i].kind);
+            if (button(label(kinds[i].icon, kinds[i].text), ImVec2(w, px(32)))) start_copy(app, s, secs, kinds[i].kind);
         }
         ImGui::EndDisabled();
     }

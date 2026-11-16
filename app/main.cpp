@@ -381,7 +381,7 @@ static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         // The main window's layout needs this much room; smaller, things overlap or run off.
         if (s == &g_main) {
             UINT dpi = GetDpiForWindow(hwnd);
-            RECT r = {0, 0, MulDiv(760, (i32)dpi, 96), MulDiv(540, (i32)dpi, 96)};
+            RECT r = {0, 0, MulDiv(600, (i32)dpi, 96), MulDiv(460, (i32)dpi, 96)};
             AdjustWindowRectExForDpi(&r, (DWORD)GetWindowLongW(hwnd, GWL_STYLE), FALSE, (DWORD)GetWindowLongW(hwnd, GWL_EXSTYLE), dpi);
             MINMAXINFO* mm = (MINMAXINFO*)lp;
             mm->ptMinTrackSize.x = r.right - r.left;

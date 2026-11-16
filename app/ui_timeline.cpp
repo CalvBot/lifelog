@@ -922,7 +922,7 @@ static void tl_clear_search(TimelineState* s) {
 static bool tl_button(const char* text, ImVec2 size, bool enabled = true, bool selected = false) {
     ImGui::BeginDisabled(!enabled);
     if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
-    bool clicked = ImGui::Button(text, size);
+    bool clicked = button(text, size);
     if (selected) ImGui::PopStyleColor();
     ImGui::EndDisabled();
     return clicked;
@@ -944,16 +944,24 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
         s->search_refocus = false;
         s->search_cursor_end = true;
     }
-    // Up to 320 wide; narrower when the day's buttons on the right (and the match count and
-    // arrows, while searching) need the room.
-    {
-        f32 sp = st.ItemSpacing.x;
-        f32 nav = 28 * u * 2 + 210 * u + ImGui::CalcTextSize("Today").x + st.FramePadding.x * 2 + sp * 4;
-        f32 find = str_trim(str(s->search)).len ? 86 * u + 3 * ImGui::GetFrameHeight() + 4 * u + sp : 0;
-        f32 w = right - ImGui::GetCursorScreenPos().x - nav - find;
-        w = w > 320 * u ? 320 * u : w < 120 * u ? 120 * u : w;
-        ImGui::SetNextItemWidth(w);
-    }
+    // The room is shared with the day's buttons on the right (and the match count and arrows,
+    // while searching). The day's button gives up width first (210 down to 140), then the search
+    // box (320 down to 160); when even that does not fit, the day's buttons go on a line of
+    // their own, and the search box takes the width.
+    f32 sp = st.ItemSpacing.x;
+    f32 w_today = ImGui::CalcTextSize("Today").x + st.FramePadding.x * 2;
+    f32 w_arrow = 28 * u;
+    f32 nav_fixed = w_arrow * 2 + w_today + sp * 4;
+    f32 find = str_trim(str(s->search)).len ? 86 * u + 3 * ImGui::GetFrameHeight() + 4 * u + sp : 0;
+    f32 room = right - ImGui::GetCursorScreenPos().x - find;
+    f32 w_day = room - nav_fixed - 320 * u;
+    w_day = w_day > 210 * u ? 210 * u : w_day < 140 * u ? 140 * u : w_day;
+    f32 w_search = room - nav_fixed - w_day;
+    bool nav_below = w_search < 160 * u;
+    if (nav_below) w_search = room;
+    if (w_search > 320 * u) w_search = 320 * u;
+    if (nav_below) w_day = 210 * u;
+    ImGui::SetNextItemWidth(w_search);
     char before[256];
     SET(before, str(s->search));
     bool enter = ImGui::InputTextWithHint("##tl_search", "Search everything heard", s->search, sizeof(s->search),
@@ -1001,15 +1009,14 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
     char today[11];
     today_day(today);
     bool on_today = strcmp(s->day, today) == 0;
-    f32 sp = st.ItemSpacing.x;
-    f32 w_today = ImGui::CalcTextSize("Today").x + st.FramePadding.x * 2;
-    f32 w_arrow = 28 * u, w_day = 210 * u;
     f32 x_today = right - w_today, x_next = x_today - sp - w_arrow, x_day = x_next - sp - w_day, x_prev = x_day - sp - w_arrow;
-    if (x_prev < after_search + sp) x_prev = after_search + sp;  // a narrow window: no overlap
-    x_day = x_prev + w_arrow + sp;
-    x_next = x_day + w_day + sp;
-    x_today = x_next + w_arrow + sp;
-    ImGui::SameLine();
+    if (!nav_below && x_prev < after_search + sp) {  // never over the search
+        x_prev = after_search + sp;
+        x_day = x_prev + w_arrow + sp;
+        x_next = x_day + w_day + sp;
+        x_today = x_next + w_arrow + sp;
+    }
+    if (!nav_below) ImGui::SameLine();
     ImGui::SetCursorScreenPos(ImVec2(x_prev, ImGui::GetCursorScreenPos().y));
     if (tl_button(tmp("%s##tl_prev", ICON_CHEVRON_LEFT), ImVec2(w_arrow, 0))) tl_step_day(app, s, -1);
     ImGui::SetItemTooltip("Day before (←)");
@@ -1279,7 +1286,7 @@ static void tl_calendar(App* app, TimelineState* s) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_PopupBg));
     ImGui::Begin("##tl_calendar", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
     i32 year = s->cal_year, month = s->cal_month;
-    if (ImGui::Button(tmp("%s##cal_prev", ICON_CHEVRON_LEFT), ImVec2(34 * u, 26 * u))) {
+    if (button(tmp("%s##cal_prev", ICON_CHEVRON_LEFT), ImVec2(34 * u, 26 * u))) {
         if (--s->cal_month < 1) {
             s->cal_month = 12;
             s->cal_year--;
@@ -1519,7 +1526,7 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
         ImGui::PushFont(0, 15);
         // No tooltip: hovering already marks what it would play.
-        bool pressed = ImGui::Button(is_playing ? ICON_SQUARE "##play" : ICON_PLAY "##play", ImVec2(24 * u, 24 * u));
+        bool pressed = button(is_playing ? ICON_SQUARE "##play" : ICON_PLAY "##play", ImVec2(24 * u, 24 * u));
         ImGui::PopFont();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();

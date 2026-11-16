@@ -54,7 +54,7 @@ static void listen_button(App* app) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(fill.x, fill.y, fill.z, fill.w + 0.1f));
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(14));
-    if (ImGui::Button(text, ImVec2(px(116), 0))) {
+    if (button(text, ImVec2(px(116), 0))) {
         capture_set_paused(app, !paused);
         tray_update(app);
     }

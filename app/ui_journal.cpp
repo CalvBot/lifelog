@@ -231,7 +231,7 @@ static void calendar(App* app, JournalState* s, const char* today) {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
     ImGui::Dummy(ImVec2(0, px(4)));
     f32 head_h = ImGui::GetFrameHeight();
-    if (ImGui::Button(tmp("%s##prev-month", ICON_CHEVRON_LEFT), ImVec2(cell_w, head_h))) s->month = month - 1;
+    if (button(tmp("%s##prev-month", ICON_CHEVRON_LEFT), ImVec2(cell_w, head_h))) s->month = month - 1;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Month before");
     ImGui::SameLine();
     {
@@ -244,7 +244,7 @@ static void calendar(App* app, JournalState* s, const char* today) {
         ImGui::SetCursorPosY(y);
     }
     ImGui::BeginDisabled(month >= this_month);
-    if (ImGui::Button(tmp("%s##next-month", ICON_CHEVRON_RIGHT), ImVec2(cell_w, head_h))) s->month = month + 1;
+    if (button(tmp("%s##next-month", ICON_CHEVRON_RIGHT), ImVec2(cell_w, head_h))) s->month = month + 1;
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Month after");
     ImGui::EndDisabled();
 
@@ -280,7 +280,7 @@ static void calendar(App* app, JournalState* s, const char* today) {
         ImGui::PushStyleColor(ImGuiCol_Button, bg);
         ImGui::PushStyleColor(ImGuiCol_Text, done ? text_color() : heard ? plain_color() : weak_text());
         ImGui::BeginDisabled(!enabled);
-        if (ImGui::Button(tmp("%d##cal-%s", d, key), ImVec2(cell_w, cell_h))) journal_open(s, key);
+        if (button(tmp("%d##cal-%s", d, key), ImVec2(cell_w, cell_h))) journal_open(s, key);
         ImGui::EndDisabled();
         ImGui::PopStyleColor(2);
         ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
@@ -298,10 +298,10 @@ static void calendar(App* app, JournalState* s, const char* today) {
 
     ImGui::Dummy(ImVec2(0, px(4)));
     f32 half = (row_w - ImGui::GetStyle().ItemSpacing.x) / 2;
-    if (ImGui::Button("Today", ImVec2(month != this_month ? half : row_w, 0))) journal_open(s, today);
+    if (button("Today", ImVec2(month != this_month ? half : row_w, 0))) journal_open(s, today);
     if (month != this_month) {
         ImGui::SameLine();
-        if (ImGui::Button("This month", ImVec2(half, 0))) s->month = this_month;
+        if (button("This month", ImVec2(half, 0))) s->month = this_month;
     }
     ImGui::Dummy(ImVec2(0, px(2)));
 }
@@ -345,7 +345,11 @@ static void day_list(App* app, JournalState* s, const char* today) {
             list[j - 1] = t;
         }
 
-    ImGui::BeginChild("day-list");
+    // The rest of the column, but never so short that only a day or two show: in a low window
+    // the column scrolls instead (journal-left).
+    f32 list_h = ImGui::GetContentRegionAvail().y;
+    if (list_h < px(160)) list_h = px(160);
+    ImGui::BeginChild("day-list", ImVec2(0, list_h));
     ImGui::Dummy(ImVec2(0, px(2)));
     if (list.count == 0) ImGui::TextColored(weak_text(), "Nothing this month");
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, 0.5f));

@@ -74,6 +74,22 @@ static const char* tmp(const char* fmt, ...) {
     return str_copy(scratch(), str(buf)).ptr;
 }
 
+// ImGui::Button, for a fixed `size`, with its label always centred. ImGui centres a label only in
+// the room inside the frame padding; a label wider than that (an icon in a narrow button) starts
+// at the padding instead, off to the right. So the padding is narrowed until the label fits.
+static bool button(const char* text, ImVec2 size = ImVec2(0, 0)) {
+    ImGuiStyle& st = ImGui::GetStyle();
+    f32 pad = st.FramePadding.x;
+    if (size.x > 0) {
+        f32 room = (size.x - ImGui::CalcTextSize(text, 0, true).x) / 2;
+        if (room < pad) pad = room > 0 ? room : 0;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, st.FramePadding.y));
+    bool clicked = ImGui::Button(text, size);
+    ImGui::PopStyleVar();
+    return clicked;
+}
+
 // A small frameless button showing one icon, with a tooltip.
 static bool icon_button(const char* icon, const char* tip, const char* id = 0) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
