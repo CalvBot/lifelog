@@ -646,6 +646,8 @@ static void worker_lines_apply(App* app, Event*) {
 }
 
 static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
+    atomic_set(&app->worker.live_queued, now->queued);
+    atomic_set(&app->worker.live_running, now->running);
     if (memcmp(now, last, sizeof(WorkerSeen)) == 0) return;
     *last = *now;
     u64 f = (u64)(u32)now->queued | (now->running ? SEEN_RUNNING : 0) | (now->missing ? SEEN_MISSING : 0) |

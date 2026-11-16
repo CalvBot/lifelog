@@ -308,16 +308,23 @@ static void phase_set(App* app, const char* fmt, ...) {
     wake_window(app);
 }
 
-// For the threads that do not hold the lock.
-static void phase_set_unlocked(App* app, const char* fmt, ...) {
+static void phase_apply(App* app, Event* e) {
+    SET(app->summary.phase, str(e->text));
+    wake_window(app);
+}
+
+// From the summary threads: posted to the main thread (events.h).
+static void phase_post(App* app, const char* fmt, ...) {
     char text[sizeof(app->summary.phase)];
     va_list args;
     va_start(args, fmt);
     vsnprintf(text, sizeof(text), fmt, args);
     va_end(args);
-    app_lock(app);
-    SET(app->summary.phase, str(text));
-    app_unlock(app);
+    event_post(app, phase_apply, 0, 0, text);
+}
+
+static void version_apply(App* app, Event*) {
+    app->summary.version++;
     wake_window(app);
 }
 
@@ -390,13 +397,23 @@ static void lists_refresh_locked(App* app, sqlite3* db) {
     lists_publish(app, days, never);
 }
 
+struct ListsRead {
+    List<SummaryDay> days;
+    List<NeverTopic> never;
+};
+
+static void lists_apply(App* app, Job* job) {
+    ListsRead* r = (ListsRead*)job->data;
+    lists_publish(app, r->days, r->never);  // the lists are the main thread's now
+}
+
+// From the summary threads: reads them and posts them to the main thread.
 static void lists_refresh(App* app, sqlite3* db) {
-    List<SummaryDay> days = {};
-    List<NeverTopic> never = {};
-    lists_read(db, &days, &never);
-    app_lock(app);
-    lists_publish(app, days, never);
-    app_unlock(app);
+    Job* job = job_new(lists_apply);
+    ListsRead* r = PUSH(&job->arena, ListsRead);
+    lists_read(db, &r->days, &r->never);
+    job->data = r;
+    job_post(app, job);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -526,7 +543,7 @@ static bool write_markdown(App* app, const char* day, Str summary, const Json* r
     }
     Str data = buf_take(&text, scratch());
     wchar_t dir[MAX_PATH], path[MAX_PATH];
-    swprintf(dir, MAX_PATH, L"%ls\\summaries", wide(scratch(), str(app->config.data_dir)));
+    swprintf(dir, MAX_PATH, L"%ls\\summaries", wide(scratch(), str(settings(app)->data_dir)));
     SHCreateDirectoryExW(0, dir, 0);
     swprintf(path, MAX_PATH, L"%ls\\%hs.md", dir, day);
     bool ok = write_file(path, data);
@@ -555,11 +572,27 @@ struct SLine {
 
 static bool is_mic(const SLine* l) { return str_eq(l->source, str("mic")); }
 
-// Each line's speaker as the app list shows it: an app's own name ("Brave Browser").
-static void name_lines(App* app, Arena* a, Slice<SLine> lines) {
-    app_lock(app);
-    for (i32 i = 0; i < lines.count; i++) lines.items[i].name = str_copy(a, app_label(app, lines.items[i].speaker));
-    app_unlock(app);
+// The apps' own names ("Brave Browser"), copied from App.apps for the writer.
+struct AppLabel {
+    char exe[64];
+    char name[128];
+};
+struct AppLabels {
+    AppLabel* items;
+    i32 count;
+};
+
+// Each line's speaker as the app list shows it, as app_label does.
+static void name_lines(AppLabels* labels, Arena* a, Slice<SLine> lines) {
+    for (i32 i = 0; i < lines.count; i++) {
+        Str speaker = lines.items[i].speaker;
+        Str name = {};
+        for (i32 k = 0; k < labels->count && !name.len; k++)
+            if (str_eq_nocase(str(labels->items[k].exe), speaker)) name = str(labels->items[k].name);
+        if (!name.len && (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE")))) name = str_sub(speaker, 0, speaker.len - 4);
+        if (!name.len) name = speaker;
+        lines.items[i].name = str_copy(a, name);
+    }
 }
 
 static Slice<SLine> day_lines(sqlite3* db, Arena* a, f64 from, f64 to) {
@@ -1137,12 +1170,7 @@ static void alerts_show_due(App* app, sqlite3* db) {
     bool any = due.count > 0;
     list_free(&due);
     rewind(m);
-    if (any) {
-        app_lock(app);
-        app->summary.version++;
-        app_unlock(app);
-        wake_window(app);
-    }
+    if (any) event_post(app, version_apply, 0, 0, 0);
 }
 
 void reminder_answer(App* app, i64 id, const char* action) {
@@ -1385,20 +1413,17 @@ void summary_set_ask_reminders(App* app, bool on) {
 // Waits `ms`, false if the program is ending.
 static bool pause_ms(App* app, u32 ms) { return sleep_unless_stopping(app, ms); }
 
-static bool write_day(App* app, const char* day, char* error, i32 cap) {
-    app_lock(app);
-    Config cfg = app->config;  // a copy: the settings as they are now
-    app_unlock(app);
-    LOG("writing the summary for %s with %s", day, cfg.summary.model);
+// On the writer thread, without the lock. `labels` are the apps' names, from its job.
+static bool write_day(App* app, const char* day, AppLabels* labels, char* error, i32 cap) {
+    const Config* cfg = settings(app);  // the settings as they are now
+    LOG("writing the summary for %s with %s", day, cfg->summary.model);
 
     // 1. Let transcription catch up, so the end of the day is in it.
-    phase_set_unlocked(app, "waiting for transcription to catch up");
+    phase_post(app, "waiting for transcription to catch up");
     f64 started = now_ts(), idle_since = now_ts();
     while (now_ts() - started < 20 * 60) {
-        app_lock(app);
-        i32 queued = app->worker.queued;
-        bool running = app->worker.running;
-        app_unlock(app);
+        i32 queued = atomic_get(&app->worker.live_queued);
+        bool running = atomic_get(&app->worker.live_running) != 0;
         if (queued == 0) break;
         if (running) idle_since = now_ts();
         else if (now_ts() - idle_since > 60) break;  // transcription is paused or waiting for a game: sum up what there is
@@ -1406,15 +1431,11 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     }
 
     // 2. Take the GPU from the worker.
-    app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 1);
     worker_wake(app);
-    app_unlock(app);
     f64 freed = now_ts();
     for (;;) {
-        app_lock(app);
-        bool running = app->worker.running;
-        app_unlock(app);
+        bool running = atomic_get(&app->worker.live_running) != 0;
         if (!running || now_ts() - freed > 30 || !pause_ms(app, 250)) break;
     }
     if (stopping(app)) {
@@ -1434,7 +1455,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     f64 from, to;
     day_bounds(day, &from, &to);
     Slice<SLine> lines = day_lines(db, a, from, to < now_ts() ? to : now_ts());
-    name_lines(app, a, lines);
+    name_lines(labels, a, lines);
     Slice<Chunk> chunks = transcript_chunks(a, lines);
     Slice<Flag> flags = flagged_moments(a, lines);
     Slice<Slice<Str>> mine = {PUSH_ARRAY(a, Slice<Str>, lines.count), 0};
@@ -1460,17 +1481,17 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
         snprintf(error, cap, "nothing was transcribed that day");
         goto done;
     }
-    phase_set_unlocked(app, "starting the AI");
+    phase_post(app, "starting the AI");
     if (words < QUIET_DAY_WORDS) {
         // Barely a word said: that is the summary; the apps' audio is not the day.
         Str quiet = str_fmt(a, "{\"summary\":\"%s\",\"reminders\":[],\"remember\":[]}", quiet_summary(words));
         json_parse(a, quiet, &result, 0, 0);
     } else {
-        if (!llm_open(app, &cfg, 12288, &llm, error, cap)) goto done;
+        if (!llm_open(app, cfg, 12288, &llm, error, cap)) goto done;
         if (chunks.count == 1) {
-            phase_set_unlocked(app, "writing the summary");
+            phase_post(app, "writing the summary");
             Str material = str_fmt(a, "Transcript of your day (you said %lld words in it):\n\n%s%s", words, chunks.items[0].text.ptr, flagged.ptr);
-            Str prompt = summary_prompt(a, day, cfg.summary.max_words, material, past, rule);
+            Str prompt = summary_prompt(a, day, cfg->summary.max_words, material, past, rule);
             if (!llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap)) goto done;
         } else {
             // Long day: notes for each part, then the summary from the notes.
@@ -1487,7 +1508,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
                     buf_fmt(&material, "\n%s–%s\n- You said almost nothing (only apps playing).\n", t0, t1);
                     continue;
                 }
-                phase_set_unlocked(app, "reading the day (part %d of %d)", i + 1, chunks.count);
+                phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
                 Buf prompt = {};
                 buf_fmt(&prompt, "Transcript from %s to %s on %s (times after midnight are the next morning):\n\n", t0, t1,
                         long_date(a, day).ptr);
@@ -1525,8 +1546,8 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
                     }
                 }
                 buf_add(&material, flagged);
-                phase_set_unlocked(app, "writing the summary");
-                Str prompt = summary_prompt(a, day, cfg.summary.max_words, buf_take(&material, a), past, rule);
+                phase_post(app, "writing the summary");
+                Str prompt = summary_prompt(a, day, cfg->summary.max_words, buf_take(&material, a), past, rule);
                 parts_ok = llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap);
             }
             buf_free(&material);
@@ -1536,10 +1557,8 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     }
     // The server is stopped here, and the graphics card is free again.
     llm_close(&llm);
-    app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 0);
     worker_wake(app);
-    app_unlock(app);
 
     {
         Str summary = strip_never(a, str_trim(json_text(json_get(&result, "summary"))), never_low.items, never_low.count);
@@ -1551,16 +1570,16 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
         while (section.len && isspace((u8)section.ptr[section.len - 1])) section.len--;
         summary = str_trim(str_fmt(a, "%.*s%.*s", (int)summary.len, summary.ptr, (int)section.len, section.ptr));
         Json reminders = keep_real_reminders(a, json_get(&result, "reminders"), mine);
-        if (!save(db, day, "done", cfg.summary.model, summary, json_string_of(a, &reminders))) {
+        if (!save(db, day, "done", cfg->summary.model, summary, json_string_of(a, &reminders))) {
             snprintf(error, cap, "could not save the summary: %s", sqlite3_errmsg(db));
             goto done;
         }
         lists_refresh(app, db);
-        if (cfg.summary.ask_reminders) alerts_offer(app, db, day, &reminders);
+        if (cfg->summary.ask_reminders) alerts_offer(app, db, day, &reminders);
         if (!write_markdown(app, day, summary, &reminders)) WARN("could not write the summary file for %s", day);
         i32 count = reminders.count;
         LOG("summary for %s done (%lld words, %d reminders)", day, count_words(summary), count);
-        phase_set_unlocked(app, "done");
+        phase_post(app, "done");
 
         Buf plain = {};
         Str rest = summary, line = {};
@@ -1600,44 +1619,76 @@ done:
     return ok;
 }
 
-static DWORD WINAPI writer_main(void* param) {
-    App* app = (App*)param;
-    app_lock(app);
+// The writer's job: made by the main thread (summary_act "now"), filled in by the writer, and
+// posted back when it is done.
+struct WriterJob {
+    App* app;
     char day[11];
-    SET(day, str(app->summary.writing_day));
-    app_unlock(app);
-    char error[512] = {};
-    bool ok = write_day(app, day, error, sizeof(error));
-    app_lock(app);
-    atomic_set(&app->worker.summary_needs_gpu, 0);
-    worker_wake(app);
+    AppLabels labels;
+    bool ok;
+    char error[512];
+};
+
+// The main thread: the writer has finished.
+static void writer_done(App* app, Job* job) {
+    WriterJob* w = (WriterJob*)job->data;
     app->summary.writing = false;
     app->summary.writing_day[0] = 0;
-    if (!ok) {
-        ERR("summary for %s: %s", day, error);
-        phase_set(app, "failed: %s", error);
+    if (!w->ok) {
+        ERR("summary for %s: %s", w->day, w->error);
+        phase_set(app, "failed: %s", w->error);
     }
-    app_unlock(app);
     wake_window(app);
-    if (!ok && !stopping(app)) {
+    if (!w->ok && !stopping(app)) {
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("The summary could not be written"));
-        set_utf8(t.body, sizeof(t.body), str(error));
+        set_utf8(t.body, sizeof(t.body), str(w->error));
         char again[160];
-        make_link(again, sizeof(again), "summary/now?day=%s", day);
+        make_link(again, sizeof(again), "summary/now?day=%s", w->day);
         toast_button(&t, "Try again", again);
         notify_show(app, &t);
     }
+}
+
+static DWORD WINAPI writer_main(void* param) {
+    Job* job = (Job*)param;
+    WriterJob* w = (WriterJob*)job->data;
+    App* app = w->app;
+    w->ok = write_day(app, w->day, &w->labels, w->error, sizeof(w->error));
+    atomic_set(&app->worker.summary_needs_gpu, 0);
+    worker_wake(app);
+    job_post_wait(app, job);
     return 0;
+}
+
+// The main thread, with the lock: starts the writer on `day`, with the apps' names it needs.
+static void writer_start(App* app, const char* day) {
+    Job* job = job_new(writer_done);
+    WriterJob* w = PUSH(&job->arena, WriterJob);
+    w->app = app;
+    SET(w->day, str(day));
+    List<AppInfo>* list = &app->apps.list;
+    w->labels.items = PUSH_ARRAY(&job->arena, AppLabel, list->count);
+    for (i32 i = 0; i < list->count; i++) {
+        if (!list->items[i].name[0]) continue;
+        AppLabel* l = &w->labels.items[w->labels.count++];
+        SET(l->exe, str(list->items[i].exe));
+        SET(l->name, str(list->items[i].name));
+    }
+    job->data = w;
+    HANDLE t = CreateThread(0, 0, writer_main, job, 0, 0);
+    CHECK(t, "the summary writer to start (error %lu)", GetLastError());
+    SetThreadDescription(t, L"summary writer");
+    CloseHandle(t);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Asking
 
-static void ask(App* app, sqlite3* db, const char* day) {
-    f64 mine = 0, apps = 0;
-    talk_secs(db, day, &mine, &apps);
+// The main thread, with the lock. `mine` and `apps`: today's seconds of talk, read by the
+// summary thread.
+static void ask(App* app, const char* day, f64 mine, f64 apps) {
     Mark m = mark(scratch());
     ToastJob t = {};
     SET(t.tag, str(TOAST_TAG));
@@ -1655,11 +1706,9 @@ static void ask(App* app, sqlite3* db, const char* day) {
     rewind(m);
     char at[6];
     clock_text(now_ts() + COUNTDOWN_SECS, at);
-    app_lock(app);
     app->summary.countdown_ts = now_ts() + COUNTDOWN_SECS;
     SET(app->summary.countdown_day, str(day));
     phase_set(app, "starts at %s", at);
-    app_unlock(app);
     notify_show(app, &t);
     LOG("the summary for %s starts at %s unless delayed", day, at);
 }
@@ -1684,7 +1733,7 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
         if (app->summary.writing) return str_copy(a, str("already writing"));
         app->summary.writing = true;
         SET(app->summary.writing_day, str(day));
-        start_thread(app, "summary writer", writer_main);
+        writer_start(app, day);
         wake_window(app);
         return str_copy(a, str("writing"));
     }
@@ -1718,8 +1767,54 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
     return str_copy(a, str("do must be now, later, until or skip"));
 }
 
-// Watches the clock: asks once it is time, starts the summary when the countdown ends, and shows
-// reminders as they come due. Runs until the program ends.
+// What the summary thread read this round, for the main thread's clock (summary_tick).
+static const i64 TICK_GAMING = 1, TICK_TALKED = 2, TICK_STATUS_SHIFT = 2;  // status + 1 in bits 2-3
+
+// The main thread, with the lock: asks once it is time and starts the summary when the countdown
+// ends. a = the flags above, b = seconds of my talk << 32 | seconds of the apps', text = the day.
+static void summary_tick(App* app, Event* e) {
+    const char* day = e->text;
+    bool gaming = (e->a & TICK_GAMING) != 0;
+    bool talked = (e->a & TICK_TALKED) != 0;
+    i32 status = (i32)((e->a >> TICK_STATUS_SHIFT) & 3) - 1;  // -1 when it did not look
+    f64 mine = (f64)(u32)((u64)e->b >> 32), apps = (f64)(u32)((u64)e->b & 0xffffffffu);
+    Summary* s = &app->summary;
+    if (gaming) s->last_game_ts = now_ts();
+    // Counting down to a summary: a game starting puts it off; otherwise it starts on time.
+    bool counting = s->countdown_ts != 0;
+    if (counting) {
+        if (gaming) {
+            s->countdown_ts = 0;
+            notify_remove(app, TOAST_TAG);
+            LOG("a game started: the summary waits until it is over");
+            phase_set(app, "waiting until you stop playing");
+        } else if (now_ts() >= s->countdown_ts) {
+            char countdown_day[11];
+            SET(countdown_day, str(s->countdown_day));
+            Mark m = mark(scratch());
+            summary_act(app, scratch(), "now", countdown_day, 0);
+            rewind(m);
+        }
+    }
+    bool look = !counting && app->config.summary.enabled && !s->writing && now_ts() >= ask_moment(day, app->config.summary.ask_at) &&
+                now_ts() >= s->snooze_ts;
+    SET(s->ask_day, str(day));
+    s->ask_ts = ask_moment(day, app->config.summary.ask_at);
+    // Not done or skipped yet (and the database could say).
+    if (!look || status != 0) return;
+    if (s->last_game_ts && now_ts() - s->last_game_ts < AFTER_GAME_SECS) {
+        // Never during a game: wait until it has been closed for a while.
+        phase_set(app, "waiting until you stop playing");
+        return;
+    }
+    // Too little to sum up: look again in an hour.
+    s->snooze_ts = now_ts() + 3600;
+    if (talked && mine + apps >= 120.0) ask(app, day, mine, apps);
+    else phase_set(app, "too little recorded today to sum up");
+}
+
+// Every 15 s, without the lock: shows the reminders that have come due, reads what the clock
+// needs from the database, and posts it to the main thread (summary_tick).
 static DWORD WINAPI summary_main(void* param) {
     App* app = (App*)param;
     for (;;) {
@@ -1731,47 +1826,21 @@ static DWORD WINAPI summary_main(void* param) {
         }
         char day[11];
         day_of(now_ts(), day);
-        app_lock(app);
-        bool gaming = app->apps.game_running[0] != 0 || app->worker.gpu_busy;
-        if (gaming) app->summary.last_game_ts = now_ts();
-        // Counting down to a summary: a game starting puts it off; otherwise it starts on time.
-        bool counting = app->summary.countdown_ts != 0;
-        if (counting) {
-            if (gaming) {
-                app->summary.countdown_ts = 0;
-                notify_remove(app, TOAST_TAG);
-                LOG("a game started: the summary waits until it is over");
-                phase_set(app, "waiting until you stop playing");
-            } else if (now_ts() >= app->summary.countdown_ts) {
-                char countdown_day[11];
-                SET(countdown_day, str(app->summary.countdown_day));
-                Mark m = mark(scratch());
-                summary_act(app, scratch(), "now", countdown_day, 0);
-                rewind(m);
+        const Config* c = settings(app);
+        i64 flags = 0, secs = 0;
+        if (atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy)) flags |= TICK_GAMING;
+        i32 status = -1;
+        // Only once it is time to ask: whether today is done, and how much was said.
+        if (db && c->summary.enabled && now_ts() >= ask_moment(day, c->summary.ask_at)) {
+            status = status_of(db, day);
+            f64 mine = 0, apps = 0;
+            if (status == 0 && talk_secs(db, day, &mine, &apps)) {
+                flags |= TICK_TALKED;
+                secs = (i64)(((u64)(u32)mine << 32) | (u64)(u32)apps);
             }
         }
-        bool look = !counting && app->config.summary.enabled && !app->summary.writing &&
-                    now_ts() >= ask_moment(day, app->config.summary.ask_at) && now_ts() >= app->summary.snooze_ts;
-        SET(app->summary.ask_day, str(day));
-        app->summary.ask_ts = ask_moment(day, app->config.summary.ask_at);
-        f64 last_game = app->summary.last_game_ts;
-        app_unlock(app);
-
-        // done, skipped, or the database is unavailable
-        if (look && db && status_of(db, day) == 0) {
-            if (last_game && now_ts() - last_game < AFTER_GAME_SECS) {
-                // Never during a game: wait until it has been closed for a while.
-                phase_set_unlocked(app, "waiting until you stop playing");
-            } else {
-                // Too little to sum up: look again in an hour.
-                app_lock(app);
-                app->summary.snooze_ts = now_ts() + 3600;
-                app_unlock(app);
-                f64 mine = 0, apps = 0;
-                if (talk_secs(db, day, &mine, &apps) && mine + apps >= 120.0) ask(app, db, day);
-                else phase_set_unlocked(app, "too little recorded today to sum up");
-            }
-        }
+        flags |= (i64)(status + 1) << TICK_STATUS_SHIFT;
+        event_post(app, summary_tick, flags, secs, day);
         if (db) sqlite3_close(db);
     }
     return 0;
@@ -1793,15 +1862,13 @@ void summary_start(App* app) {
 // check-ai
 
 bool summary_check_ai(App* app, char* said, i32 cap) {
-    app_lock(app);
-    Config cfg = app->config;
+    const Config* cfg = settings(app);
     atomic_set(&app->worker.summary_needs_gpu, 1);
     worker_wake(app);
-    app_unlock(app);
     f64 started = now_ts();
     Llm llm = {};
     char error[512] = {};
-    bool ok = llm_open(app, &cfg, 4096, &llm, error, sizeof(error));
+    bool ok = llm_open(app, cfg, 4096, &llm, error, sizeof(error));
     f64 loaded = now_ts() - started;
     Arena a = {};
     Json reply = {};
@@ -1811,13 +1878,11 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
                       error, sizeof(error));
     }
     llm_close(&llm);
-    app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 0);
     worker_wake(app);
-    app_unlock(app);
     if (ok) {
         Str text = json_string_of(&a, &reply);
-        snprintf(said, cap, "loaded %s in %.0fs\n%s\nstopped after %.0fs", cfg.summary.model, loaded, text.ptr, now_ts() - started);
+        snprintf(said, cap, "loaded %s in %.0fs\n%s\nstopped after %.0fs", cfg->summary.model, loaded, text.ptr, now_ts() - started);
     } else {
         snprintf(said, cap, "%s", error);
     }

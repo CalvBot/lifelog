@@ -25,6 +25,8 @@ struct Worker {
     volatile LONG gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
     volatile LONG gpu_busy;         // over the limit
     volatile LONG summary_needs_gpu;  // set by the summary while it writes
+    volatile LONG live_queued;      // `queued` and `running` as the supervisor has them now, for
+    volatile LONG live_running;     // the summary writer
     u64 lines_version;    // bumped each time lines are written, so the timeline reloads
     f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model

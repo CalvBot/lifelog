@@ -332,6 +332,8 @@ bool notify_forward(const wchar_t* link) {
     return ok;
 }
 
+static void notify_link_apply(App* app, Event* e);
+
 static LRESULT CALLBACK notify_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     App* app = (App*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if (app && msg == WM_NOTIFY_QUEUE) {
@@ -345,12 +347,14 @@ static LRESULT CALLBACK notify_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         memcpy(link, data->lpData, data->cbData);
         link[data->cbData] = 0;
         LOG("link: %s", link);
-        app_lock(app);
-        bool ok = notify_open_link(app, str(link));
-        app_unlock(app);
-        return ok;
+        return event_post(app, notify_link_apply, 0, 0, link);
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// The main thread: a link from a toast's button or a second copy of the program.
+static void notify_link_apply(App* app, Event* e) {
+    notify_open_link(app, str(e->text));
 }
 
 static DWORD WINAPI notify_main(void* param) {

@@ -59,6 +59,15 @@ void job_post(App* app, Job* job) {
     if (!event_post(app, job_apply, (i64)job, 0, 0)) job_free(job);
 }
 
+void job_post_wait(App* app, Job* job) {
+    while (!event_post(app, job_apply, (i64)job, 0, 0)) {
+        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) {
+            job_free(job);
+            return;
+        }
+    }
+}
+
 void events_apply(App* app) {
     Event e;
     u32 dropped = 0;

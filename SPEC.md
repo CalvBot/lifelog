@@ -141,7 +141,10 @@ event queue, each stream's title block, the notification queue and the log file.
    Done (`app/events.h`). For now the snapshot is published from `app_unlock`, since every config change is made
    under the lock; it moves to the main thread with step 4.
 2. Transcriber, summary and summary writer, notifications, setup; the transcriber and summary woken instead of
-   polling; one watcher for processes and streams.
+   polling; one watcher for processes and streams. Done so far: the transcriber (woken), and the summary, writer,
+   notification links and setup, which take no lock. The summary thread still looks every 15 s, since reminders
+   come due on the clock too; it only reads the database and posts what it read, and the main thread decides
+   whether to ask, count down or start. Left: the one watcher.
 3. Database thread and file writer; nothing in a frame touches the disk.
 4. API and the small window threads on the worker pool, with the UI globals owned by the main thread; then delete
    `App.lock`, `app_lock` and `app_unlock`.

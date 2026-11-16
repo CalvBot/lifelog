@@ -51,6 +51,9 @@ bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text);
 // the main thread's.
 Job* job_new(JobApply* apply);
 void job_post(App* app, Job* job);
+// For a job the main thread must get (it ends a state, such as "writing"): while the queue is
+// full, waits and tries again, until the program stops.
+void job_post_wait(App* app, Job* job);
 void job_free(Job* job);
 
 // The main thread: applies every waiting event, taking App.lock around each.

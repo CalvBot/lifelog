@@ -11,15 +11,38 @@ static const wchar_t* WHISPER_MODEL_URL = L"https://huggingface.co/ggerganov/whi
 static const char* WHISPER_VAD_MODEL = "ggml-silero-v6.2.0.bin";
 static const wchar_t* WHISPER_VAD_URL = L"https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
 
+// The setup thread takes no lock: what it says, the model it set up and its end are posted to
+// the main thread. a = the part.
+static void setup_say_apply(App* app, Event* e) {
+    SET(app->setup.part[e->a].text, str(e->text));
+    wake_window(app);
+}
+
 static void setup_say(App* app, SetupPart part, const char* fmt, ...) {
     char text[256];
     va_list args;
     va_start(args, fmt);
     vsnprintf(text, sizeof(text), fmt, args);
     va_end(args);
-    app_lock(app);
-    SET(app->setup.part[part].text, str(text));
-    app_unlock(app);
+    event_post(app, setup_say_apply, part, 0, text);
+}
+
+// a = the part; text = the model, now downloaded, to use.
+static void setup_model_apply(App* app, Event* e) {
+    bool whisper = e->a == SETUP_TRANSCRIBER;
+    char* model = whisper ? app->config.worker.model : app->config.summary.model;
+    if (strcmp(model, e->text) == 0) return;
+    snprintf(model, whisper ? sizeof(app->config.worker.model) : sizeof(app->config.summary.model), "%s", e->text);
+    config_save_string(whisper ? "worker" : "summary", "model", e->text);
+}
+
+// a = the part, b = whether it worked; text = why not.
+static void setup_done_apply(App* app, Event* e) {
+    SetupState* s = &app->setup.part[e->a];
+    s->running = false;
+    s->failed = !e->b;
+    SET(s->text, str(e->b ? "" : e->text));
+    worker_wake(app);
     wake_window(app);
 }
 
@@ -260,12 +283,7 @@ static bool setup_transcriber(App* app, char* error, i32 cap) {
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
     if (!exists(bin) && !download(app, SETUP_TRANSCRIBER, "the model", WHISPER_MODEL_URL, bin, error, cap)) return false;
     if (!exists(vad) && !download(app, SETUP_TRANSCRIBER, "the voice detection model", WHISPER_VAD_URL, vad, error, cap)) return false;
-    app_lock(app);
-    if (strcmp(app->config.worker.model, WHISPER_MODEL) != 0) {
-        SET(app->config.worker.model, str(WHISPER_MODEL));
-        config_save_string("worker", "model", WHISPER_MODEL);
-    }
-    app_unlock(app);
+    event_post(app, setup_model_apply, SETUP_TRANSCRIBER, 0, WHISPER_MODEL);
     return true;
 }
 
@@ -301,12 +319,7 @@ static bool setup_summary_ai(App* app, char* error, i32 cap) {
     wchar_t gguf[MAX_PATH];
     swprintf(gguf, MAX_PATH, L"%ls\\%hs.gguf", dir, QWEN_MODEL);
     if (!exists(gguf) && !download(app, SETUP_SUMMARY_AI, "the model", QWEN_URL, gguf, error, cap)) return false;
-    app_lock(app);
-    if (strcmp(app->config.summary.model, QWEN_MODEL) != 0) {
-        SET(app->config.summary.model, str(QWEN_MODEL));
-        config_save_string("summary", "model", QWEN_MODEL);
-    }
-    app_unlock(app);
+    event_post(app, setup_model_apply, SETUP_SUMMARY_AI, 0, QWEN_MODEL);
     return true;
 }
 
@@ -325,14 +338,9 @@ static DWORD WINAPI setup_thread(void* p) {
     bool ok = job.part == SETUP_TRANSCRIBER ? setup_transcriber(app, error, sizeof(error)) : setup_summary_ai(app, error, sizeof(error));
     if (ok) LOG("the %s is set up", name);
     else WARN("setting up the %s failed: %s", name, error);
-    app_lock(app);
-    SetupState* s = &app->setup.part[job.part];
-    s->running = false;
-    s->failed = !ok;
-    SET(s->text, str(ok ? "" : error));
-    app_unlock(app);
-    worker_wake(app);
-    wake_window(app);
+    // Must arrive, or the part would show "setting up" until the program restarts.
+    while (!event_post(app, setup_done_apply, job.part, ok, error))
+        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
     return 0;
 }
 
