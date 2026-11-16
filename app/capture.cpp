@@ -697,6 +697,8 @@ static DWORD WINAPI capture_watch_main(void* p) {
             stream_start(app, s);
             // Its exe may have been rebuilt with a new icon or name since it was last read.
             app_get(app, exe)->icon_recheck = true;
+            // Removed from the lists earlier: it plays again, so it is new again.
+            app_unremove(app, exe);
             LOG("capturing %s (pid %u): %s", s->exe, root, s->title[0] ? s->title : "no window");
             changed = true;
         }

@@ -22,6 +22,8 @@ struct Config {
         bool apps;
         Names included_apps;
         Names excluded_apps;
+        // Apps removed from the Settings lists: not listed until they play sound again.
+        Names removed_apps;
         // Every app in these folders (subfolders too) is included or excluded, unless the exe has
         // its own decision; the deepest folder wins.
         Folders included_folders;

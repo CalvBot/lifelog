@@ -37,6 +37,7 @@
 #define ICON_GLOBE "\xee\x83\xab"          // U+E0EB
 #define ICON_BAN "\xee\x81\x95"            // U+E055
 #define ICON_LINK "\xee\x84\x87"           // U+E107
+#define ICON_TRASH "\xee\x86\x8e"          // U+E18E
 #define ICON_FOLDER "\xee\x83\x9c"         // U+E0DC
 #define ICON_BELL_RING "\xee\x88\xa3"      // U+E223
 #define ICON_LOCATE "\xee\x87\x99"         // U+E1D9

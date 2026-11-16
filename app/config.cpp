@@ -21,6 +21,9 @@ excluded_apps = []
 # decision wins over its folder's, and a deeper folder's over the one above it.
 included_folders = []
 excluded_folders = []
+# Apps removed from the Settings lists. They are left out of the lists until they play sound
+# again, then they show under New.
+removed_apps = []
 # Loudness (0..1 RMS) above which audio counts as "something is playing".
 gate_rms = 0.003
 # Days the audio of transcribed lines is kept, to play them back. The text is kept for good.
@@ -318,6 +321,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("locked_apps")) && v.kind == Value::ARRAY)
                 for (i32 i = 0; i < v.array.count; i++) names_set(&cfg->capture.included_apps, str(v.array.items[i].s), true);
             if (str_eq(k, str("excluded_apps"))) take_names(&cfg->capture.excluded_apps, &v);
+            if (str_eq(k, str("removed_apps"))) take_names(&cfg->capture.removed_apps, &v);
             if (str_eq(k, str("included_folders"))) take_folders(&cfg->capture.included_folders, &v);
             if (str_eq(k, str("excluded_folders"))) take_folders(&cfg->capture.excluded_folders, &v);
             if (str_eq(k, str("gate_rms")) && v.kind == Value::NUMBER) cfg->capture.gate_rms = (f32)v.number;

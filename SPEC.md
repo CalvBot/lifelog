@@ -182,7 +182,7 @@ The window only exists while it is open. Closing it frees its memory; the record
 
 - **Apps:** tabs New / Included / Excluded / Folders with counts, a search box, 10 per page.
   - Each row: icon, name, "N lines · x min ago", path; ✓ include, ✕ exclude; a gamepad to mark it as a game.
-  - Right-click: Add as game / Not a game, Include, Exclude, Open file location, Include / Exclude every app in its folder.
+  - Right-click: Add as game / Not a game, Include, Exclude, Open file location, Include / Exclude every app in its folder, Remove from list (forgets its choices and hides it until it plays sound again, then it is under New).
   - Folders: each folder rule with its app count; switch it, Remove it, or add one with a folder picker.
   - Search with no match offers "Add <name>.exe".
 - **Transcription:** Auto / Always / Paused, what it is doing, minutes waiting. In Auto, the GPU limit and the

@@ -199,6 +199,7 @@ static void remember_app(App* app, SettingsState* s, Str exe, const char* what) 
     AppInfo* a = app_find(app, exe);
     u->decision = a ? a->decision : DECISION_NEW;
     u->game = a ? a->game : GAME_NO;
+    u->on = app_removed(app, exe);
 }
 
 static void undo_last(App* app, SettingsState* s) {
@@ -210,6 +211,7 @@ static void undo_last(App* app, SettingsState* s) {
         AppInfo* a = app_find(app, str(u.exe));
         if (!a || a->decision != u.decision) app_set_decision(app, str(u.exe), u.decision);
         if (!a || a->game != u.game) app_set_game(app, str(u.exe), u.game);
+        if (!u.on) app_unremove(app, str(u.exe));
     } break;
     case UNDO_FOLDER: app_set_folder(app, str(u.folder), u.decision); break;
     case UNDO_MODE: worker_set_mode(app, (Mode)u.n); break;
@@ -257,6 +259,7 @@ static void apps_load(App* app, SettingsState* s) {
     for (i32 i = 0; i < app->apps.list.count; i++) {
         AppInfo* a = &app->apps.list[i];
         if (is_own_exe(str(a->exe))) continue;
+        if (!a->playing && app_removed(app, str(a->exe))) continue;
         if (q.len && str_find(str(a->exe), q) < 0 && str_find(str_lower(scratch(), str(a->name)), q) < 0) continue;
         AppsView v = view_of(app, a);
         // New lists what was heard, plays now, or is installed; not every exe the config names.
@@ -278,7 +281,7 @@ static void apps_load(App* app, SettingsState* s) {
 }
 
 // What a click on a row asks for; done after the rows are drawn.
-enum AppAct : u8 { ACT_NONE, ACT_INCLUDE, ACT_EXCLUDE, ACT_GAME, ACT_REVEAL, ACT_INCLUDE_FOLDER, ACT_EXCLUDE_FOLDER };
+enum AppAct : u8 { ACT_NONE, ACT_INCLUDE, ACT_EXCLUDE, ACT_GAME, ACT_REVEAL, ACT_INCLUDE_FOLDER, ACT_EXCLUDE_FOLDER, ACT_REMOVE };
 
 // ---------------------------------------------------------------------------------------------
 // Folder rules
@@ -551,6 +554,9 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
             ImGui::Separator();
             if (ImGui::MenuItem(label(ICON_FOLDER, "Include every app in its folder"), 0, false, a->path[0] != 0)) act = ACT_INCLUDE_FOLDER;
             if (ImGui::MenuItem(label(ICON_FOLDER, "Exclude every app in its folder"), 0, false, a->path[0] != 0)) act = ACT_EXCLUDE_FOLDER;
+            ImGui::Separator();
+            if (ImGui::MenuItem(label(ICON_TRASH, "Remove from list"))) act = ACT_REMOVE;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forgets its choices. It comes back under New if it plays sound again.");
             ImGui::EndPopup();
         }
         if (act != ACT_NONE && !act_exe[0]) SET(act_exe, exe);
@@ -581,8 +587,9 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         }
     }
 
-    if (s->pages > 1) {
-        // Every page takes the height of a full one, so a short last page doesn't pull the arrows up.
+    {
+        // Every page of every tab takes the height of a full one and shows the arrows (greyed out
+        // when there is one page), so switching tabs or pages never moves the card's edge.
         f32 full = APPS_PER_PAGE * (row_h + ImGui::GetStyle().ItemSpacing.y);
         f32 used = ImGui::GetCursorPosY() - rows_top;
         if (used < full) ImGui::Dummy(ImVec2(0, full - used - ImGui::GetStyle().ItemSpacing.y));
@@ -627,6 +634,14 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         set_folder(app, s, str_copy(scratch(), str_sub(path, 0, cut)), act == ACT_INCLUDE_FOLDER ? DECISION_INCLUDED : DECISION_EXCLUDED);
         rewind(m);
     } break;
+    case ACT_REMOVE:
+        remember_app(app, s, exe, "removed from the list");
+        app_remove(app, exe);
+        {
+        Str name = app_name(app, exe);
+        ui_say(app, "Removed %.*s. It comes back under New if it plays sound again.", (int)name.len, name.ptr);
+    }
+        break;
     case ACT_REVEAL: {
         Mark m = mark(scratch());
         open_path(app, wide(scratch(), str(a->path)), true);

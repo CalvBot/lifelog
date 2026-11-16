@@ -91,6 +91,22 @@ void app_set_game(App* app, Str exe, GameMark g) {
     config_save_names("processing", "not_games", &c->processing.not_games);
 }
 
+void app_remove(App* app, Str exe) {
+    AppInfo* a = app_get(app, exe);
+    if (a->decision != DECISION_NEW) app_set_decision(app, exe, DECISION_NEW);
+    if (a->game != GAME_NO) app_set_game(app, exe, GAME_NO);
+    names_set(&app->config.capture.removed_apps, exe, true);
+    config_save_names("capture", "removed_apps", &app->config.capture.removed_apps);
+}
+
+void app_unremove(App* app, Str exe) {
+    if (!names_has(&app->config.capture.removed_apps, exe)) return;
+    names_set(&app->config.capture.removed_apps, exe, false);
+    config_save_names("capture", "removed_apps", &app->config.capture.removed_apps);
+}
+
+bool app_removed(App* app, Str exe) { return names_has(&app->config.capture.removed_apps, exe); }
+
 // ---------------------------------------------------------------------------------------------
 // Folder rules
 

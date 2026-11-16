@@ -70,6 +70,11 @@ void apps_from_config(App* app);
 // Change a decision and save the config's lists.
 void app_set_decision(App* app, Str exe, Decision d);
 void app_set_game(App* app, Str exe, GameMark g);
+// Removing an app from the lists forgets its choices (recorded, game) and hides it until it plays
+// sound again, when app_unremove brings it back under New. Both save the config.
+void app_remove(App* app, Str exe);
+void app_unremove(App* app, Str exe);
+bool app_removed(App* app, Str exe);
 
 // Folder rules (capture.included_folders and excluded_folders): every app in the folder,
 // subfolders too, unless the exe has a decision of its own; the deepest folder wins.
