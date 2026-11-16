@@ -111,6 +111,21 @@ static void settings_card_end() {
     ImGui::PopStyleVar(2);
 }
 
+// A form row: its name in the left column, then (on the same line) what it sets.
+static const f32 ROW_LABEL_W = 132;
+static void row_label(const char* text) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(weak_text(), "%s", text);
+    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+}
+
+// `text` in weak text at the right of the current line (a card title's status).
+static void status_right(const char* text) {
+    f32 w = ImGui::CalcTextSize(text).x;
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - w);
+    weak(text);
+}
+
 // A button that stays lit while `on` (a selectable button). `size` is the least it takes.
 static bool pick(const char* text, bool on, ImVec2 size = ImVec2(0, 0)) {
     f32 need = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
@@ -721,28 +736,42 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     Config* c = &app->config;
     settings_card("transcription", width);
     title("Transcription");
+    f64 queued = app->worker.queued_secs / 60.0;
+    status_right(queued >= 1 ? tmp("%s · %.0f min waiting", app->worker.state, queued) : app->worker.state);
+
+    // Auto | Always | Paused, as one segmented control on a darker strip.
+    row_label("Run");
     const char* names[] = {"Auto", "Always", "Paused"};
+    f32 seg_w = px(78), inset = px(3);
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + seg_w * 3 + inset * 2, at.y + ImGui::GetFrameHeight()),
+                                              ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y - inset));
     for (i32 m = 0; m < 3; m++) {
-        if (m) ImGui::SameLine(0, px(4));
-        if (pick(tmp("%s##mode", names[m]), c->processing.mode == m) && c->processing.mode != m) {
+        ImGui::SetCursorScreenPos(ImVec2(at.x + inset + seg_w * m, at.y + inset));
+        if (pick(tmp("%s##mode", names[m]), c->processing.mode == m, ImVec2(seg_w, 0)) && c->processing.mode != m) {
             SettingsUndo* u = remember(s, UNDO_MODE, "transcription %s", names[m]);
             u->n = (u32)c->processing.mode;
             worker_set_mode(app, (Mode)m);
         }
     }
-    ImGui::SameLine(0, px(12));
-    f64 queued = app->worker.queued_secs / 60.0;
-    weak(queued >= 1 ? tmp("%s · %.0f min waiting", app->worker.state, queued) : app->worker.state);
+    ImGui::PopStyleVar();
+    ImGui::SetCursorScreenPos(at);
+    ImGui::Dummy(ImVec2(seg_w * 3 + inset * 2, ImGui::GetFrameHeight()));
+    ImGui::SameLine();
+    weak(fit(c->processing.mode == MODE_AUTO ? "waits for a free GPU" : c->processing.mode == MODE_ALWAYS ? "even during games" : "still records, transcribes later",
+             ImGui::GetContentRegionAvail().x));
 
     if (c->processing.mode == MODE_AUTO) {
+        row_label("Games");
         bool games = c->processing.pause_for_games;
-        if (ImGui::Checkbox("Pause while games are running", &games)) {
+        if (ImGui::Checkbox("Pause while one is running", &games)) {
             SettingsUndo* u = remember(s, UNDO_PAUSE_GAMES, games ? "pause for games on" : "pause for games off");
             u->on = !games;
             worker_set_pause_for_games(app, games);
         }
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Wait while the graphics card is busier than");
+        row_label("Graphics card");
+        ImGui::TextUnformatted("Wait while busier than");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(px(64));
         ImGui::DragInt("##gpu", &s->gpu, 0.2f, 10, 100, "%d %%", ImGuiSliderFlags_AlwaysClamp);
@@ -758,11 +787,11 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     }
 
     // lifelog's own whisper.cpp, or any OpenAI-compatible transcription server.
-    if (!c->worker.endpoint[0] && (app->worker.missing || app->setup.part[SETUP_TRANSCRIBER].running))
+    if (!c->worker.endpoint[0] && (app->worker.missing || app->setup.part[SETUP_TRANSCRIBER].running)) {
+        row_label("Transcriber");
         setup_row(app, SETUP_TRANSCRIBER, "whisper.cpp and Whisper large-v3-turbo", "about 2.3 GB");
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Your own server");
-    ImGui::SameLine();
+    }
+    row_label("Your own server");
     f32 model_w = px(140);
     bool url_done = setting_field("##wendpoint", "http://localhost:8000/v1 (OpenAI-compatible)", s->wendpoint, sizeof(s->wendpoint),
                                   &s->wendpoint_active, c->worker.endpoint, ImGui::GetContentRegionAvail().x - model_w - ImGui::GetStyle().ItemSpacing.x);
@@ -787,14 +816,31 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     }
     ImGui::SameLine();
     title("Daily summary");
+
+    // Its actions at the right of the title, and how it is doing between, cut to fit.
+    const char* edit = label(ICON_FILE_TEXT, "Edit prompt");
+    const char* write = label(ICON_SCROLL_TEXT, "Write today's now");
+    ImGuiStyle& st = ImGui::GetStyle();
+    f32 edit_w = ImGui::CalcTextSize(edit).x + st.FramePadding.x * 2;
+    f32 write_w = ImGui::CalcTextSize(write).x + st.FramePadding.x * 2;
+    f32 buttons_x = ImGui::GetContentRegionMax().x - write_w - st.ItemSpacing.x - edit_w;
     if (app->summary.phase[0]) {
-        ImGui::SameLine();
-        weak(app->summary.phase);
+        ImGui::SameLine(0, px(10));
+        f32 room = buttons_x - ImGui::GetCursorPosX() - px(10);
+        if (room > px(40)) weak(fit(app->summary.phase, room));
+    }
+    ImGui::SameLine(buttons_x);
+    if (ImGui::Button(edit)) summary_edit_prompt(app);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
+                          "Changes count from the next summary. Delete the file to go back to the built-in text.");
+    ImGui::SameLine();
+    if (ImGui::Button(write)) {
+        Str result = summary_act(app, scratch(), "now", 0, 0);
+        ui_say(app, "%s", str_eq(result, str("writing")) ? "Writing today's summary" : result.ptr);
     }
 
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Ask at");
-    ImGui::SameLine();
+    row_label("Ask at");
     if (!s->ask_at_active) SET(s->ask_at, str(c->summary.ask_at));
     ImGui::SetNextItemWidth(px(56));
     ImGui::InputText("##ask_at", s->ask_at, sizeof(s->ask_at));
@@ -812,7 +858,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
             }
         }
     }
-    ImGui::SameLine();
+    row_label("Length");
     ImGui::TextUnformatted("At most");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(px(100));
@@ -824,28 +870,12 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     }
     if (!ImGui::IsItemActive()) s->max_words = (i32)c->summary.max_words;
 
-    const char* edit = label(ICON_FILE_TEXT, "Edit prompt");
-    const char* write = label(ICON_SCROLL_TEXT, "Write today's now");
-    ImGuiStyle& st = ImGui::GetStyle();
-    f32 edit_w = ImGui::CalcTextSize(edit).x + st.FramePadding.x * 2;
-    f32 write_w = ImGui::CalcTextSize(write).x + st.FramePadding.x * 2;
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - write_w - st.ItemSpacing.x - edit_w);
-    if (ImGui::Button(edit)) summary_edit_prompt(app);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
-                          "Changes count from the next summary. Delete the file to go back to the built-in text.");
-    ImGui::SameLine();
-    if (ImGui::Button(write)) {
-        Str result = summary_act(app, scratch(), "now", 0, 0);
-        ui_say(app, "%s", str_eq(result, str("writing")) ? "Writing today's summary" : result.ptr);
-    }
-
     // lifelog's own llama.cpp, or any OpenAI-compatible server (Ollama, LM Studio, a cloud one).
-    if (!c->summary.endpoint[0] && (!summary_ai_ready(c->summary.model) || app->setup.part[SETUP_SUMMARY_AI].running))
+    if (!c->summary.endpoint[0] && (!summary_ai_ready(c->summary.model) || app->setup.part[SETUP_SUMMARY_AI].running)) {
+        row_label("AI");
         setup_row(app, SETUP_SUMMARY_AI, "llama.cpp and Qwen3 14B", "about 10 GB");
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Your own AI server");
-    ImGui::SameLine();
+    }
+    row_label("Your own AI server");
     f32 model_w = px(140);
     bool url_done = setting_field("##endpoint", "http://localhost:11434/v1 (OpenAI-compatible)", s->endpoint, sizeof(s->endpoint), &s->endpoint_active,
                                   c->summary.endpoint, ImGui::GetContentRegionAvail().x - model_w - ImGui::GetStyle().ItemSpacing.x);
@@ -853,6 +883,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     bool model_done = setting_field("##model", "model", s->model, sizeof(s->model), &s->model_active, c->summary.model, model_w);
     if (url_done || model_done) summary_set_endpoint(app, str(url_done ? s->endpoint : c->summary.endpoint), str(model_done ? s->model : ""));
 
+    row_label("Reminders");
     bool remind = c->summary.ask_reminders;
     if (toggle("##reminders", &remind)) {
         SettingsUndo* u = remember(s, UNDO_REMINDERS, remind ? "reminder notifications on" : "reminder notifications off");
@@ -861,13 +892,11 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     }
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Offer a notification when I say I'll do something later");
+    ImGui::TextUnformatted(fit("Offer a notification when I say I'll do something later", ImGui::GetContentRegionAvail().x));
 
     List<NeverTopic>* never = &app->summary.never;
     if (never->count) {
-        ImGui::PushFont(0, small_size());
-        ImGui::TextColored(weak_text(), "Never mention");
-        ImGui::PopFont();
+        row_label("Never mention");
         i64 remove = 0;
         f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
         for (i32 i = 0; i < never->count; i++) {
@@ -877,7 +906,10 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
             // Wrapped like words: on this line if it fits, else the next.
             if (i > 0) {
                 ImGui::SameLine();
-                if (ImGui::GetCursorScreenPos().x + w > right) ImGui::NewLine();
+                if (ImGui::GetCursorScreenPos().x + w > right) {
+                    ImGui::NewLine();
+                    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+                }
             }
             if (ImGui::Button(text)) remove = n->id;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Allow again");
@@ -901,6 +933,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
 static void files_card(App* app, f32 width) {
     settings_card("files", width);
     title("Files");
+    if (app->config.data_dir[0]) status_right(app->config.data_dir);
     Mark m = mark(scratch());
     const wchar_t* targets[3] = {wide(scratch(), str(app->config.data_dir)), log_path(), config_path()};
     const char* icons[3] = {ICON_FOLDER_OPEN, ICON_FILE_TEXT, ICON_SETTINGS};
@@ -912,11 +945,6 @@ static void files_card(App* app, f32 width) {
         if (ImGui::Button(label(icons[i], texts[i]))) open_path(app, targets[i], false);
         ImGui::EndDisabled();
         if (has && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", narrow(scratch(), targets[i]).ptr);
-    }
-    if (app->config.data_dir[0]) {
-        ImGui::PushFont(0, small_size());
-        ImGui::TextColored(weak_text(), "%s", app->config.data_dir);
-        ImGui::PopFont();
     }
     rewind(m);
     settings_card_end();
