@@ -637,6 +637,7 @@ static i32 run_app() {
         return 1;
     }
     settings_publish(app);  // before any thread reads settings()
+    disk_start();
     app->storage.ready = db_init(&app->config);
     if (app->storage.ready) app->storage.db = db_open(app);
 
@@ -719,6 +720,7 @@ static i32 run_app() {
     capture_stop(app);
     app_unlock(app);
     worker_stop(app);
+    disk_stop();  // the settings and paths asked for are on disk before the program ends
     if (app->restarting) {
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(0, exe, MAX_PATH);

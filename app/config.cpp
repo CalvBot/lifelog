@@ -371,6 +371,11 @@ static i64 line_end(Str s, i64 pos) {
 }
 
 bool config_save_value(const char* table, const char* key, Str value) {
+    disk_save_key(table, key, value);
+    return true;
+}
+
+bool config_write_value(const char* table, const char* key, Str value) {
     AcquireSRWLockExclusive(&save_lock);
     Arena* a = scratch();
     Mark m = mark(a);

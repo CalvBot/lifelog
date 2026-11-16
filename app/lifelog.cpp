@@ -16,6 +16,7 @@
 
 struct App;
 
+#include "disk.h"
 #include "config.h"
 #include "apps.h"
 #include "capture.h"
@@ -31,6 +32,7 @@ struct App;
 #include "base.cpp"
 #include "events.cpp"
 #include "config.cpp"
+#include "disk.cpp"
 #include "db.cpp"
 #include "apps.cpp"
 #include "capture.cpp"

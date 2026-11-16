@@ -312,17 +312,9 @@ static void paths_file(wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%s\\pa
 
 // Adds lines ("exe\tpath\n" each) to paths.txt.
 static void paths_append(Str lines) {
-    if (!lines.len) return;
     wchar_t file[MAX_PATH];
     paths_file(file);
-    HANDLE f = CreateFileW(file, FILE_APPEND_DATA, FILE_SHARE_READ, 0, OPEN_ALWAYS, 0, 0);
-    if (f == INVALID_HANDLE_VALUE) {
-        WARN("apps: could not add to paths.txt (error %lu)", GetLastError());
-        return;
-    }
-    DWORD wrote = 0;
-    WriteFile(f, lines.ptr, (DWORD)lines.len, &wrote, 0);
-    CloseHandle(f);
+    disk_append(file, lines);  // the file writer does it
 }
 
 // Remembers where `exe` lives, and returns true if that was new. With the lock.

@@ -70,13 +70,16 @@ const wchar_t* config_path();
 bool config_load(Config* cfg, char* error, i32 error_cap);
 
 // Sets one key in the file, leaving everything else (and the comments) as it is. `value` is
-// already TOML: "\"21:00\"", "250", "true", "[\"a.exe\", \"b.exe\"]".
+// already TOML: "\"21:00\"", "250", "true", "[\"a.exe\", \"b.exe\"]". The file writer
+// (disk.h) does it, so these return at once; true means it was asked for.
 bool config_save_value(const char* table, const char* key, Str value);
 bool config_save_names(const char* table, const char* key, Names* names);
 bool config_save_folders(const char* table, const char* key, Folders* folders);
 bool config_save_bool(const char* table, const char* key, bool on);
 bool config_save_u32(const char* table, const char* key, u32 n);
 bool config_save_string(const char* table, const char* key, const char* s);
+// The write itself, on the file writer's thread (or at once, when it is not running).
+bool config_write_value(const char* table, const char* key, Str value);
 
 // The paths under data_dir.
 void spool_dir(Config* cfg, wchar_t out[MAX_PATH]);
