@@ -107,7 +107,8 @@ C++ built with MSVC, in a plain data-oriented style:
     once it has been quiet for 60 s.
   - **Always:** transcribes no matter what.
   - **Paused:** only records.
-- Games are a list of exe names. While one is running, Auto waits whatever the GPU load is.
+- Games are a list of exe names. While one is running, Auto waits whatever the GPU load is (unless
+  "Pause while games are running" is off).
 
 ## Daily summary
 
@@ -180,13 +181,14 @@ The window only exists while it is open. Closing it frees its memory; the record
 
 ### Settings
 
-- **Apps:** tabs New / Included / Excluded / Folders with counts, a search box, 10 per page.
+- **Processes:** tabs New / Included / Excluded / Folders with counts, a search box, 10 per page. Every
+  tab is as tall as a full page. Card titles are bold, on their own line.
   - Each row: icon, name, "N lines · x min ago", path; ✓ include, ✕ exclude; a gamepad to mark it as a game.
   - Right-click: Add as game / Not a game, Include, Exclude, Open file location, Include / Exclude every app in its folder, Remove from list (forgets its choices and hides it until it plays sound again, then it is under New).
   - Folders: each folder rule with its app count; switch it, Remove it, or add one with a folder picker.
   - Search with no match offers "Add <name>.exe".
-- **Transcription:** Auto / Always / Paused, what it is doing, minutes waiting. In Auto, the GPU limit and the
-  current load.
+- **Transcription:** Auto / Always / Paused, what it is doing, minutes waiting. In Auto, "Pause while games are running",
+  the GPU limit and the current load.
 - **Daily summary:** on/off, what it is doing, ask time, word limit, Write today's now, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
 - **Files:** open the recordings folder, the log and the config file.

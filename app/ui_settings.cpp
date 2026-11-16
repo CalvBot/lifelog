@@ -20,6 +20,7 @@ enum UndoKind : u8 {
     UNDO_ASK_AT,
     UNDO_WORDS,
     UNDO_REMINDERS,
+    UNDO_PAUSE_GAMES,
     UNDO_NEVER,      // a never-mention topic that was allowed again: add it back
 };
 
@@ -78,9 +79,12 @@ static ImVec4 strong_text() {
     return bg.x < 0.5f ? ImVec4(1, 1, 1, 1) : ImVec4(0, 0, 0, 1);
 }
 
+// A card's title, in bold on its own line.
 static void title(const char* text) {
+    if (g_bold) ImGui::PushFont(g_bold, 0);
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(strong_text(), "%s", text);
+    if (g_bold) ImGui::PopFont();
 }
 
 static void weak(const char* text) {
@@ -220,6 +224,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_ASK_AT: summary_set_ask_at(app, str(u.text)); break;
     case UNDO_WORDS: summary_set_max_words(app, u.n); break;
     case UNDO_REMINDERS: summary_set_ask_reminders(app, u.on); break;
+    case UNDO_PAUSE_GAMES: worker_set_pause_for_games(app, u.on); break;
     case UNDO_NEVER: summary_add_never(app, str(u.text), 0, {}); break;
     }
     s->stale = true;
@@ -350,6 +355,7 @@ static void folders_view(App* app, SettingsState* s) {
     const f32 row_h = px(30);
     ImVec2 button = ImVec2(px(40), ImGui::GetFrameHeight());
     f32 spacing = ImGui::GetStyle().ItemSpacing.x;
+    f32 rows_top = ImGui::GetCursorPosY();
     char act_folder[MAX_PATH] = "";
     Decision act_to = DECISION_NEW;
     bool act = false, reveal = false;
@@ -424,6 +430,10 @@ static void folders_view(App* app, SettingsState* s) {
         }
     }
     if (!shown) weak(q.len ? "No match." : "None. A folder's rule covers every app in it, subfolders too; an app's own choice wins.");
+    // As tall as a full page of apps, so switching tabs never moves the card's edge.
+    f32 full = APPS_PER_PAGE * (row_h + ImGui::GetStyle().ItemSpacing.y);
+    f32 used = ImGui::GetCursorPosY() - rows_top;
+    if (used < full) ImGui::Dummy(ImVec2(0, full - used - ImGui::GetStyle().ItemSpacing.y));
     ImGui::BeginDisabled(g_picking != 0);
     for (i32 k = 0; k < 2; k++) {
         if (k) ImGui::SameLine();
@@ -441,8 +451,7 @@ static void folders_view(App* app, SettingsState* s) {
 
 static void apps_card(App* app, SettingsState* s, f32 width) {
     settings_card("apps", width);
-    title("Apps");
-    ImGui::SameLine(0, px(16));
+    title("Processes");
     const char* names[] = {"New", "Included", "Excluded", "Folders"};
     for (i32 v = 0; v < 4; v++) {
         if (v) ImGui::SameLine();
@@ -705,6 +714,12 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     weak(queued >= 1 ? tmp("%s · %.0f min waiting", app->worker.state, queued) : app->worker.state);
 
     if (c->processing.mode == MODE_AUTO) {
+        bool games = c->processing.pause_for_games;
+        if (ImGui::Checkbox("Pause while games are running", &games)) {
+            SettingsUndo* u = remember(s, UNDO_PAUSE_GAMES, games ? "pause for games on" : "pause for games off");
+            u->on = !games;
+            worker_set_pause_for_games(app, games);
+        }
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Wait while the graphics card is busier than");
         ImGui::SameLine();

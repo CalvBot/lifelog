@@ -124,7 +124,7 @@ static bool worker_allowed(App* app, f64 quiet_from, char* state, i32 cap) {
         snprintf(state, cap, "waiting for the daily summary");
     } else if (mode == MODE_PAUSED) {
         snprintf(state, cap, "paused");
-    } else if (mode == MODE_AUTO && app->apps.game_running[0]) {
+    } else if (mode == MODE_AUTO && app->config.processing.pause_for_games && app->apps.game_running[0]) {
         Str game = str(app->apps.game_running);
         if (game.len > 4 && _stricmp(game.ptr + game.len - 4, ".exe") == 0) game.len -= 4;
         snprintf(state, cap, "waiting for %.*s to close", (int)game.len, game.ptr);
@@ -642,7 +642,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             else if (!first) LOG("transcription is set up");
         }
         first = false;
-        bool game = app->apps.game_running[0] != 0;
+        bool game = c->processing.pause_for_games && app->apps.game_running[0] != 0;
         if (had_game && !game) quiet_from = now;
         had_game = game;
         if (files >= 0 && (files != w->queued || fabs(secs - w->queued_secs) > 0.5)) {
@@ -778,6 +778,13 @@ void worker_set_gpu_limit(App* app, u32 percent) {
     app->config.processing.gpu_busy_percent = percent;
     LOG("a game is running when 3D load is above %u%%", percent);
     config_save_u32("processing", "gpu_busy_percent", percent);
+}
+
+void worker_set_pause_for_games(App* app, bool on) {
+    if (app->config.processing.pause_for_games == on) return;
+    app->config.processing.pause_for_games = on;
+    LOG("auto mode %s while a game runs", on ? "waits" : "doesn't wait");
+    config_save_bool("processing", "pause_for_games", on);
 }
 
 void worker_set_endpoint(App* app, Str url, Str model) {

@@ -39,8 +39,9 @@ mode = "auto"
 gpu_busy_percent = 40
 # How long the GPU must stay quiet before transcription starts again.
 resume_after_secs = 60
-# Apps treated as games (exe names): in "auto" mode nothing is transcribed while one is running,
-# whatever the GPU load.
+# In "auto" mode, wait while a game (below) is running, whatever the GPU load.
+pause_for_games = true
+# Apps treated as games (exe names).
 games = []
 # Open apps dismissed as "not a game": no longer offered in the game lists.
 not_games = []
@@ -250,6 +251,7 @@ static void config_defaults(Config* cfg) {
     cfg->capture.keep_audio_days = 7;
     cfg->processing.mode = MODE_AUTO;
     cfg->processing.gpu_busy_percent = 40;
+    cfg->processing.pause_for_games = true;
     cfg->processing.resume_after_secs = 60;
     cfg->summary.enabled = true;
     SET(cfg->summary.ask_at, str("21:00"));
@@ -329,6 +331,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("processing"))) {
             if (str_eq(k, str("mode")) && v.kind == Value::STRING) mode_parse(str(v.s), &cfg->processing.mode);
             if (str_eq(k, str("gpu_busy_percent"))) take_u32(&cfg->processing.gpu_busy_percent, &v);
+            if (str_eq(k, str("pause_for_games"))) take_bool(&cfg->processing.pause_for_games, &v);
             if (str_eq(k, str("resume_after_secs"))) take_u32(&cfg->processing.resume_after_secs, &v);
             if (str_eq(k, str("games"))) take_names(&cfg->processing.games, &v);
             if (str_eq(k, str("not_games"))) take_names(&cfg->processing.not_games, &v);

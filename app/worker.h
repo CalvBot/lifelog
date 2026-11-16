@@ -31,6 +31,8 @@ struct Worker {
 void worker_start(App* app);
 void worker_set_mode(App* app, Mode mode);
 void worker_set_gpu_limit(App* app, u32 percent);
+// Whether auto mode waits while a game runs (saved to the config).
+void worker_set_pause_for_games(App* app, bool on);
 // Your own transcription server instead of lifelog's (empty `url`: lifelog's own). Saved to
 // config.toml. With the lock.
 void worker_set_endpoint(App* app, Str url, Str model);
