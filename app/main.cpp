@@ -639,7 +639,6 @@ static i32 run_app() {
     settings_publish(app);  // before any thread reads settings()
     disk_start();
     app->storage.ready = db_init(&app->config);
-    if (app->storage.ready) app->storage.db = db_open(app);
 
     ImGui_ImplWin32_EnableDpiAwareness();
     gpu_init();
@@ -647,6 +646,7 @@ static i32 run_app() {
     app->events.lock = SRWLOCK_INIT;
     app->events.window = app->ui.tray;
 
+    db_thread_start(app);
     app_lock(app);
     apps_from_config(app);
     apps_start(app);
@@ -720,6 +720,7 @@ static i32 run_app() {
     capture_stop(app);
     app_unlock(app);
     worker_stop(app);
+    db_thread_stop();
     disk_stop();  // the settings and paths asked for are on disk before the program ends
     if (app->restarting) {
         wchar_t exe[MAX_PATH];

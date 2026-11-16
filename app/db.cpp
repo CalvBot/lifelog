@@ -228,3 +228,91 @@ Slice<SpeakerCount> db_speakers(sqlite3* db, Arena* a) {
     list_free(&list);
     return out;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The database thread
+
+struct DbTask {
+    DbTask* next;
+    Job* job;
+    DbRun* run;
+};
+
+static struct {
+    SRWLOCK lock;  // guards head and tail
+    DbTask* head;
+    DbTask* tail;
+    HANDLE wake;
+    HANDLE thread;
+    App* app;
+} g_dbt;
+
+static DWORD WINAPI db_thread_main(void*) {
+    App* app = g_dbt.app;
+    sqlite3* db = 0;
+    bool tried = false;
+    HANDLE waits[2] = {app->stop, g_dbt.wake};
+    for (;;) {
+        AcquireSRWLockExclusive(&g_dbt.lock);
+        DbTask* t = g_dbt.head;
+        g_dbt.head = g_dbt.tail = 0;
+        ReleaseSRWLockExclusive(&g_dbt.lock);
+        while (t) {
+            DbTask* next = t->next;
+            Job* job = t->job;  // t is in the job's arena
+            if (stopping(app)) {
+                job_free(job);
+            } else {
+                if (!db && !tried && app->storage.ready) {
+                    db = db_open(app);
+                    tried = !db;  // once: the log says why
+                }
+                t->run(db, job);
+                job_post_wait(app, job);
+            }
+            t = next;
+        }
+        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) break;
+    }
+    // What was asked for after the end: dropped.
+    AcquireSRWLockExclusive(&g_dbt.lock);
+    for (DbTask* t = g_dbt.head; t;) {
+        DbTask* next = t->next;
+        job_free(t->job);
+        t = next;
+    }
+    g_dbt.head = g_dbt.tail = 0;
+    ReleaseSRWLockExclusive(&g_dbt.lock);
+    if (db) sqlite3_close(db);
+    return 0;
+}
+
+void db_thread_start(App* app) {
+    g_dbt.app = app;
+    g_dbt.wake = CreateEventW(0, FALSE, FALSE, 0);
+    CHECK(g_dbt.wake, "the database thread's event (error %lu)", GetLastError());
+    g_dbt.thread = CreateThread(0, 0, db_thread_main, 0, 0, 0);
+    CHECK(g_dbt.thread, "the database thread to start (error %lu)", GetLastError());
+    SetThreadDescription(g_dbt.thread, L"database");
+}
+
+// After App.stop is set.
+void db_thread_stop() {
+    if (!g_dbt.thread) return;
+    WaitForSingleObject(g_dbt.thread, 10000);
+    CloseHandle(g_dbt.thread);
+    g_dbt.thread = 0;
+}
+
+void db_post(Job* job, DbRun* run) {
+    CHECK(g_dbt.thread, "db_post after db_thread_start");
+    DbTask* t = PUSH(&job->arena, DbTask);
+    t->job = job;
+    t->run = run;
+    AcquireSRWLockExclusive(&g_dbt.lock);
+    if (g_dbt.tail) g_dbt.tail->next = t;
+    else g_dbt.head = t;
+    g_dbt.tail = t;
+    ReleaseSRWLockExclusive(&g_dbt.lock);
+    SetEvent(g_dbt.wake);
+}

@@ -5,7 +5,6 @@
 #pragma once
 
 struct Storage {
-    sqlite3* db;        // the window thread's connection
     bool ready;         // the data folder exists and the schema is in place
     u64 files_version;  // bumped when a file is pasted
 };
@@ -14,6 +13,15 @@ struct Storage {
 sqlite3* db_open(App* app);
 // Creates the tables if needed and adds columns that came later. Any thread, unlocked.
 bool db_init(Config* cfg);
+
+// The database thread: its own connection, for the queries and writes the window asks for, so
+// a frame never waits on the disk. A request is a job (events.h): `run` fills it in on the
+// database thread, then `job->apply` takes the results on the main thread.
+struct Job;
+typedef void DbRun(sqlite3* db, Job* job);  // `db` is null if the database could not be opened
+void db_thread_start(App* app);
+void db_thread_stop();
+void db_post(Job* job, DbRun* run);
 
 struct Line {
     i64 id;

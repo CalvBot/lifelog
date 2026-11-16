@@ -17,24 +17,22 @@ struct HeardDays {
 };
 static HeardDays g_heard;
 
-static DWORD WINAPI heard_main(void* param) {
-    App* app = (App*)param;
-    Arena a = {};
-    Slice<DayCount> days = {};
-    sqlite3* db = db_open(app);
-    if (db) {
-        days = db_days(db, &a);
-        sqlite3_close(db);
-    }
-    app_lock(app);
+struct HeardJob {
+    Slice<DayCount> days;
+};
+
+static void heard_run(sqlite3* db, Job* job) {
+    if (db) ((HeardJob*)job->data)->days = db_days(db, &job->arena);
+}
+
+static void heard_apply(App* app, Job* job) {
+    HeardJob* h = (HeardJob*)job->data;
     arena_release(&g_heard.arena);
-    g_heard.arena = a;
-    g_heard.days = days;
+    g_heard.arena = job_take_arena(job);
+    g_heard.days = h->days;
     g_heard.loading = false;
     g_heard.loaded = true;
-    app_unlock(app);
     wake_window(app);
-    return 0;
 }
 
 static i32 heard_lines(const char* day) {
@@ -59,7 +57,32 @@ struct JournalState {
     bool never_focus;
     char never_bullet[1024];
     char never_topic[128];
+    u64 asked;  // the request on the way (g_journal_seq); older results are dropped
 };
+
+static JournalState* g_journal;  // the window's journal while it is open
+static u64 g_journal_seq;
+
+struct JournalJob {
+    u64 asked;
+    char day[11];
+    StoredSummary summary;
+};
+
+static void journal_run(sqlite3* db, Job* job) {
+    JournalJob* j = (JournalJob*)job->data;
+    if (db) j->summary = summary_get(db, &job->arena, j->day);
+}
+
+static void journal_apply(App* app, Job* job) {
+    JournalState* s = g_journal;
+    JournalJob* j = (JournalJob*)job->data;
+    if (!s || j->asked != s->asked) return;
+    arena_release(&s->arena);
+    s->arena = job_take_arena(job);
+    s->summary = j->summary;
+    wake_window(app);
+}
 
 static void journal_show_day(JournalState* s, const char* day) {
     if (day && day[0]) {
@@ -71,6 +94,7 @@ static void journal_show_day(JournalState* s, const char* day) {
 }
 
 static void journal_free(JournalState* s) {
+    if (g_journal == s) g_journal = 0;
     arena_release(&s->arena);
     // Count again next time the window opens: lines will have come in.
     if (!g_heard.loading) g_heard.loaded = false;
@@ -558,20 +582,28 @@ static void journal_draw(App* app, JournalState* s, f32* next_frame_ms) {
     char today[11];
     today_day(today);
     if (!s->day[0]) SET(s->day, str(today));
+    g_journal = s;
 
-    if (!app->storage.db) {
+    if (!app->storage.ready) {
         ImGui::TextWrapped("The database could not be opened. The log says why.");
         return;
     }
     if (!g_heard.loading && (!g_heard.loaded || strcmp(g_heard.today, today) != 0)) {
         g_heard.loading = true;
         SET(g_heard.today, str(today));
-        start_thread(app, "journal days", heard_main);
+        Job* job = job_new(heard_apply);
+        job->data = PUSH(&job->arena, HeardJob);
+        db_post(job, heard_run);
     }
 
     if (!s->loaded || strcmp(s->loaded_day, s->day) != 0 || s->version != app->summary.version) {
-        arena_reset(&s->arena);
-        s->summary = summary_get(app->storage.db, &s->arena, s->day);
+        // Read on the database thread; the old one stays on screen until it comes.
+        Job* job = job_new(journal_apply);
+        JournalJob* j = PUSH(&job->arena, JournalJob);
+        j->asked = s->asked = ++g_journal_seq;
+        SET(j->day, str(s->day));
+        job->data = j;
+        db_post(job, journal_run);
         SET(s->loaded_day, str(s->day));
         s->version = app->summary.version;
         s->loaded = true;

@@ -53,7 +53,11 @@ struct TimelineState {
     char loaded_day[11];   // the day `lines` are of
     u64 lines_version;     // App.worker.lines_version when they were loaded
     u64 files_version;
-    bool loaded;
+    bool loaded;           // `lines` hold loaded_day
+    bool requested;        // a day was asked for (its lines may still be on the way)
+    u64 day_asked;         // the newest request for each kind (g_tl_seq); older results are dropped
+    u64 day_got;
+    u64 search_asked, days_asked, apps_asked;
     Slice<Line> lines;
     Slice<FileItem> files;
     i32* line_chip;        // per line: its speaker in `chips`
@@ -536,20 +540,42 @@ static int tl_chip_order(const void* a, const void* b) {
     return strcmp(x->speaker.ptr, y->speaker.ptr);
 }
 
-static void timeline_load(App* app, TimelineState* s) {
-    bool same = s->loaded && strcmp(s->loaded_day, s->day) == 0;
+// ---------------------------------------------------------------------------------------------
+// Reading: the database thread runs the queries (db_post) and the results come back here.
+
+static TimelineState* g_tl;  // the window's timeline while it is open; results find it here
+static u64 g_tl_seq;         // numbers the requests, across windows, so a late result is known
+
+struct TlDayJob {
+    u64 asked;
+    char day[11];
+    Slice<Line> lines;
+    Slice<FileItem> files;
+};
+
+static void tl_day_run(sqlite3* db, Job* job) {
+    TlDayJob* d = (TlDayJob*)job->data;
+    if (!db) return;
+    f64 from, to;
+    day_bounds(d->day, &from, &to);
+    d->lines = db_lines_between(db, &job->arena, from, to, TL_DAY_LIMIT);
+    d->files = db_files_between(db, &job->arena, from, to);
+}
+
+// The main thread: the day's lines and files have come.
+static void tl_day_apply(App* app, Job* job) {
+    TimelineState* s = g_tl;
+    TlDayJob* d = (TlDayJob*)job->data;
+    if (!s || d->asked != s->day_asked) return;  // the window closed, or another day was asked for
+    s->day_got = d->asked;
+    bool same = s->loaded && strcmp(s->loaded_day, d->day) == 0;
     i64 old_max = s->max_id;
-    arena_reset(&s->arena);
-    s->lines = {};
-    s->files = {};
+    arena_release(&s->arena);
+    s->arena = job_take_arena(job);
+    s->lines = d->lines;
+    s->files = d->files;
     s->chips = {};
     s->line_chip = 0;
-    if (app->storage.db) {
-        f64 from, to;
-        day_bounds(s->day, &from, &to);
-        s->lines = db_lines_between(app->storage.db, &s->arena, from, to, TL_DAY_LIMIT);
-        s->files = db_files_between(app->storage.db, &s->arena, from, to);
-    }
     s->max_id = 0;
     for (i32 i = 0; i < s->lines.count; i++)
         if (s->lines.items[i].id > s->max_id) s->max_id = s->lines.items[i].id;
@@ -559,9 +585,7 @@ static void timeline_load(App* app, TimelineState* s) {
             if (s->lines.items[i].id > old_max) list_push(&s->fresh, {s->lines.items[i].id, now});
     }
     if (!same) {
-        s->fresh.count = 0;
         s->new_page = true;
-        s->scroll_to = 0;
         s->rows.count = 0;  // other ids: no heights to keep
     }
 
@@ -588,11 +612,106 @@ static void timeline_load(App* app, TimelineState* s) {
     s->chips = {sorted, chips.count};
     list_free(&chips);
 
+    s->loaded = true;
+    SET(s->loaded_day, str(d->day));
+    s->rows_dirty = true;
+    wake_window(app);
+}
+
+
+// Asks for the shown day's lines and files; until they come the old ones stay on screen.
+static void timeline_load(App* app, TimelineState* s) {
     s->lines_version = app->worker.lines_version;
     s->files_version = app->storage.files_version;
-    s->loaded = true;
-    SET(s->loaded_day, str(s->day));
-    s->rows_dirty = true;
+    s->requested = true;
+    if (!s->loaded || strcmp(s->loaded_day, s->day) != 0) {
+        // Another day: what is set after this (a line to show) is for it.
+        s->fresh.count = 0;
+        s->scroll_to = 0;
+    }
+    Job* job = job_new(tl_day_apply);
+    TlDayJob* d = PUSH(&job->arena, TlDayJob);
+    d->asked = s->day_asked = ++g_tl_seq;
+    SET(d->day, str(s->day));
+    job->data = d;
+    db_post(job, tl_day_run);
+}
+
+// Another day was asked for and has not come yet.
+static bool tl_day_pending(TimelineState* s) {
+    return s->day_asked != s->day_got && !(s->loaded && strcmp(s->loaded_day, s->day) == 0);
+}
+
+struct TlListJob {
+    u64 asked;
+    Str query;  // for a search
+    Slice<Line> lines;
+    Slice<DayCount> days;
+    Slice<SpeakerCount> apps;
+};
+
+static Job* tl_list_job(JobApply* apply, u64* asked) {
+    Job* job = job_new(apply);
+    TlListJob* d = PUSH(&job->arena, TlListJob);
+    d->asked = *asked = ++g_tl_seq;
+    job->data = d;
+    return job;
+}
+
+static void tl_search_run(sqlite3* db, Job* job) {
+    TlListJob* d = (TlListJob*)job->data;
+    if (db) d->lines = db_search(db, &job->arena, d->query, TL_SEARCH_LIMIT);
+}
+
+static void tl_find_step(App* app, TimelineState* s, bool older);
+
+static void tl_search_apply(App* app, Job* job) {
+    TimelineState* s = g_tl;
+    TlListJob* d = (TlListJob*)job->data;
+    if (!s || d->asked != s->search_asked) return;
+    arena_release(&s->search_arena);
+    s->search_arena = job_take_arena(job);
+    Slice<Line> all = d->lines;
+    // Only what the Show filter lets through, so every match can be shown.
+    i32 n = 0;
+    for (i32 i = 0; i < all.count; i++)
+        if (speaker_visible(app, all.items[i].speaker)) all.items[n++] = all.items[i];
+    s->results = {all.items, n};
+    if (s->find_pending) {
+        s->find_pending = false;
+        tl_find_step(app, s, true);
+    }
+    wake_window(app);
+}
+
+static void tl_days_run(sqlite3* db, Job* job) {
+    TlListJob* d = (TlListJob*)job->data;
+    if (db) d->days = db_days(db, &job->arena);
+}
+
+static void tl_days_apply(App* app, Job* job) {
+    TimelineState* s = g_tl;
+    TlListJob* d = (TlListJob*)job->data;
+    if (!s || d->asked != s->days_asked) return;
+    arena_release(&s->days_arena);
+    s->days_arena = job_take_arena(job);
+    s->days = d->days;
+    wake_window(app);
+}
+
+static void tl_apps_run(sqlite3* db, Job* job) {
+    TlListJob* d = (TlListJob*)job->data;
+    if (db) d->apps = db_speakers(db, &job->arena);
+}
+
+static void tl_apps_apply(App* app, Job* job) {
+    TimelineState* s = g_tl;
+    TlListJob* d = (TlListJob*)job->data;
+    if (!s || d->asked != s->apps_asked) return;
+    arena_release(&s->apps_arena);
+    s->apps_arena = job_take_arena(job);
+    s->apps = d->apps;
+    wake_window(app);
 }
 
 // Oldest at the top, like reading a day: lines and files merged by time, long gaps marked.
@@ -804,17 +923,12 @@ static void tl_run_search(App* app, TimelineState* s) {
     s->results = {};
     s->find_at = 0;
     Str q = str_trim(str(s->search));
-    if (!q.len || !app->storage.db) return;
-    Slice<Line> all = db_search(app->storage.db, &s->search_arena, q, TL_SEARCH_LIMIT);
-    // Only what the Show filter lets through, so every match can be shown.
-    i32 n = 0;
-    for (i32 i = 0; i < all.count; i++)
-        if (speaker_visible(app, all.items[i].speaker)) all.items[n++] = all.items[i];
-    s->results = {all.items, n};
-    if (s->find_pending) {
-        s->find_pending = false;
-        tl_find_step(app, s, true);
-    }
+    s->search_asked = ++g_tl_seq;  // drops a search still on the way
+    if (!q.len || !app->storage.ready) return;
+    Job* job = tl_list_job(tl_search_apply, &s->search_asked);
+    TlListJob* d = (TlListJob*)job->data;
+    d->query = str_copy(&job->arena, q);
+    db_post(job, tl_search_run);
 }
 
 static int tl_search_callback(ImGuiInputTextCallbackData* d) {
@@ -827,6 +941,7 @@ static int tl_search_callback(ImGuiInputTextCallbackData* d) {
 }
 
 static void tl_clear_search(TimelineState* s) {
+    s->search_asked = ++g_tl_seq;  // drops a search still on the way
     s->search[0] = 0;
     s->search_due = 0;
     arena_reset(&s->search_arena);
@@ -932,8 +1047,7 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
             s->cal_year = y;
             s->cal_month = m;
             s->calendar_open = true;
-            arena_reset(&s->days_arena);
-            s->days = app->storage.db ? db_days(app->storage.db, &s->days_arena) : Slice<DayCount>{};
+            if (app->storage.ready) db_post(tl_list_job(tl_days_apply, &s->days_asked), tl_days_run);
         }
     }
     ImGui::SetItemTooltip("Pick a day");
@@ -974,8 +1088,7 @@ static void tl_show_chips(App* app, TimelineState* s, f32 left, f32 right) {
         // Its own window, opened by the main thread (main.cpp) and drawn by timeline_apps_draw.
         s->apps_open = true;
         ui_open_apps(app);
-        arena_reset(&s->apps_arena);
-        s->apps = app->storage.db ? db_speakers(app->storage.db, &s->apps_arena) : Slice<SpeakerCount>{};
+        if (app->storage.ready) db_post(tl_list_job(tl_apps_apply, &s->apps_asked), tl_apps_run);
     }
     ImGui::SameLine();
     ImVec2 at = ImGui::GetCursorScreenPos();
@@ -1652,7 +1765,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     f32 y = 8 * u;
     if (!s->rows.count) {
         y += 40 * u;
-        const char* t = !app->storage.db ? "The database could not be opened. The log says why."
+        const char* t = !app->storage.ready ? "The database could not be opened. The log says why."
                         : live           ? "Nothing heard yet today"
                                          : "Nothing heard this day";
         f32 w = ImGui::CalcTextSize(t).x;
@@ -1676,7 +1789,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         y += r->h;
     }
     s->scroll_to = 0;  // not among the rows (its app is hidden): don't keep looking
-    if (live && app->storage.db) {
+    if (live && app->storage.ready) {
         // Where new lines turn up: what the recorder is doing right now.
         y += 10 * u;
         f32 rh = 22 * u;
@@ -1767,7 +1880,8 @@ static void tl_keys(App* app, TimelineState* s) {
 }
 
 static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
-    if (!s->loaded) {
+    g_tl = s;
+    if (!s->requested) {
         char today[11];
         today_day(today);
         tl_open_day(app, s, today);
@@ -1798,11 +1912,13 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
     ImGui::Dummy(ImVec2(0, 4 * u));
     if (s->filter_sig != tl_filter_sig(app) || s->rows_dirty) tl_build_rows(app, s);
 
-    tl_list(app, s, next_frame_ms);
+    // Another day's lines are on the way (a moment): the old day's are not shown under its name.
+    if (!tl_day_pending(s)) tl_list(app, s, next_frame_ms);
     tl_calendar(app, s);
 }
 
 static void timeline_free(TimelineState* s) {
+    if (g_tl == s) g_tl = 0;  // results still on the way are dropped
     arena_release(&s->arena);
     arena_release(&s->search_arena);
     arena_release(&s->days_arena);

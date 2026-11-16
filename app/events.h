@@ -55,6 +55,9 @@ void job_post(App* app, Job* job);
 // full, waits and tries again, until the program stops.
 void job_post_wait(App* app, Job* job);
 void job_free(Job* job);
+// For an apply that keeps the results: hands over the job's arena (the job itself is in it, and
+// stays readable until the arena is reset), so job_free afterwards frees nothing.
+Arena job_take_arena(Job* job);
 
 // The main thread: applies every waiting event, taking App.lock around each.
 void events_apply(App* app);

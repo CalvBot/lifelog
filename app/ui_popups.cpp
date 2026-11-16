@@ -57,6 +57,7 @@ struct PopupState {
     bool hours;      // min or h
     f64 changed_ts;  // when the amount last changed; the preview follows 200 ms later
     bool preview_loaded;
+    u64 preview_asked;  // the request on the way (g_preview_seq); older results are dropped
     Arena arena;     // the preview's lines
     Slice<Line> preview;
     // The delay box.
@@ -67,6 +68,30 @@ struct PopupState {
     f64 message_ts;
     f64 close_ts;    // close at this moment (after "OK, ..."), 0 for not
 };
+
+static u64 g_preview_seq;
+
+struct PreviewJob {
+    u64 asked;
+    f64 start;
+    Slice<Line> lines;
+};
+
+static void preview_run(sqlite3* db, Job* job) {
+    PreviewJob* p = (PreviewJob*)job->data;
+    if (db) p->lines = db_lines_after(db, &job->arena, p->start, 4);
+}
+
+static void preview_apply(App* app, Job* job) {
+    PopupState* s = app->ui.popup_state;
+    PreviewJob* p = (PreviewJob*)job->data;
+    if (!s || p->asked != s->preview_asked) return;
+    arena_release(&s->arena);
+    s->arena = job_take_arena(job);
+    s->preview = p->lines;
+    s->preview_loaded = true;
+    wake_window(app);
+}
 
 static void popup_say(PopupState* s, bool ok, const char* text) {
     SET(s->message, str(text));
@@ -200,9 +225,12 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         f64 left = s->changed_ts + 0.2 - now;
         if (left <= 0) {
             s->changed_ts = 0;
-            arena_reset(&s->arena);
-            s->preview = app->storage.db ? db_lines_after(app->storage.db, &s->arena, start, 4) : Slice<Line>{};
-            s->preview_loaded = true;
+            Job* job = job_new(preview_apply);
+            PreviewJob* p = PUSH(&job->arena, PreviewJob);
+            p->asked = s->preview_asked = ++g_preview_seq;
+            p->start = start;
+            job->data = p;
+            db_post(job, preview_run);
         } else {
             popup_wait(next_frame_ms, (f32)(left * 1000) + 10);
         }

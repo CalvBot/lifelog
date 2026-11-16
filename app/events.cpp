@@ -44,6 +44,12 @@ Job* job_new(JobApply* apply) {
     return job;
 }
 
+Arena job_take_arena(Job* job) {
+    Arena a = job->arena;
+    job->arena = {};
+    return a;
+}
+
 void job_free(Job* job) {
     Arena a = job->arena;  // the job is inside it
     arena_release(&a);
