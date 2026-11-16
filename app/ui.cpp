@@ -108,7 +108,9 @@ bool ui_draw_window(App* app, f32* next_frame_ms) {
     ImGui::PopStyleVar();
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12), px(8)));
-    ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    // Settings scrolls as a whole; its scrollbar stays put so switching tabs doesn't shift the layout.
+    ImGuiWindowFlags page_flags = app->ui.tab == TAB_SETTINGS ? ImGuiWindowFlags_AlwaysVerticalScrollbar : 0;
+    ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, page_flags);
     switch (app->ui.tab) {
     case TAB_TIMELINE: timeline_draw(app, &s->timeline, next_frame_ms); break;
     case TAB_JOURNAL: journal_draw(app, &s->journal, next_frame_ms); break;
