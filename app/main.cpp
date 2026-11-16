@@ -30,7 +30,7 @@ void app_lock(App* app) {
 void app_unlock(App* app) {
     // Every change to App.config is made with the lock, so the copy other threads read is
     // brought up to date here.
-    settings_publish(app);
+    if (settings_publish(app)) worker_wake(app);
     t_locked--;
     ReleaseSRWLockExclusive(&app->lock);
 }
@@ -622,6 +622,7 @@ static i32 run_app() {
     App* app = &g_app;
     app->lock = SRWLOCK_INIT;
     app->stop = CreateEventW(0, TRUE, FALSE, 0);
+    app->worker.wake = CreateEventW(0, FALSE, FALSE, 0);
     app->ui.main_thread = GetCurrentThreadId();
     // Make sure the thread has a message queue before anyone posts to it.
     MSG msg;

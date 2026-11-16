@@ -41,6 +41,7 @@ struct StreamMeta {
 };
 
 struct Segmenter {
+    App* app;  // to wake the transcriber when a WAV is written
     wchar_t spool[MAX_PATH];
     char name[64];  // in file names only
     f32 gate;
@@ -129,6 +130,8 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
         DeleteFileW(part);
         swprintf(path, MAX_PATH, L"%s.json", stem);
         DeleteFileW(path);
+    } else {
+        worker_wake(seg->app);
     }
     rewind(m);
 }
@@ -534,6 +537,7 @@ static DWORD WINAPI stream_main(void* p) {
     seg->samples = (f32*)malloc(sizeof(f32) * HARD_LIMIT);
     CHECK(seg->samples, "memory for %d samples", HARD_LIMIT);
     stream_name(s, seg->name);
+    seg->app = s->app;
     wcscpy_s(seg->spool, s->spool);
     seg->gate = s->gate;
 

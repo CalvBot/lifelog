@@ -331,6 +331,7 @@ static DWORD WINAPI setup_thread(void* p) {
     s->failed = !ok;
     SET(s->text, str(ok ? "" : error));
     app_unlock(app);
+    worker_wake(app);
     wake_window(app);
     return 0;
 }

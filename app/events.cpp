@@ -1,6 +1,6 @@
 // events.cpp: see events.h.
 
-bool event_post(App* app, EventKind kind, i64 a, i64 b, const char* text) {
+bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text) {
     EventQueue* q = &app->events;
     AcquireSRWLockExclusive(&q->lock);
     bool full = q->tail - q->head >= (u32)COUNT(q->items);
@@ -10,7 +10,7 @@ bool event_post(App* app, EventKind kind, i64 a, i64 b, const char* text) {
     } else {
         Event* e = &q->items[q->tail % COUNT(q->items)];
         *e = {};
-        e->kind = kind;
+        e->apply = apply;
         e->a = a;
         e->b = b;
         if (text) SET(e->text, str(text));
@@ -49,8 +49,14 @@ void job_free(Job* job) {
     arena_release(&a);
 }
 
+static void job_apply(App* app, Event* e) {
+    Job* job = (Job*)e->a;
+    job->apply(app, job);
+    job_free(job);
+}
+
 void job_post(App* app, Job* job) {
-    if (!event_post(app, EVENT_JOB, (i64)job, 0, 0)) job_free(job);
+    if (!event_post(app, job_apply, (i64)job, 0, 0)) job_free(job);
 }
 
 void events_apply(App* app) {
@@ -58,11 +64,7 @@ void events_apply(App* app) {
     u32 dropped = 0;
     while (event_take(&app->events, &e, &dropped)) {
         app_lock(app);
-        if (e.kind == EVENT_JOB) {
-            Job* job = (Job*)e.a;
-            job->apply(app, job);
-            job_free(job);
-        }
+        e.apply(app, &e);
         app_unlock(app);
     }
     if (dropped) WARN("events: %u dropped, the queue was full", dropped);
@@ -77,7 +79,7 @@ const Config* settings(App*) {
     return (const Config*)InterlockedCompareExchangePointer((PVOID volatile*)&g_settings, 0, 0);
 }
 
-void settings_publish(App* app) {
+bool settings_publish(App* app) {
     Config now;
     memcpy(&now, &app->config, sizeof(Config));
     now.capture.included_apps = {};
@@ -89,9 +91,10 @@ void settings_publish(App* app) {
     now.processing.not_games = {};
     now.ui.hidden = {};
     Config* cur = g_settings;
-    if (cur && memcmp(cur, &now, sizeof(Config)) == 0) return;
+    if (cur && memcmp(cur, &now, sizeof(Config)) == 0) return false;
     Config* next = (Config*)malloc(sizeof(Config));
     CHECK(next, "memory for the settings");
     memcpy(next, &now, sizeof(Config));
     InterlockedExchangePointer((PVOID volatile*)&g_settings, next);
+    return true;
 }

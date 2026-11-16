@@ -1408,6 +1408,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     // 2. Take the GPU from the worker.
     app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 1);
+    worker_wake(app);
     app_unlock(app);
     f64 freed = now_ts();
     for (;;) {
@@ -1537,6 +1538,7 @@ static bool write_day(App* app, const char* day, char* error, i32 cap) {
     llm_close(&llm);
     app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 0);
+    worker_wake(app);
     app_unlock(app);
 
     {
@@ -1608,6 +1610,7 @@ static DWORD WINAPI writer_main(void* param) {
     bool ok = write_day(app, day, error, sizeof(error));
     app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 0);
+    worker_wake(app);
     app->summary.writing = false;
     app->summary.writing_day[0] = 0;
     if (!ok) {
@@ -1793,6 +1796,7 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
     app_lock(app);
     Config cfg = app->config;
     atomic_set(&app->worker.summary_needs_gpu, 1);
+    worker_wake(app);
     app_unlock(app);
     f64 started = now_ts();
     Llm llm = {};
@@ -1809,6 +1813,7 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
     llm_close(&llm);
     app_lock(app);
     atomic_set(&app->worker.summary_needs_gpu, 0);
+    worker_wake(app);
     app_unlock(app);
     if (ok) {
         Str text = json_string_of(&a, &reply);

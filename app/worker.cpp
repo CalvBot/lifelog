@@ -1,6 +1,6 @@
-// worker.cpp: see worker.h. Two threads:
+// worker.cpp: see worker.h. Two threads, neither takes App.lock:
 //   - the supervisor decides whether transcription may run, loads and frees the model, counts
-//     the queue and transcribes the files, oldest first;
+//     the queue and transcribes the files, oldest first; it sleeps until woken;
 //   - the GPU monitor samples the 3D engine's load every 2 s.
 
 #include <pdh.h>
@@ -89,6 +89,7 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
             }
         }
         atomic_set(&w->gpu_busy, busy);
+        if (was_busy != busy) worker_wake(app);
         changed |= was_busy != busy;
         if (changed) wake_window(app);
     }
@@ -117,20 +118,23 @@ static void count_queue(const wchar_t* spool, i32* files, f64* secs) {
     FindClose(h);
 }
 
-// Whether transcription may run now, and the few words saying why (not). Caller holds the lock.
+// Whether transcription may run now, and the few words saying why (not). No lock: it reads
+// atomics and settings(). Waiting for a game, the state is GAME_STATE and the main thread puts
+// the game's name in.
+static const char* GAME_STATE = "waiting for a game to close";
+
 static bool worker_allowed(App* app, f64 quiet_from, char* state, i32 cap) {
     Worker* w = &app->worker;
-    Mode mode = app->config.processing.mode;
-    f64 wait = (f64)app->config.processing.resume_after_secs - (now_ts() - quiet_from);
-    if (w->summary_needs_gpu) {
+    const Config* c = settings(app);
+    Mode mode = c->processing.mode;
+    f64 wait = (f64)c->processing.resume_after_secs - (now_ts() - quiet_from);
+    if (atomic_get(&w->summary_needs_gpu)) {
         snprintf(state, cap, "waiting for the daily summary");
     } else if (mode == MODE_PAUSED) {
         snprintf(state, cap, "paused");
-    } else if (mode == MODE_AUTO && app->config.processing.pause_for_games && app->apps.game_running[0]) {
-        Str game = str(app->apps.game_running);
-        if (game.len > 4 && _stricmp(game.ptr + game.len - 4, ".exe") == 0) game.len -= 4;
-        snprintf(state, cap, "waiting for %.*s to close", (int)game.len, game.ptr);
-    } else if (mode == MODE_AUTO && w->gpu_busy) {
+    } else if (mode == MODE_AUTO && c->processing.pause_for_games && atomic_get(&app->apps.game_on)) {
+        snprintf(state, cap, "%s", GAME_STATE);
+    } else if (mode == MODE_AUTO && atomic_get(&w->gpu_busy)) {
         snprintf(state, cap, "waiting for the graphics card");
     } else if (mode == MODE_AUTO && quiet_from > 0 && wait > 0) {
         snprintf(state, cap, "the game has closed: starting in %.0f s", wait);
@@ -262,10 +266,7 @@ static bool whisper_should_abort(void* p) {
     if (now < c->next) return false;
     c->next = now + 0.25;
     char why[160];
-    app_lock(c->app);
-    bool allowed = worker_allowed(c->app, 0, why, sizeof(why));
-    app_unlock(c->app);
-    c->aborted = !allowed;
+    c->aborted = !worker_allowed(c->app, 0, why, sizeof(why));
     g_whisper_aborting = c->aborted;
     return c->aborted;
 }
@@ -587,7 +588,7 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
             return SENT_RETRY;
         }
         wchar_t audio[MAX_PATH], day_dir[MAX_PATH], to[MAX_PATH];
-        audio_dir(&app->config, audio);  // data_dir does not change while the program runs
+        audio_dir((Config*)settings(app), audio);  // data_dir does not change while the program runs
         swprintf(day_dir, MAX_PATH, L"%ls\\%04d-%02d-%02d", audio, lt.year, lt.month, lt.day);
         SHCreateDirectoryExW(0, day_dir, 0);
         swprintf(to, MAX_PATH, L"%ls\\%ls", day_dir, name);
@@ -603,67 +604,108 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
 
 // ---------------------------------------------------------------------------------------------
 // The supervisor
+//
+// It takes no lock. It reads atomics and settings(), and posts what it is doing to the main
+// thread when that changes. It sleeps until worker_wake (a new WAV, a game, the GPU, the summary,
+// a setting) or a timer it needs (a retry, the countdown after a game) says to look again.
+
+// What the window shows of it, as the supervisor last posted it.
+struct WorkerSeen {
+    char state[256];
+    i32 queued;
+    f64 queued_secs;
+    bool running, missing, waiting, game;
+};
+
+static const u64 SEEN_RUNNING = 1ull << 32, SEEN_MISSING = 1ull << 33, SEEN_WAITING = 1ull << 34, SEEN_GAME = 1ull << 35;
+
+// The main thread: a = the queue count and the flags above, b = queued milliseconds of audio.
+static void worker_seen_apply(App* app, Event* e) {
+    Worker* w = &app->worker;
+    u64 f = (u64)e->a;
+    w->queued = (i32)(f & 0xffffffffu);
+    w->queued_secs = (f64)e->b / 1000.0;
+    w->running = (f & SEEN_RUNNING) != 0;
+    w->missing = (f & SEEN_MISSING) != 0;
+    bool waiting = (f & SEEN_WAITING) != 0;
+    if (!waiting) w->waiting_since = 0;
+    else if (!w->waiting_since) w->waiting_since = now_ts();
+    Str game = str(app->apps.game_running);
+    if ((f & SEEN_GAME) && game.len) {
+        if (game.len > 4 && _stricmp(game.ptr + game.len - 4, ".exe") == 0) game.len -= 4;
+        snprintf(w->state, sizeof(w->state), "waiting for %.*s to close", (int)game.len, game.ptr);
+    } else {
+        SET(w->state, str(e->text));
+    }
+    wake_window(app);
+}
+
+static void worker_lines_apply(App* app, Event*) {
+    app->worker.lines_version++;
+    wake_window(app);
+}
+
+static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
+    if (memcmp(now, last, sizeof(WorkerSeen)) == 0) return;
+    *last = *now;
+    u64 f = (u64)(u32)now->queued | (now->running ? SEEN_RUNNING : 0) | (now->missing ? SEEN_MISSING : 0) |
+            (now->waiting ? SEEN_WAITING : 0) | (now->game ? SEEN_GAME : 0);
+    event_post(app, worker_seen_apply, (i64)f, (i64)(now->queued_secs * 1000.0), now->state);
+}
 
 static DWORD WINAPI supervisor_thread(void* p) {
     App* app = (App*)p;
     wchar_t spool[MAX_PATH];
-    app_lock(app);
-    spool_dir(&app->config, spool);
-    app_unlock(app);
+    spool_dir((Config*)settings(app), spool);  // data_dir does not change while the program runs
     sqlite3* db = 0;
     whisper_context* ctx = 0;  // our model, while it may use the GPU
     char ctx_model[128] = "";
 
     f64 next_load = 0;   // after a failed load, wait before trying again
-    f64 next_count = 0;
     f64 retry_at = 0;    // after your server could not be reached
     f64 quiet_from = 0;  // when the last game closed, in auto mode; 0 if none has
-    bool had_game = false, first = true;
+    bool had_game = false, first = true, count = true;
     char trouble[256] = "";  // why the last try failed, while waiting to try again
+    WorkerSeen seen = {}, last = {};
+    memset(&seen, 0, sizeof(seen));  // compared with memcmp: no stray padding bytes
+    memset(&last, 0, sizeof(last));
+    last.queued = -1;  // so the first is posted
     while (!stopping(app)) {
         f64 now = now_ts();
-        i32 files = -1;
-        f64 secs = 0;
-        if (now >= next_count) {  // the folder is read unlocked; the data drive may be slow
-            count_queue(spool, &files, &secs);
-            next_count = now + 2;
+        if (count) {  // the data drive may be slow, so only when woken or after a file
+            count_queue(spool, &seen.queued, &seen.queued_secs);
+            count = false;
         }
 
-        bool load = false, unload = false, work = false, wake = false;
+        bool load = false, unload = false, work = false;
         char state[256], model[128], language[16];
         Target t = {};
-        app_lock(app);
-        Worker* w = &app->worker;
-        Config* c = &app->config;
+        const Config* c = settings(app);
         bool yours = c->worker.endpoint[0] != 0;
         bool ready = yours || whisper_ready(c->worker.model);
-        if (ready == w->missing || first) {
-            w->missing = !ready;
-            wake = true;
+        if (ready == seen.missing || first) {
             if (!ready) WARN("transcription is not set up (Settings, Transcription): audio will queue up untranscribed");
             else if (!first) LOG("transcription is set up");
         }
+        seen.missing = !ready;
         first = false;
-        bool game = c->processing.pause_for_games && app->apps.game_running[0] != 0;
+        bool game = c->processing.pause_for_games && atomic_get(&app->apps.game_on);
         if (had_game && !game) quiet_from = now;
         had_game = game;
-        if (files >= 0 && (files != w->queued || fabs(secs - w->queued_secs) > 0.5)) {
-            w->queued = files;
-            w->queued_secs = secs;
-            wake = true;
-        }
         SET(model, str(c->worker.model));
         SET(language, str(c->worker.language));
         bool want = ready && worker_allowed(app, quiet_from, state, sizeof(state));
         // The model leaves the GPU when it has to wait, when your server is used instead, or
         // when another model is chosen.
         if (ctx && (!want || yours || strcmp(ctx_model, model) != 0)) {
-            LOG("freeing the Whisper model (%s)", !want ? state : yours ? "your own server is set" : "another model was chosen");
+            const char* why = !want ? (strcmp(state, GAME_STATE) == 0 ? "waiting for the game to close" : state)
+                              : yours ? "your own server is set" : "another model was chosen";
+            LOG("freeing the Whisper model (%s)", why);
             unload = true;
         }
         if (want && !yours && (!ctx || unload) && now >= next_load) load = true;
         bool can = want && (yours || (ctx && !unload));
-        if (can && w->queued > 0 && now >= retry_at) {
+        if (can && seen.queued > 0 && now >= retry_at) {
             work = true;
             if (yours) {
                 Str url = str_trim(str(c->worker.endpoint));
@@ -674,24 +716,29 @@ static DWORD WINAPI supervisor_thread(void* p) {
                 SET(t.language, str(language));
             }
         }
+        // A countdown or a retry shows its seconds, so meanwhile it looks again each second.
+        bool ticking = false;
         if (want) {
-            if (now < retry_at) snprintf(state, sizeof(state), "%s: trying again in %.0f s", trouble, retry_at - now);
-            else if (now < next_load) snprintf(state, sizeof(state), "%s: trying again in %.0f s", trouble, next_load - now);
-            else if (can) snprintf(state, sizeof(state), w->queued ? "transcribing" : "up to date");
-            else snprintf(state, sizeof(state), "starting");
-            w->waiting_since = 0;
+            if (now < retry_at) {
+                snprintf(state, sizeof(state), "%s: trying again in %.0f s", trouble, retry_at - now);
+                ticking = true;
+            } else if (now < next_load) {
+                snprintf(state, sizeof(state), "%s: trying again in %.0f s", trouble, next_load - now);
+                ticking = true;
+            } else if (can) {
+                snprintf(state, sizeof(state), seen.queued ? "transcribing" : "up to date");
+            } else {
+                snprintf(state, sizeof(state), "starting");
+            }
         } else {
             if (!ready) snprintf(state, sizeof(state), "not set up yet");
-            if (!w->waiting_since) w->waiting_since = now;
+            ticking = quiet_from > 0 && now - quiet_from < (f64)c->processing.resume_after_secs + 1;
         }
-        if (strcmp(state, w->state) != 0) {
-            SET(w->state, str(state));
-            wake = true;
-        }
-        wake |= can != w->running;
-        w->running = can;
-        app_unlock(app);
-        if (wake) wake_window(app);
+        SET(seen.state, str(state));
+        seen.game = strcmp(state, GAME_STATE) == 0;
+        seen.waiting = !want;
+        seen.running = can;
+        worker_post_seen(app, &seen, &last);
 
         if (unload) {
             p_whisper_free(ctx);
@@ -713,7 +760,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         if (work) {
             wchar_t name[MAX_PATH];
             if (!oldest_file(spool, name)) {
-                next_count = 0;  // the count was out of date
+                count = true;  // the count was out of date
                 continue;
             }
             if (!db) db = db_open(app);
@@ -731,20 +778,15 @@ static DWORD WINAPI supervisor_thread(void* p) {
                 retry_at = now_ts() + 30;
                 continue;
             }
-            i32 left = 0;
-            f64 left_secs = 0;
-            count_queue(spool, &left, &left_secs);
-            next_count = now_ts() + 2;
-            LOG("%ls: %d lines in %.1fs (%d queued)", name, lines, now_ts() - began, left);
-            app_lock(app);
-            app->worker.queued = left;
-            app->worker.queued_secs = left_secs;
-            if (lines > 0) app->worker.lines_version++;
-            app_unlock(app);
-            wake_window(app);
+            count_queue(spool, &seen.queued, &seen.queued_secs);
+            LOG("%ls: %d lines in %.1fs (%d queued)", name, lines, now_ts() - began, seen.queued);
+            if (lines > 0) event_post(app, worker_lines_apply, 0, 0, 0);
             continue;
         }
-        sleep_unless_stopping(app, 500);
+        // Woken by worker_wake; the minute is only a safety net.
+        HANDLE waits[2] = {app->stop, app->worker.wake};
+        DWORD got = WaitForMultipleObjects(2, waits, FALSE, ticking ? 1000 : 60000);
+        if (got == WAIT_OBJECT_0 + 1 || got == WAIT_TIMEOUT) count = true;
     }
     // A clip being transcribed was stopped by the abort check; it stays queued for next time.
     if (ctx) p_whisper_free(ctx);
@@ -762,6 +804,8 @@ void worker_start(App* app) {
     if (c->processing.gpu_busy_percent > 100) c->processing.gpu_busy_percent = 100;
     SET(app->worker.state, str("starting"));
     app->worker.done = CreateEventW(0, TRUE, FALSE, 0);
+    // Made in run_app, before capture starts: the capture threads wake the supervisor.
+    CHECK(app->worker.wake, "the worker's wake event made before worker_start");
     start_thread(app, "worker-supervisor", supervisor_thread);
     start_thread(app, "gpu-monitor", gpu_monitor_thread);
 }
@@ -799,6 +843,10 @@ void worker_set_endpoint(App* app, Str url, Str model) {
         config_save_string("worker", "model", app->config.worker.model);
     }
     LOG("transcription: %s", url.len ? app->config.worker.endpoint : "lifelog's own whisper.cpp");
+}
+
+void worker_wake(App* app) {
+    if (app->worker.wake) SetEvent(app->worker.wake);
 }
 
 void worker_stop(App* app) {

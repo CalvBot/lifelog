@@ -656,6 +656,8 @@ static DWORD WINAPI apps_watch_main(void* p) {
             if (game[0]) LOG("%s is running: transcription waits, audio keeps queueing", game);
             else LOG("no game running any more");
             SET(app->apps.game_running, str(game));
+            atomic_set(&app->apps.game_on, game[0] != 0);
+            worker_wake(app);
             changed = true;
         }
         u64 version = app->worker.lines_version;

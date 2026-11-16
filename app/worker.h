@@ -10,7 +10,8 @@
 // summary writes, it steps aside too, so the two models never share the GPU.
 //
 // The mode, limit and wait are in App.config.processing; the functions below change them there
-// and in config.toml.
+// and in config.toml. The supervisor takes no lock: it reads them from settings() and posts its
+// state, the queue and "lines written" to the main thread (events.h), which keeps the fields below.
 
 #pragma once
 
@@ -27,6 +28,7 @@ struct Worker {
     u64 lines_version;    // bumped each time lines are written, so the timeline reloads
     f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model
+    HANDLE wake;          // auto-reset: something the supervisor waits on changed (worker_wake)
 };
 
 void worker_start(App* app);
@@ -37,6 +39,9 @@ void worker_set_pause_for_games(App* app, bool on);
 // Your own transcription server instead of lifelog's (empty `url`: lifelog's own). Saved to
 // config.toml. With the lock.
 void worker_set_endpoint(App* app, Str url, Str model);
+// Tells the supervisor to look again: a new WAV, a game started or ended, the GPU or the summary
+// changed, a setting changed, the transcriber was set up. Any thread, with or without the lock.
+void worker_wake(App* app);
 // Waits (up to 15 s) for transcription to stop after app->stop is set, when the program ends. A
 // file being transcribed stays in the queue for next time. Without the lock.
 void worker_stop(App* app);

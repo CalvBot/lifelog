@@ -17,13 +17,11 @@
 
 static const UINT WM_APP_EVENT = WM_APP + 0x50;  // to the tray window: events are waiting
 
-enum EventKind : u16 {
-    EVENT_NONE,
-    EVENT_JOB,  // a = the Job*
-};
-
+// An event names the function that applies it, so each module keeps its own.
+struct Event;
+typedef void EventApply(App* app, Event* e);
 struct Event {
-    EventKind kind;
+    EventApply* apply;  // run on the main thread, with App.lock for now
     i64 a;
     i64 b;
     char text[512];
@@ -47,7 +45,7 @@ struct Job {
 };
 
 // Any thread. False if the ring was full (the event is dropped and counted).
-bool event_post(App* app, EventKind kind, i64 a, i64 b, const char* text);
+bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text);
 
 // A new job in its own arena. Fill job->data from job->arena, then post it; once posted it is
 // the main thread's.
@@ -66,5 +64,5 @@ inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
 // thread). Each change makes a new copy; old ones are kept until exit, so a thread may hold on
 // to the one it has. Any thread, no lock.
 const Config* settings(App* app);
-// Makes a new copy if App.config changed. With the lock (app_unlock calls it).
-void settings_publish(App* app);
+// Makes a new copy if App.config changed, and says so. With the lock (app_unlock calls it).
+bool settings_publish(App* app);
