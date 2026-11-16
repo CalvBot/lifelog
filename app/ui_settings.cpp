@@ -50,6 +50,8 @@ struct SettingsState {
     f64 loaded_ts;
     i32 loaded_apps;  // App.apps.list.count when it was made
     char search[128];
+    bool show_by_folder;  // list apps that only follow a folder rule too
+    i32 by_folder;        // how many of those the list on screen has (shown or not)
 
     // The fields being typed in or dragged; set from the config while not being edited.
     char ask_at[16];
@@ -259,6 +261,7 @@ static void apps_load(App* app, SettingsState* s) {
     Str q = str_lower(scratch(), str_trim(str(s->search)));
     List<AppRowSort> rows = {};
     s->counts[0] = s->counts[1] = s->counts[2] = 0;
+    s->by_folder = 0;
     s->counts[VIEW_FOLDERS] = app->config.capture.included_folders.count + app->config.capture.excluded_folders.count;
     f64 now = now_ts();
     for (i32 i = 0; i < app->apps.list.count; i++) {
@@ -269,6 +272,11 @@ static void apps_load(App* app, SettingsState* s) {
         AppsView v = view_of(app, a);
         // New lists what was heard, plays now, or is installed; not every exe the config names.
         if (v == VIEW_NEW && !a->playing && !a->installed && a->lines == 0 && a->last_ts == 0) continue;
+        // Included or excluded only by a folder rule: counted aside, listed when asked for.
+        if (v != VIEW_NEW && a->decision == DECISION_NEW && a->game != GAME_YES) {
+            if (v == s->view) s->by_folder++;
+            if (!s->show_by_folder) continue;
+        }
         s->counts[v]++;
         if (v == s->view) list_push(&rows, {v == VIEW_NEW && a->playing ? now : a->last_ts, a->exe});
     }
@@ -612,6 +620,16 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         ImGui::BeginDisabled(s->page + 1 >= s->pages);
         if (ImGui::Button(ICON_CHEVRON_RIGHT "##next")) { s->page++; s->stale = true; }
         ImGui::EndDisabled();
+        // Apps that only follow a folder rule (a call app per person adds up fast) are left out
+        // unless asked for.
+        if (s->view != VIEW_NEW) {
+            const char* text = tmp("Show folder rule processes (%d)##byfolder", s->by_folder);
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(text, 0, true).x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+            if (ImGui::Checkbox(text, &s->show_by_folder)) {
+                s->page = 0;
+                s->stale = true;
+            }
+        }
     }
     settings_card_end();
 
