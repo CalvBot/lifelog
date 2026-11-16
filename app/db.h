@@ -1,4 +1,4 @@
-// db.h: the database (lifelog.db under data_dir, shared with the Python worker; schema.sql).
+// db.h: the database (lifelog.db under data_dir; schema.sql).
 // Each thread opens its own connection with db_open. The query functions put their results in
 // the arena they are given, so a whole day's lines are freed at once.
 

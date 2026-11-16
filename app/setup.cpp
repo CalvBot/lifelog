@@ -4,8 +4,12 @@
 static const wchar_t* LLAMA_BUILD = L"b11873";
 static const wchar_t* QWEN_URL = L"https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf";
 static const char* QWEN_MODEL = "qwen3-14b";
-static const wchar_t* UV_URL = L"https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
-static const wchar_t* PYTHON_VERSION = L"3.12";
+static const wchar_t* WHISPER_BUILD = L"b5454";
+static const wchar_t* WHISPER_ZIP = L"whisper-bin-win-cuda-12.4.0-x64.zip";
+static const char* WHISPER_MODEL = "large-v3-turbo";
+static const wchar_t* WHISPER_MODEL_URL = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
+static const char* WHISPER_VAD_MODEL = "ggml-silero-v6.2.0.bin";
+static const wchar_t* WHISPER_VAD_URL = L"https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
 
 static void setup_say(App* app, SetupPart part, const char* fmt, ...) {
     char text[256];
@@ -21,10 +25,16 @@ static void setup_say(App* app, SetupPart part, const char* fmt, ...) {
 
 static void setup_dir(const wchar_t* name, wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%ls\\%ls", local_dir(), name); }
 
-void transcriber_python(wchar_t out[MAX_PATH]) {
-    wchar_t dir[MAX_PATH];
-    setup_dir(L"transcriber", dir);
-    swprintf(out, MAX_PATH, L"%ls\\Scripts\\python.exe", dir);
+void whisper_dir(wchar_t out[MAX_PATH]) { setup_dir(L"whisper", out); }
+
+bool whisper_ready(const char* model) {
+    wchar_t dir[MAX_PATH], exe[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
+    whisper_dir(dir);
+    swprintf(exe, MAX_PATH, L"%ls\\Release\\whisper-server.exe", dir);
+    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+    swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
+    return GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(bin) != INVALID_FILE_ATTRIBUTES &&
+           GetFileAttributesW(vad) != INVALID_FILE_ATTRIBUTES;
 }
 
 bool summary_ai_ready(const char* model) {
@@ -212,65 +222,47 @@ static void remove_tree(const wchar_t* dir) {
 // ---------------------------------------------------------------------------------------------
 // The parts
 
-bool worker_source(wchar_t out[MAX_PATH]) {
-    const wchar_t* places[] = {L"%ls\\worker", L"%ls\\..\\..\\worker"};
-    for (i32 i = 0; i < COUNT(places); i++) {
-        wchar_t rel[MAX_PATH], toml[MAX_PATH];
-        swprintf(rel, MAX_PATH, places[i], exe_dir());
-        if (!GetFullPathNameW(rel, MAX_PATH, out, 0)) continue;
-        swprintf(toml, MAX_PATH, L"%ls\\pyproject.toml", out);
-        if (exists(toml)) return true;
-    }
-    return false;
-}
-
 static bool setup_transcriber(App* app, char* error, i32 cap) {
-    wchar_t src[MAX_PATH];
-    if (!worker_source(src)) {
-        snprintf(error, cap, "the worker's files are missing next to lifelog.exe: reinstall lifelog");
-        return false;
-    }
-    wchar_t uv_dir[MAX_PATH], uv[MAX_PATH], zip[MAX_PATH];
-    setup_dir(L"uv", uv_dir);
-    swprintf(uv, MAX_PATH, L"%ls\\uv.exe", uv_dir);
-    if (!exists(uv)) {
-        CreateDirectoryW(uv_dir, 0);
-        swprintf(zip, MAX_PATH, L"%ls\\uv.zip", uv_dir);
-        if (!download(app, SETUP_TRANSCRIBER, "uv", UV_URL, zip, error, cap)) return false;
-        bool ok = unzip(app, zip, uv_dir, error, cap);
+    wchar_t dir[MAX_PATH], exe[MAX_PATH], stamp[MAX_PATH];
+    whisper_dir(dir);
+    CreateDirectoryW(dir, 0);
+    swprintf(exe, MAX_PATH, L"%ls\\Release\\whisper-server.exe", dir);
+    swprintf(stamp, MAX_PATH, L"%ls\\build.txt", dir);
+    Mark m = mark(scratch());
+    Str have = read_file(scratch(), stamp);
+    bool current = have.ptr && str_eq(str_trim(have), narrow(scratch(), WHISPER_BUILD));
+    rewind(m);
+    if (!exists(exe) || !current) {
+        // Our server holds its files open; the supervisor starts it again once they are in place.
+        app_lock(app);
+        worker_stop(app);
+        app_unlock(app);
+        wchar_t url[512], zip[MAX_PATH], release[MAX_PATH];
+        swprintf(url, COUNT(url), L"https://github.com/ggml-org/whisper.cpp/releases/download/%ls/%ls", WHISPER_BUILD, WHISPER_ZIP);
+        swprintf(zip, MAX_PATH, L"%ls\\%ls", dir, WHISPER_ZIP);
+        swprintf(release, MAX_PATH, L"%ls\\Release", dir);
+        if (!download(app, SETUP_TRANSCRIBER, "whisper.cpp", url, zip, error, cap)) return false;
+        remove_tree(release);  // an older build
+        bool ok = unzip(app, zip, dir, error, cap);
         DeleteFileW(zip);
         if (!ok) return false;
-        if (!exists(uv)) {
-            snprintf(error, cap, "uv's download did not hold uv.exe");
+        if (!exists(exe)) {
+            snprintf(error, cap, "whisper.cpp's download did not hold whisper-server.exe");
             return false;
         }
+        write_file(stamp, narrow(scratch(), WHISPER_BUILD));
     }
-    // uv keeps its Python and its cache in lifelog's folder too, so uninstalling is one folder.
-    wchar_t cache[MAX_PATH + 16], pythons[MAX_PATH + 32];
-    swprintf(cache, COUNT(cache), L"UV_CACHE_DIR=%ls\\cache", uv_dir);
-    swprintf(pythons, COUNT(pythons), L"UV_PYTHON_INSTALL_DIR=%ls\\python", uv_dir);
-    // Its own Python even if one is installed, so uninstalling that one breaks nothing.
-    const wchar_t* env[] = {cache, pythons, L"UV_NO_PROGRESS=1", L"UV_PYTHON_PREFERENCE=only-managed"};
-
-    wchar_t env_dir[MAX_PATH], python[MAX_PATH], cmd[4 * MAX_PATH];
-    setup_dir(L"transcriber", env_dir);
-    transcriber_python(python);
-    if (!exists(python)) {
-        setup_say(app, SETUP_TRANSCRIBER, "Getting Python %ls", PYTHON_VERSION);
-        remove_tree(env_dir);  // half made by a try that failed
-        swprintf(cmd, COUNT(cmd), L"\"%ls\" venv --python %ls \"%ls\"", uv, PYTHON_VERSION, env_dir);
-        if (!run(app, cmd, env, COUNT(env), 0, error, cap)) return false;
+    wchar_t bin[MAX_PATH], vad[MAX_PATH];
+    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, WHISPER_MODEL);
+    swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
+    if (!exists(bin) && !download(app, SETUP_TRANSCRIBER, "the model", WHISPER_MODEL_URL, bin, error, cap)) return false;
+    if (!exists(vad) && !download(app, SETUP_TRANSCRIBER, "the voice detection model", WHISPER_VAD_URL, vad, error, cap)) return false;
+    app_lock(app);
+    if (strcmp(app->config.worker.model, WHISPER_MODEL) != 0) {
+        SET(app->config.worker.model, str(WHISPER_MODEL));
+        config_save_string("worker", "model", WHISPER_MODEL);
     }
-    setup_say(app, SETUP_TRANSCRIBER, "Installing Whisper and the CUDA libraries (about 3 GB, a few minutes)");
-    swprintf(cmd, COUNT(cmd), L"\"%ls\" pip install --python \"%ls\" -r \"%ls\\pyproject.toml\"", uv, python, src);
-    if (!run(app, cmd, env, COUNT(env), 0, error, cap)) return false;
-    setup_say(app, SETUP_TRANSCRIBER, "Checking it");
-    swprintf(cmd, COUNT(cmd), L"\"%ls\" -c \"import lifelog_worker, faster_whisper\"", python);
-    if (!run(app, cmd, 0, 0, src, error, cap)) return false;
-    // The downloaded wheels are installed now; keeping them would hold a second 3 GB.
-    wchar_t cache_dir[MAX_PATH];
-    swprintf(cache_dir, MAX_PATH, L"%ls\\cache", uv_dir);
-    remove_tree(cache_dir);
+    app_unlock(app);
     return true;
 }
 
@@ -353,15 +345,6 @@ void setup_start(App* app, SetupPart part) {
     HANDLE t = CreateThread(0, 0, setup_thread, job, 0, 0);
     CHECK(t, "the setup thread to start (error %lu)", GetLastError());
     CloseHandle(t);
-}
-
-void worker_set_python(App* app, Str python) {
-    python = str_trim(python);
-    // Pasted from Explorer's "Copy as path", with quotes.
-    if (python.len >= 2 && python.ptr[0] == '"' && python.ptr[python.len - 1] == '"') python = str_sub(python, 1, python.len - 2);
-    SET(app->config.worker.python, python);
-    config_save_string("worker", "python", app->config.worker.python);
-    LOG("worker Python: %s", python.len ? app->config.worker.python : "found by lifelog");
 }
 
 void summary_set_endpoint(App* app, Str url, Str model) {

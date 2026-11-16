@@ -10,7 +10,7 @@ how they get at the app's state.
 ## Architecture: one shared state
 
 One program, `lifelogw.exe`, started at login. The recorder, the tray icon and the summary writer run on background
-threads, the window on the main thread. The Python worker is a separate process the app starts and keeps running.
+threads, the window on the main thread. Transcription is a whisper.cpp server the app starts while the GPU is free.
 
 **One live state, shared in memory.** The app has a single `App` value that holds what the program is doing right
 now: the settings, whether it is listening, which apps are being recorded, the transcription queue, the GPU load
@@ -80,7 +80,7 @@ C++ built with MSVC, in a plain data-oriented style:
   - SQLite (the amalgamation);
   - a small TOML reader for `config.toml`.
 - Windows calls (WASAPI process loopback, the tray icon, notifications) made directly.
-- The Python worker stays as it is.
+- whisper.cpp (whisper-server) and llama.cpp (llama-server) as child processes, downloaded from Settings.
 - One `lifelog.exe`.
 
 ## Recording
@@ -97,7 +97,8 @@ C++ built with MSVC, in a plain data-oriented style:
 
 ## Transcription
 
-- The worker transcribes with faster-whisper (large-v3-turbo) on the GPU and writes lines to SQLite.
+- whisper.cpp transcribes with large-v3-turbo on the GPU (Silero voice detection skips silence and music); the app
+  writes the lines to SQLite. Or any OpenAI-compatible transcription server set in Settings.
 - Mode:
   - **Auto:** waits while a game is running or the GPU is busier than the limit (40 % by default), then catches up
     once it has been quiet for 60 s.

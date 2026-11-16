@@ -19,7 +19,7 @@ $build = "$repo\app\build"
 $out = "$repo\dist"
 $obj = "$out\obj"
 New-Item -ItemType Directory -Force $obj | Out-Null
-& "$wix\candle.exe" -nologo "-dVersion=$version" "-dBuild=$build" "-dWorker=$repo\worker" "-dIconFile=$repo\assets\lifelog.ico" `
+& "$wix\candle.exe" -nologo "-dVersion=$version" "-dBuild=$build" "-dIconFile=$repo\assets\lifelog.ico" `
     -out "$obj\" "$repo\installer\lifelog.wxs"
 if ($LASTEXITCODE) { throw 'candle failed' }
 & "$wix\light.exe" -nologo -spdb -sice:ICE91 -sice:ICE60 -out "$out\lifelog-$version.msi" "$obj\lifelog.wixobj"

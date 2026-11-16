@@ -55,6 +55,7 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
                                               parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
                          : 0;
     bool ok = false;
+    List<char> data = {};
     if (req) {
         WinHttpSetTimeouts(req, (int)timeout_ms, (int)timeout_ms, (int)timeout_ms, (int)timeout_ms);
         wchar_t* headers = extra_headers.len ? wide(scratch(), extra_headers) : 0;
@@ -67,7 +68,6 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status,
                             &size, WINHTTP_NO_HEADER_INDEX);
         out->status = status;
-        List<char> data = {};
         for (;;) {
             char chunk[16384];
             DWORD got = 0;
@@ -78,14 +78,15 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
             if (got == 0) break;
             for (DWORD i = 0; i < got; i++) list_push(&data, chunk[i]);
         }
-        out->body = str_copy(a, {data.items, data.count});
-        list_free(&data);
     }
     if (!ok) snprintf(error, cap, "WinHTTP error %lu", GetLastError());
     if (req) WinHttpCloseHandle(req);
     if (conn) WinHttpCloseHandle(conn);
     if (session) WinHttpCloseHandle(session);
     rewind(m);
+    // After the rewind, so the reply survives when `a` is the scratch arena too.
+    if (ok) out->body = str_copy(a, {data.items, data.count});
+    list_free(&data);
     return ok;
 }
 

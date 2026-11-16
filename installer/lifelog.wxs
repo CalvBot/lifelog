@@ -2,7 +2,7 @@
 <!--
   lifelog.wxs: the per-user installer (WiX 3). Built by scripts\build-msi.ps1.
 
-  It holds lifelog.exe and the worker's code, and no AI: the transcriber and the summary AI are
+  It holds lifelog.exe and its assets, and no AI: the transcriber and the summary AI are
   downloaded from where they are published when you press "Set up" in Settings (app\setup.h),
   or you point lifelog at your own. Uninstalling leaves %LOCALAPPDATA%\lifelog (recordings,
   database, downloaded AI) and %APPDATA%\lifelog (settings) alone.
@@ -25,9 +25,6 @@
         <Directory Id="ProgramsFolder" Name="Programs">
           <Directory Id="INSTALLFOLDER" Name="lifelog">
             <Directory Id="AssetsFolder" Name="assets" />
-            <Directory Id="WorkerFolder" Name="worker">
-              <Directory Id="WorkerPackageFolder" Name="lifelog_worker" />
-            </Directory>
           </Directory>
         </Directory>
       </Directory>
@@ -56,25 +53,6 @@
         <RemoveFolder Id="RemoveAssetsFolder" On="uninstall" />
       </Component>
     </DirectoryRef>
-    <DirectoryRef Id="WorkerFolder">
-      <Component Id="Worker" Guid="80CDCFDB-EC26-407D-B54D-1D8758E28377">
-        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="Worker" Type="integer" Value="1" KeyPath="yes" />
-        <File Id="WorkerPyproject" Source="$(var.Worker)\pyproject.toml" />
-        <RemoveFolder Id="RemoveWorkerFolder" On="uninstall" />
-      </Component>
-    </DirectoryRef>
-    <DirectoryRef Id="WorkerPackageFolder">
-      <Component Id="WorkerPackage" Guid="EF4598FC-A7FA-437B-9AF7-52C386439D57">
-        <RegistryValue Root="HKCU" Key="Software\lifelog\Installer" Name="WorkerPackage" Type="integer" Value="1" KeyPath="yes" />
-        <File Id="WorkerInit" Source="$(var.Worker)\lifelog_worker\__init__.py" />
-        <File Id="WorkerMain" Source="$(var.Worker)\lifelog_worker\__main__.py" />
-        <!-- Python writes __pycache__ here when the worker runs. -->
-        <RemoveFile Id="RemovePycache" Directory="WorkerPycacheFolder" Name="*" On="uninstall" />
-        <RemoveFolder Id="RemovePycacheFolder" Directory="WorkerPycacheFolder" On="uninstall" />
-        <RemoveFolder Id="RemoveWorkerPackageFolder" On="uninstall" />
-      </Component>
-      <Directory Id="WorkerPycacheFolder" Name="__pycache__" />
-    </DirectoryRef>
     <DirectoryRef Id="ProgramMenuFolder">
       <Component Id="StartMenu" Guid="*">
         <Shortcut Id="StartMenuShortcut" Name="lifelog" Target="[INSTALLFOLDER]lifelog.exe" WorkingDirectory="INSTALLFOLDER" Icon="lifelog.ico"
@@ -87,12 +65,10 @@
       <ComponentRef Id="App" />
       <ComponentRef Id="Autostart" />
       <ComponentRef Id="Assets" />
-      <ComponentRef Id="Worker" />
-      <ComponentRef Id="WorkerPackage" />
       <ComponentRef Id="StartMenu" />
     </Feature>
 
-    <!-- A running lifelog is asked to quit (it finishes the file it is transcribing) before its
+    <!-- A running lifelog is asked to quit (a file being transcribed stays queued) before its
          files are replaced or removed; `lifelog quit` waits until it has exited. -->
     <CustomAction Id="QuitLifelog" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]lifelog.exe&quot; quit"
                   Execute="immediate" Impersonate="yes" Return="ignore" />

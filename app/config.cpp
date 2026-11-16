@@ -56,14 +56,16 @@ endpoint = ""
 api_key = ""
 
 [worker]
-# Python that has the worker installed; lifelog starts it and keeps it running.
-# Leave empty to use the worker folder next to lifelog.exe, or in the repo it was built from.
-python = ""
-dir = ""
+# Transcription. The model file (ggml-<model>.bin in %LOCALAPPDATA%\lifelog\whisper), run by
+# lifelog's own whisper.cpp server while the graphics card is free.
 model = "large-v3-turbo"
-device = "cuda"
-compute_type = "float16"
+# The language spoken, or "" to detect it for each clip.
 language = "en"
+# Or use a transcription server you already run: any OpenAI-compatible endpoint
+# (POST <endpoint>/audio/transcriptions). Then `model` is the name that endpoint knows it by. A
+# server on another machine gets your recordings.
+endpoint = ""
+api_key = ""
 )toml";
 
 const char* mode_name(Mode m) {
@@ -243,6 +245,8 @@ static void config_defaults(Config* cfg) {
     cfg->summary.max_words = 250;
     SET(cfg->summary.model, str("qwen3-14b"));
     cfg->summary.ask_reminders = true;
+    SET(cfg->worker.model, str("large-v3-turbo"));
+    SET(cfg->worker.language, str("en"));
 }
 
 bool config_load(Config* cfg, char* error, i32 error_cap) {
@@ -324,8 +328,10 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("api_key"))) take_string(cfg->summary.api_key, sizeof(cfg->summary.api_key), &v);
             if (str_eq(k, str("ask_reminders"))) take_bool(&cfg->summary.ask_reminders, &v);
         } else if (str_eq(tb, str("worker"))) {
-            if (str_eq(k, str("python"))) take_string(cfg->worker.python, sizeof(cfg->worker.python), &v);
-            if (str_eq(k, str("dir"))) take_string(cfg->worker.dir, sizeof(cfg->worker.dir), &v);
+            if (str_eq(k, str("model"))) take_string(cfg->worker.model, sizeof(cfg->worker.model), &v);
+            if (str_eq(k, str("language"))) take_string(cfg->worker.language, sizeof(cfg->worker.language), &v);
+            if (str_eq(k, str("endpoint"))) take_string(cfg->worker.endpoint, sizeof(cfg->worker.endpoint), &v);
+            if (str_eq(k, str("api_key"))) take_string(cfg->worker.api_key, sizeof(cfg->worker.api_key), &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);

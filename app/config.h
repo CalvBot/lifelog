@@ -1,4 +1,4 @@
-// config.h: the settings, from %APPDATA%\lifelog\config.toml. The Python worker reads the same file.
+// config.h: the settings, from %APPDATA%\lifelog\config.toml.
 //
 // The app lists (included, excluded, games, not games) live in App.apps once loaded; config_save
 // writes them back from there.
@@ -46,8 +46,10 @@ struct Config {
     } summary;
 
     struct {
-        char python[MAX_PATH];
-        char dir[MAX_PATH];
+        char model[128];     // ggml-<model>.bin for our whisper.cpp; or the name your endpoint knows
+        char language[16];   // "en"; empty: detected per clip
+        char endpoint[512];  // an OpenAI-compatible ".../v1" to use instead of lifelog's own whisper.cpp
+        char api_key[256];
     } worker;
 
     struct {

@@ -1,7 +1,7 @@
-// worker.cpp: see worker.h. Three threads:
-//   - the supervisor decides whether the worker may run, starts and stops it, and counts the queue;
-//   - the GPU monitor samples the 3D engine's load every 2 s;
-//   - one reader per worker process copies its output into the log and spots finished files.
+// worker.cpp: see worker.h. Two threads:
+//   - the supervisor decides whether transcription may run, starts and stops our whisper-server,
+//     counts the queue and sends the files, oldest first;
+//   - the GPU monitor samples the 3D engine's load every 2 s.
 
 #include <pdh.h>
 #include <pdhmsg.h>
@@ -93,229 +93,363 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The worker's output: each line goes to our log, and "x.wav: 3 lines in 1.2s (4 queued)" tells
-// the timeline to reload.
+// Our whisper.cpp server
 
-struct Reader {
-    App* app;
-    HANDLE pipe;
-};
+// Only lifelog talks to it. A test copy (LIFELOG_CONFIG set) uses another port, so it never meets
+// the installed lifelog's server.
+static u16 whisper_port() { return GetEnvironmentVariableW(L"LIFELOG_CONFIG", 0, 0) ? 47812 : 47802; }
 
-static void reader_line(App* app, char* line, i64 len) {
-    while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n')) len--;
-    line[len] = 0;
-    Str s = str_trim({line, len});
-    if (!s.len) return;
-    // Python's own "HH:MM:SS [worker] " goes; our log has its own time and the tag is added back.
-    if (s.len > 9 && s.ptr[2] == ':' && s.ptr[5] == ':' && s.ptr[8] == ' ') s = str_sub(s, 9);
-    if (str_starts(s, str("[worker] "))) s = str_sub(s, 9);
-    LOG("[worker] %.*s", (int)s.len, s.ptr);
-
-    i64 at = str_find(s, str(" lines in "));
-    if (at < 0) return;
-    i64 colon = at;
-    while (colon > 0 && s.ptr[colon - 1] != ':') colon--;
-    i32 lines = 0, queued = 0;
-    f64 secs = 0;
-    if (colon == 0 || sscanf_s(s.ptr + colon, " %d", &lines) != 1) return;
-    if (sscanf_s(s.ptr + at, " lines in %lfs (%d queued)", &secs, &queued) != 2) return;
-    app_lock(app);
-    app->worker.queued = queued;
-    if (lines > 0) app->worker.lines_version++;
-    app_unlock(app);
-    if (lines > 0) wake_window(app);}
-
-static DWORD WINAPI reader_thread(void* p) {
-    Reader r = *(Reader*)p;
-    free(p);
-    SetThreadDescription(GetCurrentThread(), L"worker-output");
-    char buf[4096];
-    i64 used = 0;
-    for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(r.pipe, buf + used, (DWORD)(sizeof(buf) - 1 - used), &got, nullptr) || got == 0) break;
-        used += got;
-        i64 start = 0;
-        for (i64 i = 0; i < used; i++) {
-            if (buf[i] != '\n') continue;
-            reader_line(r.app, buf + start, i - start);
-            start = i + 1;
-        }
-        memmove(buf, buf + start, (size_t)(used - start));
-        used -= start;
-        if (used == (i64)sizeof(buf) - 1) {  // a line too long for the buffer: log it in pieces
-            reader_line(r.app, buf, used);
-            used = 0;
-        }
-    }
-    if (used) reader_line(r.app, buf, used);
-    CloseHandle(r.pipe);  // the process ended (EOF) or the pipe broke
-    return 0;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Starting and stopping the process
-
-struct Child {
+struct Server {
     HANDLE process;
-    HANDLE stdin_write;
     HANDLE job;
 };
 
-// The worker to run: from the config, else worker\.venv in the repo the exe was built from
-// (<repo>\app\build\lifelog.exe) or next to it, else the environment Settings sets up (setup.h).
-static bool find_worker(Config* cfg, wchar_t python[MAX_PATH], wchar_t dir[MAX_PATH]) {
-    Mark m = mark(scratch());
-    bool found = false;
-    if (cfg->worker.python[0]) {
-        wcsncpy_s(python, MAX_PATH, wide(scratch(), str(cfg->worker.python)), _TRUNCATE);
-        wcsncpy_s(dir, MAX_PATH, wide(scratch(), str(cfg->worker.dir)), _TRUNCATE);
-        found = true;
-    }
-    const wchar_t* places[] = {L"%ls\\worker", L"%ls\\..\\..\\worker"};
-    for (i32 i = 0; !found && i < COUNT(places); i++) {
-        wchar_t rel[MAX_PATH], py[MAX_PATH];
-        swprintf(rel, MAX_PATH, places[i], exe_dir());
-        if (!GetFullPathNameW(rel, MAX_PATH, dir, nullptr)) continue;
-        swprintf(py, MAX_PATH, L"%ls\\.venv\\Scripts\\python.exe", dir);
-        if (GetFileAttributesW(py) == INVALID_FILE_ATTRIBUTES) continue;
-        wcscpy_s(python, MAX_PATH, py);
-        found = true;
-    }
-    if (!found) {
-        transcriber_python(python);
-        found = GetFileAttributesW(python) != INVALID_FILE_ATTRIBUTES && worker_source(dir);
-    }
-    rewind(m);
-    return found;
+// Takes the server out of App.worker (the caller holds the lock); whoever does, stops it.
+static Server server_take(Worker* w) {
+    Server s = {w->process, w->job};
+    w->process = w->job = 0;
+    return s;
 }
 
-// Our environment plus UTF-8 output from Python, so the log is not in the console's code page.
-static wchar_t* child_environment(Arena* a) {
-    const wchar_t* add[] = {L"PYTHONIOENCODING=utf-8", L"PYTHONUNBUFFERED=1"};
-    wchar_t* env = GetEnvironmentStringsW();
-    i64 len = 0;
-    while (env[len]) len += (i64)wcslen(env + len) + 1;
-    i64 cap = len + 128;
-    wchar_t* out = PUSH_ARRAY(a, wchar_t, cap);
-    i64 at = 0;
-    for (const wchar_t* e = env; *e; e += wcslen(e) + 1) {
-        if (_wcsnicmp(e, L"PYTHONIOENCODING=", 17) == 0 || _wcsnicmp(e, L"PYTHONUNBUFFERED=", 17) == 0) continue;
-        i64 n = (i64)wcslen(e) + 1;
-        memcpy(out + at, e, (size_t)n * sizeof(wchar_t));
-        at += n;
+static void server_stop(Server* s) {
+    if (s->process) {
+        TerminateProcess(s->process, 0);  // it holds nothing to save: a file it had stays queued
+        WaitForSingleObject(s->process, 10000);
+        CloseHandle(s->process);
     }
-    for (i32 i = 0; i < COUNT(add); i++) {
-        i64 n = (i64)wcslen(add[i]) + 1;
-        memcpy(out + at, add[i], (size_t)n * sizeof(wchar_t));
-        at += n;
-    }
-    out[at] = 0;  // the block ends with an empty string
-    FreeEnvironmentStringsW(env);
-    return out;
+    if (s->job) CloseHandle(s->job);
+    *s = {};
 }
 
-static bool child_start(App* app, const wchar_t* python, const wchar_t* dir, Child* out) {
+// Starts whisper-server with the model `model` (ggml-<model>.bin) and waits until it answers.
+// What it prints goes to whisper.log next to lifelog.log. Unlocked.
+static bool server_start(App* app, const char* model, const char* language, Server* out, char* error, i32 cap) {
     *out = {};
-    SECURITY_ATTRIBUTES inherit = {sizeof(inherit), nullptr, TRUE};
-    HANDLE in_read = 0, in_write = 0, err_read = 0, err_write = 0;
-    // A big output pipe, so the worker never blocks on a log line while we wait for the lock.
-    if (!CreatePipe(&in_read, &in_write, &inherit, 0)) return false;
-    if (!CreatePipe(&err_read, &err_write, &inherit, 64 * 1024)) {
-        CloseHandle(in_read);
-        CloseHandle(in_write);
-        return false;
-    }
-    // Our ends stay ours: if a child kept the stdin write end, the worker would never see it close.
-    SetHandleInformation(in_write, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0);
+    wchar_t dir[MAX_PATH], exe[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH], log[MAX_PATH];
+    whisper_dir(dir);
+    swprintf(exe, MAX_PATH, L"%ls\\Release\\whisper-server.exe", dir);
+    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+    swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
+    swprintf(log, MAX_PATH, L"%ls\\whisper.log", local_dir());
+    u16 port = whisper_port();
+    // Beam search; no text carried over from the last segment (one bad line does not repeat into
+    // the next); Silero voice detection skips music, game noise and silence.
+    wchar_t cmd[4 * MAX_PATH];
+    swprintf(cmd, COUNT(cmd),
+             L"\"%ls\" -m \"%ls\" --host 127.0.0.1 --port %u -l %hs -bs 5 -mc 0 --vad -vm \"%ls\" -vsd 500 "
+             L"--inference-path /v1/audio/transcriptions",
+             exe, bin, (unsigned)port, language[0] ? language : "auto", vad);
 
-    Arena* a = scratch();
-    Mark m = mark(a);
-    wchar_t* cmd = PUSH_ARRAY(a, wchar_t, 3 * MAX_PATH);
-    swprintf(cmd, 3 * MAX_PATH, L"\"%ls\" -m lifelog_worker --config \"%ls\"", python, config_path());
-
-    // Only the two pipe ends go to the child, not whatever else is inheritable in our process.
-    HANDLE pass[] = {in_read, err_write};
+    SECURITY_ATTRIBUTES inherit = {sizeof(inherit), 0, TRUE};
+    HANDLE out_log = CreateFileW(log, GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS, 0, 0);
+    // Only the log goes to the child, not whatever else is inheritable in our process.
+    Mark m = mark(scratch());
     SIZE_T attr_size = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
-    LPPROC_THREAD_ATTRIBUTE_LIST attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)arena_push(a, attr_size, 16);
+    InitializeProcThreadAttributeList(0, 1, 0, &attr_size);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)arena_push(scratch(), attr_size, 16);
+    bool have_log = out_log != INVALID_HANDLE_VALUE;
     bool ok = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) &&
-              UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, pass, sizeof(pass), nullptr, nullptr);
-
+              (!have_log || UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &out_log, sizeof(out_log), 0, 0));
     STARTUPINFOEXW si = {};
     si.StartupInfo.cb = sizeof(si);
-    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    si.StartupInfo.hStdInput = in_read;
-    si.StartupInfo.hStdOutput = err_write;
-    si.StartupInfo.hStdError = err_write;
+    if (have_log) {
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdOutput = out_log;
+        si.StartupInfo.hStdError = out_log;
+    }
     si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi = {};
-    DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
-    DWORD error = 0;
-    if (ok) {
-        ok = CreateProcessW(python, cmd, nullptr, nullptr, TRUE, flags, child_environment(a), dir[0] ? dir : nullptr,
-                            &si.StartupInfo, &pi);
-        error = GetLastError();
-    }
+    DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    if (ok) ok = CreateProcessW(exe, cmd, 0, 0, have_log, flags, 0, dir, &si.StartupInfo, &pi) != 0;
+    DWORD started_error = GetLastError();
     DeleteProcThreadAttributeList(attrs);
     rewind(m);
-    CloseHandle(in_read);  // the child has its copies now
-    CloseHandle(err_write);
+    if (have_log) CloseHandle(out_log);
     if (!ok) {
-        ERR("could not start the worker %ls (error %lu)", python, error);
-        CloseHandle(in_write);
-        CloseHandle(err_read);
+        snprintf(error, cap, "could not start whisper-server (error %lu)", started_error);
         return false;
     }
-
-    // A job holds the whole tree: the venv's python.exe is a launcher that starts the real one,
-    // and killing only the launcher would leave the real one running. Closing the job kills it,
-    // so the worker also ends if lifelog dies.
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    // A job that Windows closes, ending the server, when lifelog's handle goes.
+    HANDLE job = CreateJobObjectW(0, 0);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
-    if (!job || !AssignProcessToJobObject(job, pi.hProcess))
-        WARN("worker not in a job (error %lu): it may outlive a crash", GetLastError());
+    if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+        !AssignProcessToJobObject(job, pi.hProcess))
+        WARN("could not tie whisper-server to lifelog (error %lu)", GetLastError());
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-
-    Reader* r = (Reader*)calloc(1, sizeof(Reader));
-    CHECK(r, "memory for the worker's output reader");
-    r->app = app;
-    r->pipe = err_read;
-    HANDLE t = CreateThread(nullptr, 0, reader_thread, r, 0, nullptr);
-    CHECK(t, "the worker's output reader to start (error %lu)", GetLastError());
-    CloseHandle(t);
-
     out->process = pi.hProcess;
-    out->stdin_write = in_write;
     out->job = job;
-    LOG("worker started (pid %lu)", pi.dwProcessId);
-    return true;
-}
+    LOG("whisper-server started on port %u with %s", (unsigned)port, model);
 
-// Asks the worker to finish its current file and exit (it exits when its stdin closes), then
-// makes sure. Slow: call it without the lock where you can.
-static void child_stop(Child* c) {
-    if (c->stdin_write) CloseHandle(c->stdin_write);
-    if (c->process && WaitForSingleObject(c->process, 20000) != WAIT_OBJECT_0) {
-        WARN("worker did not exit within 20 s; ending it");
-        if (c->job) TerminateJobObject(c->job, 1);
-        else TerminateProcess(c->process, 1);
-        WaitForSingleObject(c->process, 5000);
+    char health[96];
+    snprintf(health, sizeof(health), "http://127.0.0.1:%u/health", (unsigned)port);
+    f64 began = now_ts();
+    for (;;) {
+        DWORD code = 0;
+        if (GetExitCodeProcess(out->process, &code) && code != STILL_ACTIVE) {
+            snprintf(error, cap, "whisper-server stopped while loading (exit code %lu): see whisper.log in %ls", code, local_dir());
+            server_stop(out);
+            return false;
+        }
+        Mark hm = mark(scratch());
+        HttpReply reply = {};
+        char ignored[128];
+        bool up = http_call(scratch(), "GET", str(health), {}, {}, 2000, &reply, ignored, sizeof(ignored)) && reply.status == 200;
+        rewind(hm);
+        if (up) {
+            LOG("whisper-server ready in %.1f s", now_ts() - began);
+            return true;
+        }
+        if (now_ts() - began > 120) {
+            snprintf(error, cap, "whisper-server did not load the model in 2 minutes");
+            server_stop(out);
+            return false;
+        }
+        if (!sleep_unless_stopping(app, 300)) {
+            snprintf(error, cap, "lifelog is closing");
+            server_stop(out);
+            return false;
+        }
     }
-    if (c->process) CloseHandle(c->process);
-    if (c->job) CloseHandle(c->job);  // kills anything left in it
-    *c = {};
 }
 
-// Takes the process out of App.worker (the caller holds the lock); whoever does, stops it.
-static Child child_take(Worker* w) {
-    Child c = {w->process, w->stdin_write, w->job};
-    w->process = w->stdin_write = w->job = 0;
-    return c;
+// ---------------------------------------------------------------------------------------------
+// Transcribing one file
+
+// Where a file goes: our server or yours. Copied under the lock, used unlocked.
+struct Target {
+    char url[512];  // the API base, ending in /v1
+    char key[256];
+    char model[128];
+    char language[16];
+};
+
+struct Heard {
+    f64 start;  // seconds into the file
+    f64 end;
+    Str text;
+};
+
+// Phrases Whisper invents on music or noise; dropped when they are the whole line.
+static bool hallucination(Str text) {
+    static const char* made_up[] = {"thank you.", "thanks for watching.", "thanks for watching!", "thank you for watching.",
+                                    "thank you for watching!", "you", "bye.", ".", "subtitles by the amara.org community"};
+    for (i32 i = 0; i < COUNT(made_up); i++)
+        if (text.len == (i64)strlen(made_up[i]) && _strnicmp(text.ptr, made_up[i], (size_t)text.len) == 0) return true;
+    return false;
+}
+
+enum Sent : u8 {
+    SENT_OK,
+    SENT_RETRY,  // the server could not be reached or is busy: keep the file and try again later
+    SENT_BAD,    // the server refused this file: set it aside
+};
+
+// Sends `wav` (a whole .wav file) to POST <url>/audio/transcriptions, the OpenAI API both our
+// server and others speak, and reads the lines out of the verbose_json answer. In `a`.
+static Sent transcribe(Arena* a, Target* t, Str wav, Slice<Heard>* out, char* error, i32 cap) {
+    *out = {};
+    const char* boundary = "lifelog-3f9d2c7a51e8";
+    Buf head = {};
+    const char* fields[][2] = {{"model", t->model}, {"response_format", "verbose_json"}, {"temperature", "0"}, {"language", t->language}};
+    for (i32 i = 0; i < COUNT(fields); i++) {
+        if (!fields[i][1][0]) continue;
+        buf_fmt(&head, "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", boundary, fields[i][0], fields[i][1]);
+    }
+    buf_fmt(&head, "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n", boundary);
+    Str tail = str_fmt(a, "\r\n--%s--\r\n", boundary);
+    Str start = buf_take(&head, a);
+    buf_free(&head);
+    i64 len = start.len + wav.len + tail.len;
+    char* body = PUSH_ARRAY(a, char, len);
+    memcpy(body, start.ptr, (size_t)start.len);
+    memcpy(body + start.len, wav.ptr, (size_t)wav.len);
+    memcpy(body + start.len + wav.len, tail.ptr, (size_t)tail.len);
+
+    Str headers = str_fmt(a, "Content-Type: multipart/form-data; boundary=%s\r\n", boundary);
+    if (t->key[0]) headers = str_fmt(a, "%sAuthorization: Bearer %s\r\n", headers.ptr, t->key);
+    Str url = str_fmt(a, "%s/audio/transcriptions", t->url);
+    HttpReply reply = {};
+    char why[256];
+    // Long clips take a while on a slow GPU, or on the CPU.
+    if (!http_call(a, "POST", url, headers, {body, len}, 10 * 60 * 1000, &reply, why, sizeof(why))) {
+        snprintf(error, cap, "could not reach %s: %s", t->url, why);
+        return SENT_RETRY;
+    }
+    if (reply.status == 429 || reply.status >= 500) {
+        snprintf(error, cap, "%s answered %u: %.200s", t->url, reply.status, reply.body.ptr);
+        return SENT_RETRY;
+    }
+    if (reply.status != 200) {
+        snprintf(error, cap, "%s answered %u: %.200s", t->url, reply.status, reply.body.ptr);
+        return SENT_BAD;
+    }
+    Json j = {};
+    char parse_error[128];
+    if (!json_parse(a, reply.body, &j, parse_error, sizeof(parse_error))) {
+        snprintf(error, cap, "the answer is not JSON (%s): %.200s", parse_error, reply.body.ptr);
+        return SENT_BAD;
+    }
+    const Json* segments = json_get(&j, "segments");
+    i32 n = json_len(segments);
+    Heard* lines = PUSH_ARRAY(a, Heard, n + 1);
+    i32 count = 0;
+    for (i32 i = 0; i < n; i++) {
+        const Json* s = json_at(segments, i);
+        Str raw = json_text(json_get(s, "text"));
+        Str text = str_trim(raw);
+        f64 from = json_get(s, "start")->num, to = json_get(s, "end")->num;
+        if (!text.len) continue;
+        // A segment that starts inside a word ("don" + "'t want it") goes on the end of the last.
+        if (count && raw.ptr[0] != ' ' && from - lines[count - 1].end < 1.0) {
+            Heard* last = &lines[count - 1];
+            last->text = str_fmt(a, "%.*s%.*s", (int)last->text.len, last->text.ptr, (int)text.len, text.ptr);
+            last->end = to;
+            continue;
+        }
+        if (hallucination(text)) continue;
+        if (json_get(s, "no_speech_prob")->num > 0.6 && json_get(s, "avg_logprob")->num < -1.0) continue;
+        lines[count++] = {from, to, text};
+    }
+    // A server that gives only the text: one line for the whole file.
+    if (!n) {
+        Str text = str_trim(json_text(json_get(&j, "text")));
+        if (text.len && !hallucination(text)) lines[count++] = {0, json_get(&j, "duration")->num, text};
+    }
+    *out = {lines, count};
+    return SENT_OK;
+}
+
+// The oldest WAV in the spool folder (names start with the time in ms). False if there is none.
+static bool oldest_file(const wchar_t* spool, wchar_t name[MAX_PATH]) {
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%ls\\*.wav", spool);
+    WIN32_FIND_DATAW f;
+    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &f, FindExSearchNameMatch, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    name[0] = 0;
+    do {
+        if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!name[0] || wcscmp(f.cFileName, name) < 0) wcscpy_s(name, MAX_PATH, f.cFileName);
+    } while (FindNextFileW(h, &f));
+    FindClose(h);
+    return name[0] != 0;
+}
+
+// Moves the clip and its .json to spool\failed, to be looked at by hand.
+static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* meta) {
+    wchar_t dir[MAX_PATH], to[MAX_PATH];
+    swprintf(dir, MAX_PATH, L"%ls\\failed", spool);
+    CreateDirectoryW(dir, 0);
+    const wchar_t* files[] = {wav, meta};
+    for (i32 i = 0; i < 2; i++) {
+        const wchar_t* slash = wcsrchr(files[i], L'\\');
+        swprintf(to, MAX_PATH, L"%ls\\%ls", dir, slash ? slash + 1 : files[i]);
+        MoveFileExW(files[i], to, MOVEFILE_REPLACE_EXISTING);
+    }
+}
+
+static void bind_text(sqlite3_stmt* st, int i, Str s) {
+    if (s.len) sqlite3_bind_text(st, i, s.ptr, (int)s.len, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(st, i);
+}
+
+// Transcribes spool\<name> and saves its lines. False when it should be tried again later (the
+// server could not be reached, or the database was busy); the file then stays where it is.
+// Unlocked.
+static bool transcribe_file(App* app, sqlite3* db, Target* t, const wchar_t* spool, const wchar_t* name, i32* lines_out) {
+    *lines_out = 0;
+    Arena* a = scratch();
+    Mark m = mark(a);
+    wchar_t wav_path[MAX_PATH], meta_path[MAX_PATH];
+    swprintf(wav_path, MAX_PATH, L"%ls\\%ls", spool, name);
+    wcscpy_s(meta_path, MAX_PATH, wav_path);
+    wcscpy_s(meta_path + wcslen(meta_path) - 4, 6, L".json");
+    Str label = narrow(a, name);
+
+    Str meta_text = read_file(a, meta_path);
+    Str wav = read_file(a, wav_path);
+    Json meta = {};
+    char error[512] = "";
+    if (!meta_text.ptr || !wav.ptr || !json_parse(a, meta_text, &meta, error, sizeof(error))) {
+        WARN("%s: its .json is missing or unreadable (%s); set aside in spool\\failed", label.ptr, error);
+        set_aside(spool, wav_path, meta_path);
+        rewind(m);
+        return true;
+    }
+    Slice<Heard> heard = {};
+    Sent sent = transcribe(a, t, wav, &heard, error, sizeof(error));
+    if (sent == SENT_RETRY) {
+        if (!stopping(app)) WARN("%s: %s; trying again later", label.ptr, error);
+        rewind(m);
+        return false;
+    }
+    if (sent == SENT_BAD) {
+        WARN("%s: %s; set aside in spool\\failed", label.ptr, error);
+        set_aside(spool, wav_path, meta_path);
+        rewind(m);
+        return true;
+    }
+
+    f64 start_ts = json_get(&meta, "start_ts")->num;
+    Str source = json_text(json_get(&meta, "source"));
+    Str exe = json_text(json_get(&meta, "exe"));
+    Str named = json_text(json_get(&meta, "speaker"));  // a person in a call, if the clip says
+    Str speaker = str_eq(source, str("mic")) ? str("me") : named.len ? named : exe.len ? exe : str("unknown");
+    // Kept under the calendar day it was recorded on, for playback.
+    LocalTime lt = local_time(start_ts);
+    Str kept = heard.count ? str_fmt(a, "%04d-%02d-%02d/%s", lt.year, lt.month, lt.day, label.ptr) : Str{};
+
+    bool saved = true;
+    if (heard.count) {
+        sqlite3_stmt* st = 0;
+        saved = sqlite3_exec(db, "BEGIN IMMEDIATE", 0, 0, 0) == SQLITE_OK &&
+                sqlite3_prepare_v2(db,
+                                   "INSERT INTO segments (start_ts, end_ts, source, speaker, exe, pid, title, device, text, audio, audio_offset)"
+                                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   -1, &st, 0) == SQLITE_OK;
+        for (i32 i = 0; saved && i < heard.count; i++) {
+            Heard* h = &heard.items[i];
+            const Json* pid = json_get(&meta, "pid");
+            sqlite3_bind_double(st, 1, start_ts + h->start);
+            sqlite3_bind_double(st, 2, start_ts + h->end);
+            bind_text(st, 3, source);
+            bind_text(st, 4, speaker);
+            bind_text(st, 5, exe);
+            if (pid->type == JSON_NUMBER) sqlite3_bind_int64(st, 6, (i64)pid->num);
+            else sqlite3_bind_null(st, 6);
+            bind_text(st, 7, json_text(json_get(&meta, "title")));
+            bind_text(st, 8, json_text(json_get(&meta, "device")));
+            bind_text(st, 9, h->text);
+            bind_text(st, 10, kept);
+            sqlite3_bind_double(st, 11, h->start);
+            saved = sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_reset(st);
+        }
+        if (!saved) WARN("%s: saving its lines failed (%s); trying again later", label.ptr, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        saved = saved && sqlite3_exec(db, "COMMIT", 0, 0, 0) == SQLITE_OK;
+        if (!saved) {
+            sqlite3_exec(db, "ROLLBACK", 0, 0, 0);
+            rewind(m);
+            return false;
+        }
+    }
+    if (heard.count) {
+        wchar_t audio[MAX_PATH], day_dir[MAX_PATH], to[MAX_PATH];
+        audio_dir(&app->config, audio);  // data_dir does not change while the program runs
+        swprintf(day_dir, MAX_PATH, L"%ls\\%04d-%02d-%02d", audio, lt.year, lt.month, lt.day);
+        SHCreateDirectoryExW(0, day_dir, 0);
+        swprintf(to, MAX_PATH, L"%ls\\%ls", day_dir, name);
+        if (!MoveFileExW(wav_path, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) DeleteFileW(wav_path);
+    } else {
+        DeleteFileW(wav_path);
+    }
+    DeleteFileW(meta_path);
+    *lines_out = heard.count;
+    rewind(m);
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -339,7 +473,7 @@ static void count_queue(const wchar_t* spool, i32* files, f64* secs) {
     FindClose(h);
 }
 
-// Whether the worker may run now, and the few words saying why (not). Caller holds the lock.
+// Whether transcription may run now, and the few words saying why (not). Caller holds the lock.
 static bool worker_allowed(App* app, f64 quiet_from, char* state, i32 cap) {
     Worker* w = &app->worker;
     Mode mode = app->config.processing.mode;
@@ -364,18 +498,18 @@ static bool worker_allowed(App* app, f64 quiet_from, char* state, i32 cap) {
 
 static DWORD WINAPI supervisor_thread(void* p) {
     App* app = (App*)p;
-    wchar_t python[MAX_PATH] = {}, dir[MAX_PATH] = {}, spool[MAX_PATH];
+    wchar_t spool[MAX_PATH];
     app_lock(app);
-    bool found = find_worker(&app->config, python, dir);
-    app->worker.missing = !found;
     spool_dir(&app->config, spool);
     app_unlock(app);
-    if (!found) WARN("the transcriber is not set up (Settings, Transcription): audio will queue up untranscribed");
+    sqlite3* db = 0;
 
     f64 next_start = 0;  // after a crash or a failed start, wait before trying again
     f64 next_count = 0;
+    f64 retry_at = 0;    // after the server could not be reached
     f64 quiet_from = 0;  // when the last game closed, in auto mode; 0 if none has
-    bool had_game = false;
+    bool had_game = false, first = true;
+    char trouble[256] = "";  // why the last try failed, while waiting to try again
     while (!stopping(app)) {
         f64 now = now_ts();
         i32 files = -1;
@@ -385,20 +519,22 @@ static DWORD WINAPI supervisor_thread(void* p) {
             next_count = now + 2;
         }
 
-        Child stop = {};
-        bool start = false, wake = false;
-        char state[160];
+        Server stop = {};
+        bool start = false, work = false, wake = false;
+        char state[256], model[128], language[16];
+        Target t = {};
         app_lock(app);
         Worker* w = &app->worker;
-        if (!w->process) {  // set up from Settings since, or another Python chosen there
-            bool was = found;
-            found = find_worker(&app->config, python, dir);
-            if (found && !was) LOG("transcriber found: %ls", python);
-            if (found == w->missing) {
-                w->missing = !found;
-                wake = true;
-            }
+        Config* c = &app->config;
+        bool yours = c->worker.endpoint[0] != 0;
+        bool ready = yours || whisper_ready(c->worker.model);
+        if (ready == w->missing || first) {
+            w->missing = !ready;
+            wake = true;
+            if (!ready) WARN("transcription is not set up (Settings, Transcription): audio will queue up untranscribed");
+            else if (!first) LOG("transcription is set up");
         }
+        first = false;
         bool game = app->apps.game_running[0] != 0;
         if (had_game && !game) quiet_from = now;
         had_game = game;
@@ -407,68 +543,108 @@ static DWORD WINAPI supervisor_thread(void* p) {
             w->queued_secs = secs;
             wake = true;
         }
-        bool want = found && worker_allowed(app, quiet_from, state, sizeof(state));
-        if (w->process && !want) {
-            LOG("stopping worker (%s)", state);
-            stop = child_take(w);
+        bool want = ready && worker_allowed(app, quiet_from, state, sizeof(state));
+        if (w->process && (!want || yours)) {
+            LOG("stopping whisper-server (%s)", want ? "your own server is set" : state);
+            stop = server_take(w);
         } else if (w->process && WaitForSingleObject(w->process, 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
             GetExitCodeProcess(w->process, &code);
-            WARN("worker exited (code %lu); restarting in 15 s", code);
-            stop = child_take(w);
+            WARN("whisper-server exited (code %lu): see whisper.log; starting it again in 15 s", code);
+            stop = server_take(w);
             next_start = now + 15;
         }
-        // worker_stop waits for a process being stopped here, so the exit does not cut it off.
-        if (stop.process)
-            DuplicateHandle(GetCurrentProcess(), stop.process, GetCurrentProcess(), &w->leaving, SYNCHRONIZE, FALSE, 0); else if (!w->process && want && now >= next_start) {
+        if (want && !yours && !w->process && now >= next_start) {
             start = true;
+            SET(model, str(c->worker.model));
+            SET(language, str(c->worker.language));
+        }
+        bool can = want && (yours || w->process);
+        if (can && w->queued > 0 && now >= retry_at) {
+            work = true;
+            if (yours) {
+                Str url = str_trim(str(c->worker.endpoint));
+                while (url.len && url.ptr[url.len - 1] == '/') url.len--;
+                SET(t.url, url);
+                SET(t.key, str_trim(str(c->worker.api_key)));
+            } else {
+                snprintf(t.url, sizeof(t.url), "http://127.0.0.1:%u/v1", (unsigned)whisper_port());
+            }
+            SET(t.model, str(c->worker.model));
+            SET(t.language, str(c->worker.language));
         }
         if (want) {
-            if (w->process) snprintf(state, sizeof(state), w->queued ? "transcribing" : "up to date");
+            if (now < retry_at) snprintf(state, sizeof(state), "%s: trying again in %.0f s", trouble, retry_at - now);
+            else if (can) snprintf(state, sizeof(state), w->queued ? "transcribing" : "up to date");
             else snprintf(state, sizeof(state), "starting");
             w->waiting_since = 0;
         } else {
-            if (!found) snprintf(state, sizeof(state), "not set up yet");
+            if (!ready) snprintf(state, sizeof(state), "not set up yet");
             if (!w->waiting_since) w->waiting_since = now;
         }
         if (strcmp(state, w->state) != 0) {
             SET(w->state, str(state));
             wake = true;
         }
+        wake |= can != w->running;
+        w->running = can;
         app_unlock(app);
+        if (wake) wake_window(app);
 
-        if (stop.process) {
-            child_stop(&stop);
-            app_lock(app);
-            CloseHandle(app->worker.leaving);
-            app->worker.leaving = 0;
-            app_unlock(app);
-        }
+        if (stop.process) server_stop(&stop);
         if (start) {
-            Child c;
-            bool ok = child_start(app, python, dir, &c);
+            Server s = {};
+            char error[512];
+            bool ok = server_start(app, model, language, &s, error, sizeof(error));
+            if (!ok && !stopping(app)) WARN("%s; trying again in a minute", error);
             app_lock(app);
             if (ok && !stopping(app)) {
-                app->worker.process = c.process;
-                app->worker.stdin_write = c.stdin_write;
-                app->worker.job = c.job;
+                app->worker.process = s.process;
+                app->worker.job = s.job;
             } else if (!ok) {
                 next_start = now_ts() + 60;
             }
             app_unlock(app);
-            if (ok && stopping(app)) child_stop(&c);  // the program ended while it started
+            if (ok && stopping(app)) server_stop(&s);  // the program ended while it started
+            continue;
         }
-        app_lock(app);
-        bool running = app->worker.process != 0;
-        wake |= running != app->worker.running;
-        app->worker.running = running;
-        app_unlock(app);
-        if (wake) wake_window(app);
+        if (work) {
+            wchar_t name[MAX_PATH];
+            if (!oldest_file(spool, name)) {
+                next_count = 0;  // the count was out of date
+                continue;
+            }
+            if (!db) db = db_open(app);
+            if (!db) {
+                snprintf(trouble, sizeof(trouble), "the database could not be opened");
+                retry_at = now_ts() + 30;
+                continue;
+            }
+            f64 began = now_ts();
+            i32 lines = 0;
+            if (!transcribe_file(app, db, &t, spool, name, &lines)) {
+                // Our server going away mid-file is handled above; anything else waits a while.
+                snprintf(trouble, sizeof(trouble), "could not transcribe");
+                retry_at = now_ts() + 30;
+                continue;
+            }
+            i32 left = 0;
+            f64 left_secs = 0;
+            count_queue(spool, &left, &left_secs);
+            next_count = now_ts() + 2;
+            LOG("%ls: %d lines in %.1fs (%d queued)", name, lines, now_ts() - began, left);
+            app_lock(app);
+            app->worker.queued = left;
+            app->worker.queued_secs = left_secs;
+            if (lines > 0) app->worker.lines_version++;
+            app_unlock(app);
+            wake_window(app);
+            continue;
+        }
         sleep_unless_stopping(app, 500);
     }
-
-    // A running worker is left for worker_stop, which the main thread calls before the program
-    // exits; stopping it here could be cut off halfway by that exit.
+    if (db) sqlite3_close(db);
+    // A running server is left for worker_stop, which the main thread calls before the program exits.
     return 0;
 }
 
@@ -500,14 +676,23 @@ void worker_set_gpu_limit(App* app, u32 percent) {
     config_save_u32("processing", "gpu_busy_percent", percent);
 }
 
-void worker_stop(App* app) {
-    Child c = child_take(&app->worker);
-    app->worker.running = false;
-    if (c.process) {
-        LOG("stopping worker (lifelog is ending)");
-        child_stop(&c);
-        LOG("worker stopped");
+void worker_set_endpoint(App* app, Str url, Str model) {
+    url = str_trim(url);
+    model = str_trim(model);
+    SET(app->config.worker.endpoint, url);
+    config_save_string("worker", "endpoint", app->config.worker.endpoint);
+    if (model.len) {
+        SET(app->config.worker.model, model);
+        config_save_string("worker", "model", app->config.worker.model);
     }
-    // One the supervisor is already stopping (a game started): let it finish its file too.
-    if (app->worker.leaving) WaitForSingleObject(app->worker.leaving, 25000);
+    LOG("transcription: %s", url.len ? app->config.worker.endpoint : "lifelog's own whisper.cpp");
+}
+
+void worker_stop(App* app) {
+    Server s = server_take(&app->worker);
+    app->worker.running = false;
+    if (s.process) {
+        server_stop(&s);
+        LOG("whisper-server stopped");
+    }
 }

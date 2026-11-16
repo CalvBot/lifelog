@@ -54,8 +54,10 @@ struct SettingsState {
     bool ask_at_active;
     char vs_dir[MAX_PATH];
     bool vs_dir_active;
-    char python[MAX_PATH];
-    bool python_active;
+    char wendpoint[512];  // transcription's own server
+    bool wendpoint_active;
+    char wmodel[128];
+    bool wmodel_active;
     char endpoint[512];
     bool endpoint_active;
     char model[128];
@@ -571,12 +573,18 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
         weak(tmp("now %u%%", app->worker.gpu_3d_percent));
     }
 
-    if (app->worker.missing || app->setup.part[SETUP_TRANSCRIBER].running) setup_row(app, SETUP_TRANSCRIBER, "Whisper", "about 3 GB");
+    // lifelog's own whisper.cpp, or any OpenAI-compatible transcription server.
+    if (!c->worker.endpoint[0] && (app->worker.missing || app->setup.part[SETUP_TRANSCRIBER].running))
+        setup_row(app, SETUP_TRANSCRIBER, "whisper.cpp and Whisper large-v3-turbo", "about 2.3 GB");
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Your own Python");
+    ImGui::TextUnformatted("Your own server");
     ImGui::SameLine();
-    if (setting_field("##python", "a python.exe with lifelog's worker installed (pip install worker)", s->python, sizeof(s->python), &s->python_active, c->worker.python, ImGui::GetContentRegionAvail().x))
-        worker_set_python(app, str(s->python));
+    f32 model_w = px(140);
+    bool url_done = setting_field("##wendpoint", "http://localhost:8000/v1 (OpenAI-compatible)", s->wendpoint, sizeof(s->wendpoint),
+                                  &s->wendpoint_active, c->worker.endpoint, ImGui::GetContentRegionAvail().x - model_w - ImGui::GetStyle().ItemSpacing.x);
+    ImGui::SameLine();
+    bool model_done = setting_field("##wmodel", "model", s->wmodel, sizeof(s->wmodel), &s->wmodel_active, c->worker.model, model_w);
+    if (url_done || model_done) worker_set_endpoint(app, str(url_done ? s->wendpoint : c->worker.endpoint), str(model_done ? s->wmodel : ""));
     settings_card_end();
 }
 

@@ -9,8 +9,9 @@ Nothing leaves the PC. Design and roadmap: [PLAN.md](PLAN.md).
 - `src/`: the recorder (WASAPI mic and per-app loopback), the tray icon, the local API and the `lifelog.exe` CLI.
 - `ui/`: builds `lifelogw.exe`, the app itself. Recording runs on background threads and the
   [immediate-mode](https://github.com/emilk/immediate-mode) window runs on the main thread.
-- `worker/`: Python, transcribes with faster-whisper (large-v3-turbo) into SQLite (`schema.sql`). It steps aside
-  while a game is running and catches up after.
+- Transcription: a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server with Whisper large-v3-turbo, run by
+  the app, which writes the lines into SQLite (`schema.sql`). It steps aside while a game is running and catches up
+  after.
 - Daily summary: a [llama.cpp](https://github.com/ggml-org/llama.cpp) server with Qwen3 14B, only running while it
   writes. To use an AI you already run (Ollama, LM Studio, any OpenAI-compatible endpoint), set `endpoint` and
   `model` under `[summary]` in the settings; then the install skips the 10 GB download.
@@ -21,11 +22,12 @@ Install `lifelog-<version>.msi`. It installs for your account only (no admin pro
 `%LOCALAPPDATA%\Programs\lifelog`, adds a Start menu entry, and starts lifelog in the tray now and at login.
 
 The installer holds no AI. In **Settings**, press **Set up** under Transcription to download the transcriber
-(faster-whisper and its CUDA libraries, about 3 GB, through [uv](https://github.com/astral-sh/uv)), and under
+(whisper.cpp's CUDA build and Whisper large-v3-turbo, about 2.3 GB), and under
 Daily summary to download [llama.cpp](https://github.com/ggml-org/llama.cpp) and Qwen3 14B (about 10 GB). Each
 comes from where it is published, into `%LOCALAPPDATA%\lifelog`. You can use your own instead:
 
-- **Transcriber:** a `python.exe` that has the worker's dependencies (`pip install -r worker\pyproject.toml`).
+- **Transcriber:** any OpenAI-compatible transcription server (`POST <endpoint>/audio/transcriptions`, such as
+  faster-whisper-server or a cloud API) and the model name it knows.
 - **Summary:** any OpenAI-compatible server (Ollama, LM Studio, a cloud API) and the model name it knows.
 
 Recordings and the database go to `%LOCALAPPDATA%\lifelog\data` unless `data_dir` says otherwise. Settings live in
