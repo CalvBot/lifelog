@@ -944,7 +944,16 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
         s->search_refocus = false;
         s->search_cursor_end = true;
     }
-    ImGui::SetNextItemWidth(320 * u);
+    // Up to 320 wide; narrower when the day's buttons on the right (and the match count and
+    // arrows, while searching) need the room.
+    {
+        f32 sp = st.ItemSpacing.x;
+        f32 nav = 28 * u * 2 + 210 * u + ImGui::CalcTextSize("Today").x + st.FramePadding.x * 2 + sp * 4;
+        f32 find = str_trim(str(s->search)).len ? 86 * u + 3 * ImGui::GetFrameHeight() + 4 * u + sp : 0;
+        f32 w = right - ImGui::GetCursorScreenPos().x - nav - find;
+        w = w > 320 * u ? 320 * u : w < 120 * u ? 120 * u : w;
+        ImGui::SetNextItemWidth(w);
+    }
     char before[256];
     SET(before, str(s->search));
     bool enter = ImGui::InputTextWithHint("##tl_search", "Search everything heard", s->search, sizeof(s->search),

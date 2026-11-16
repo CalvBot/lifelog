@@ -372,8 +372,23 @@ static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             s->swap->ResizeBuffers(0, LOWORD(lp), HIWORD(lp), DXGI_FORMAT_UNKNOWN, 0);
             surface_make_target(s);
             s->frames_wanted = 2;
+            // While an edge is dragged, Windows runs its own loop and ours draws nothing, so the
+            // last frame would be stretched to the new size: draw one here, at the new size.
+            if (s == &g_main && !g_busy && !s->closing && !surface_draw(s, ui_draw_window)) s->closing = true;
         }
         return 0;
+    case WM_GETMINMAXINFO:
+        // The main window's layout needs this much room; smaller, things overlap or run off.
+        if (s == &g_main) {
+            UINT dpi = GetDpiForWindow(hwnd);
+            RECT r = {0, 0, MulDiv(760, (i32)dpi, 96), MulDiv(540, (i32)dpi, 96)};
+            AdjustWindowRectExForDpi(&r, (DWORD)GetWindowLongW(hwnd, GWL_STYLE), FALSE, (DWORD)GetWindowLongW(hwnd, GWL_EXSTYLE), dpi);
+            MINMAXINFO* mm = (MINMAXINFO*)lp;
+            mm->ptMinTrackSize.x = r.right - r.left;
+            mm->ptMinTrackSize.y = r.bottom - r.top;
+            return 0;
+        }
+        break;
     case WM_DPICHANGED: {
         s->dpi_scale = HIWORD(wp) / 96.0f;
         style_init(s->dpi_scale);
