@@ -33,7 +33,8 @@ struct Ui {
 
     HWND window;          // the main window while it is open
     HWND popup;
-    HWND apps;            // the "All apps…" window while it is open
+    i32 popup_height;     // what the popup's content wants, in pixels; main.cpp fits the window to it
+    HWND apps;           // the "All apps…" window while it is open
     HWND tray;            // the tray icon's message window
     DWORD main_thread;
     char toast[256];      // a short message at the bottom of the window

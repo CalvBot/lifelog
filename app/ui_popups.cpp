@@ -110,20 +110,28 @@ static void message_label(PopupState* s) {
     ImGui::PopStyleColor();
 }
 
-// A menu line: icon and text, no frame, the full width. Its hover reaches into the window's
-// padding, so the icons line up with the lines above.
-static bool menu_item(const char* icon, const char* text) {
+// A menu cell: icon and text, no frame, in column `col` of `cols` across the width. Its hover
+// reaches into the window's padding on the left, so the first column's icons line up with the
+// lines above. `weak` greys the text (Restart, Quit).
+static bool menu_item(const char* icon, const char* text, i32 col, i32 cols, bool weak = false) {
     f32 pad = ImGui::GetStyle().FramePadding.x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() - pad);
+    f32 gap = ImGui::GetStyle().ItemSpacing.x;
+    f32 left = ImGui::GetWindowContentRegionMin().x;
+    f32 cell = (ImGui::GetWindowContentRegionMax().x - left - gap * (cols - 1)) / cols;
+    f32 x = left + (f32)col * (cell + gap) - pad;
+    if (col) ImGui::SameLine(x);
+    else ImGui::SetCursorPosX(x);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    if (weak) ImGui::PushStyleColor(ImGuiCol_Text, weak_text());
     ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
-    bool clicked = ImGui::Button(label(icon, text), ImVec2(ImGui::GetContentRegionAvail().x + pad, px(30)));
+    bool clicked = ImGui::Button(label(icon, text), ImVec2(cell + pad, weak ? px(28) : px(30)));
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(weak ? 2 : 1);
     return clicked;
 }
 
-// A button that looks picked when `on` (min / h).
+// One side of a two-way switch (min | h): the picked side is raised, the other is flat on the
+// switch's frame, which segmented() draws.
 static bool choice(const char* text, bool on, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImGui::GetStyleColorVec4(ImGuiCol_Header) : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : weak_text());
@@ -132,6 +140,25 @@ static bool choice(const char* text, bool on, ImVec2 size) {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
     return clicked;
+}
+
+// "min | h" as one control. True when it changed `hours`.
+static bool segmented(bool* hours, f32 width) {
+    f32 h = ImGui::GetFrameHeight();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + width, p.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+    f32 half = width / 2;
+    bool changed = false;
+    if (choice("min", !*hours, ImVec2(half, h)) && *hours) {
+        *hours = false;
+        changed = true;
+    }
+    ImGui::SameLine(0, 0);
+    if (choice("h", *hours, ImVec2(half, h)) && !*hours) {
+        *hours = true;
+        changed = true;
+    }
+    return changed;
 }
 
 // The preview box's background: a step further from the text than the window.
@@ -179,26 +206,20 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     }
     ImGui::Separator();
 
-    // "Copy the last  [15] min h" on one line.
+    // "Copy the last  [15] [min|h]" on one line, the controls flush right.
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label(ICON_HISTORY, "Copy the last"));
     {
         f32 right = ImGui::GetWindowContentRegionMax().x;
-        f32 x = right - px(48 + 4 + 36 + 4 + 36);
-        ImGui::SameLine(x);
-        ImGui::SetNextItemWidth(px(48));
+        f32 amount_w = px(52), switch_w = px(76), gap = px(6);
+        ImGui::SameLine(right - switch_w - gap - amount_w);
+        ImGui::SetNextItemWidth(amount_w);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(4), ImGui::GetStyle().FramePadding.y));
         const char* fmt = s->amount == floorf(s->amount) ? "%.0f" : "%.1f";
         if (ImGui::DragFloat("##amount", &s->amount, 0.5f, 1, 999, fmt, ImGuiSliderFlags_AlwaysClamp)) s->changed_ts = now;
-        ImGui::SameLine(x + px(52));
-        if (choice("min", !s->hours, ImVec2(px(36), 0))) {
-            s->hours = false;
-            s->changed_ts = now;
-        }
-        ImGui::SameLine(x + px(92));
-        if (choice("h", s->hours, ImVec2(px(36), 0))) {
-            s->hours = true;
-            s->changed_ts = now;
-        }
+        ImGui::PopStyleVar();
+        ImGui::SameLine(right - switch_w);
+        if (segmented(&s->hours, switch_w)) s->changed_ts = now;
     }
     f64 secs = s->amount * (s->hours ? 3600.0 : 60.0);
     f64 start = now - secs;
@@ -223,8 +244,10 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(6));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(8), px(8)));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(6), px(3)));
-    ImGui::BeginChild("preview", ImVec2(0, px(92)), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     ImGui::PushFont(0, 13);
+    // Room for exactly the top line and three lines heard, so its size never jumps.
+    f32 box_h = 4 * ImGui::GetTextLineHeight() + 3 * px(3) + 2 * px(8);
+    ImGui::BeginChild("preview", ImVec2(0, box_h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     // The top line doubles as where "Copying…" and "Copied …" show.
     if (g_copy.busy) {
         spinner(next_frame_ms);
@@ -248,8 +271,8 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
             ImGui::TextUnformatted(popup_fit_text(text, w));
         }
     }
-    ImGui::PopFont();
     ImGui::EndChild();
+    ImGui::PopFont();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor();
 
@@ -268,16 +291,17 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     }
     ImGui::Separator();
 
+    // Where to go, two to a row; then the program itself, quieter, at the bottom.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), 0));
-    if (menu_item(ICON_SCROLL_TEXT, "Timeline")) {
+    if (menu_item(ICON_SCROLL_TEXT, "Timeline", 0, 2)) {
         ui_show(app, TAB_TIMELINE, 0);
         keep = false;
     }
-    if (menu_item(ICON_CALENDAR, "Journal")) {
+    if (menu_item(ICON_CALENDAR, "Journal", 1, 2)) {
         ui_show(app, TAB_JOURNAL, 0);
         keep = false;
     }
-    if (menu_item(ICON_PASTE, "Paste here")) {
+    if (menu_item(ICON_PASTE, "Paste here", 0, 2)) {
         char error[256] = {};
         i32 n = files_paste(app, error, sizeof(error));
         // The paste thread says "Saved N items" in the window when it is done.
@@ -288,15 +312,19 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
             s->close_ts = now + 0.9;
         }
     }
-    if (menu_item(ICON_SETTINGS, "Settings")) {
+    if (menu_item(ICON_SETTINGS, "Settings", 1, 2)) {
         ui_show(app, TAB_SETTINGS, 0);
         keep = false;
     }
-    if (menu_item(ICON_REFRESH, "Restart")) {
+    ImGui::PopStyleVar();
+    ImGui::Dummy(ImVec2(0, 0));  // the usual gap above the line
+    ImGui::Separator();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), 0));
+    if (menu_item(ICON_REFRESH, "Restart", 0, 2, true)) {
         app_restart(app);
         keep = false;
     }
-    if (menu_item(ICON_POWER, "Quit")) {
+    if (menu_item(ICON_POWER, "Quit", 1, 2, true)) {
         app_quit(app);
         keep = false;
     }
@@ -351,12 +379,9 @@ static bool delay_draw(App* app, PopupState* s) {
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) keep = false;
 
-    if (s->message[0]) {
-        f32 h = ImGui::GetTextLineHeightWithSpacing();
-        f32 bottom = ImGui::GetWindowContentRegionMax().y;
-        if (ImGui::GetCursorPosY() < bottom - h) ImGui::SetCursorPosY(bottom - h);
-        message_label(s);
-    }
+    // A line kept for the message, so the box does not grow when one shows.
+    if (s->message[0]) message_label(s);
+    else ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeight()));
     return keep;
 }
 

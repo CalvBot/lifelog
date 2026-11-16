@@ -166,6 +166,9 @@ bool ui_draw_popup(App* app, f32* next_frame_ms) {
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::Begin("popup", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
     bool keep = popup_draw(app, app->ui.popup_state, next_frame_ms);
+    // As tall as what was drawn (down to the last item), so there is no empty space below it.
+    f32 bottom = ImGui::GetItemRectMax().y - ImGui::GetWindowPos().y;
+    app->ui.popup_height = (i32)(bottom + ImGui::GetStyle().WindowPadding.y + 0.5f);
     ImGui::End();
     rewind(m);
     return keep;

@@ -571,7 +571,8 @@ static void close_main_window() {
 static void open_popup(Popup which) {
     if (g_popup.hwnd) surface_close(&g_popup);
     f32 scale = GetDpiForSystem() / 96.0f;
-    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 176 * scale : 424 * scale);
+    // A first guess at the height; popup_fit makes it match the content once drawn.
+    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 176 * scale : 380 * scale);
     // Above the tray, at the cursor (where the icon was clicked).
     POINT at;
     GetCursorPos(&at);
@@ -592,6 +593,20 @@ static void open_popup(Popup which) {
     ui_popup_opened(&g_app);
     ShowWindow(g_popup.hwnd, SW_SHOW);
     SetForegroundWindow(g_popup.hwnd);
+}
+
+// Fits the popup's height to its content (App.ui.popup_height), keeping its bottom edge where it
+// is, so it stays just above the tray.
+static void popup_fit() {
+    i32 want = g_app.ui.popup_height;
+    RECT client, win;
+    GetClientRect(g_popup.hwnd, &client);
+    GetWindowRect(g_popup.hwnd, &win);
+    i32 delta = want - (client.bottom - client.top);
+    if (want <= 0 || delta == 0) return;
+    i32 h = win.bottom - win.top + delta;
+    SetWindowPos(g_popup.hwnd, 0, win.left, win.bottom - h, win.right - win.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    g_popup.frames_wanted = 2;
 }
 
 static void close_popup() {
@@ -678,6 +693,7 @@ static i32 run_app() {
         if (g_popup.hwnd && g_popup.frames_wanted > 0) {
             g_popup.frames_wanted--;
             if (!surface_draw(&g_popup, ui_draw_popup)) g_popup.closing = true;
+            else popup_fit();
         }
         if (g_popup.closing) close_popup();
         if (g_apps.hwnd && g_apps.frames_wanted > 0) {
