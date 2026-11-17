@@ -441,36 +441,19 @@ static Str fit_text(Str text, f32 width) {
     return str_fmt(scratch(), "%.*s…", (int)n, text.ptr);
 }
 
-// How many words (3+ letters) two texts share, ignoring case and punctuation.
-static i32 words_of(Str s, Str* out, i32 cap) {
-    i32 n = 0;
-    for (i64 i = 0; i < s.len && n < cap;) {
-        auto is_word = [](u8 c) { return isalnum(c) || c == '\'' || c >= 0x80; };
-        while (i < s.len && !is_word((u8)s.ptr[i])) i++;
-        i64 start = i;
-        while (i < s.len && is_word((u8)s.ptr[i])) i++;
-        Str w = {s.ptr + start, i - start};
-        if (utf8_count(w) >= 3) out[n++] = w;
-    }
-    return n;
-}
-
+// How many words (3+ letters) two texts share, split and lower-cased the way the summary matches
+// a quote to a line (summary.cpp's word_set), so a quote found there is found here too.
 static i32 shared_words(Str a, Str b) {
-    Str* wa = PUSH_ARRAY(scratch(), Str, 256);
-    Str* wb = PUSH_ARRAY(scratch(), Str, 256);
-    i32 na = words_of(a, wa, 256), nb = words_of(b, wb, 256);
+    Mark m = mark(scratch());
+    Slice<Str> wa = word_set(scratch(), a), wb = word_set(scratch(), b);
     i32 shared = 0;
-    for (i32 i = 0; i < na; i++) {
-        bool seen = false;
-        for (i32 j = 0; j < i && !seen; j++) seen = wa[j].len == wa[i].len && ascii_eq_nocase(wa[j].ptr, wa[i].ptr, wa[i].len);
-        if (seen) continue;
-        for (i32 j = 0; j < nb; j++) {
-            if (wb[j].len == wa[i].len && ascii_eq_nocase(wb[j].ptr, wa[i].ptr, wa[i].len)) {
+    for (i32 i = 0; i < wa.count; i++)
+        for (i32 j = 0; j < wb.count; j++)
+            if (str_eq(wa.items[i], wb.items[j])) {
                 shared++;
                 break;
             }
-        }
-    }
+    rewind(m);
     return shared;
 }
 
