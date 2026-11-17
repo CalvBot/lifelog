@@ -603,7 +603,7 @@ static void stream_start(App* app, Stream* s) {
     s->lock = SRWLOCK_INIT;
     spool_dir(&app->config, s->spool);
     s->gate = app->config.capture.gate_rms;
-    s->started_ts = s->playing_ts = now_ts();
+    s->playing_ts = now_ts();
     s->thread = CreateThread(0, 0, stream_main, s, 0, 0);
     CHECK(s->thread, "a capture thread to start (error %lu)", GetLastError());
     char name[64], label[80];

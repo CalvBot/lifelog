@@ -16,7 +16,6 @@ struct Stream {
     u32 pid;            // the process tree's root
     wchar_t spool[MAX_PATH];  // where its WAVs go, and the loudness gate: set before it starts
     f32 gate;
-    f64 started_ts;
     f64 playing_ts;     // the last time its app had a sound session playing (the main thread's)
     SRWLOCK lock;       // guards the three below, which both threads use
     char title[256];    // the app's window title, kept current by the main thread

@@ -461,7 +461,6 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
         r->time = json_text(json_get(j, "time"));
         r->text = json_text(json_get(j, "text"));
         r->said = json_text(json_get(j, "said"));
-        r->when = json_text(json_get(j, "when"));
         // Its notification, if any; else when it would be due, if it said.
         i64 id = 0;
         f64 due = 0;
@@ -1829,8 +1828,6 @@ static void summary_tick(App* app, Event* e) {
     }
     bool look = !counting && app->config.summary.enabled && !s->writing && now_ts() >= ask_moment(day, app->config.summary.ask_at) &&
                 now_ts() >= s->snooze_ts;
-    SET(s->ask_day, str(day));
-    s->ask_ts = ask_moment(day, app->config.summary.ask_at);
     // Not done or skipped yet (and the database could say).
     if (!look || status != 0) return;
     if (s->last_game_ts && now_ts() - s->last_game_ts < AFTER_GAME_SECS) {

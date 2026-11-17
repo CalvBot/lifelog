@@ -23,7 +23,6 @@ struct Reminder {
     Str time;    // "HH:MM" when it was said
     Str text;    // the to-do
     Str said;    // my words
-    Str when;    // "YYYY-MM-DD HH:MM" if a time was said, else empty
     // Its notification: none, asked, set (with when it will show), shown or no (declined).
     // Empty when it has none and said no time.
     Str alert_state;
@@ -77,8 +76,6 @@ struct Summary {
     List<NeverTopic> never;     // topics never to mention
     u64 version;                // bumped when a summary, a reminder or the never list changes
     // The summary thread's own:
-    f64 ask_ts;                 // when it will next ask
-    char ask_day[11];
     f64 snooze_ts;              // no asking before this (after "in an hour" or "delay until")
     f64 countdown_ts;           // the "starts in 5 minutes" toast is up: writing starts at this moment
     char countdown_day[11];

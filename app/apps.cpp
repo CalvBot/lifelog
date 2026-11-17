@@ -245,7 +245,6 @@ u32 proc_root(Procs* p, u32 pid) {
 struct WinsBuild {
     List<Win> list;
     HWND front;
-    bool front_seen;
 };
 
 static BOOL CALLBACK each_window(HWND hwnd, LPARAM lp) {
@@ -1175,7 +1174,6 @@ static void scan_apply(App* app, Job* job) {
     ScanJob* j = (ScanJob*)job->data;
     i32 new_games = 0;
     Str lines = scan_store(app, &j->scan, &job->arena, &new_games);
-    app->apps.scanned = true;
     paths_append(lines);
     LOG("apps: found %d installed games and %d apps in %.1f s", j->games, j->apps, j->seconds);
     if (new_games) LOG("apps: marked %d installed games' exes as games", new_games);

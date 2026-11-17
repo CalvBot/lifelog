@@ -772,7 +772,7 @@ void setup_move(App* app, Str dir) {
 static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_t* pattern, const char* prefix, const char* suffix) {
     Setup* s = &app->setup;
     s->file_count[part] = 0;
-    f64 all = tree_bytes(dir), models = 0;
+    f64 all = tree_bytes(dir);
     wchar_t find[MAX_PATH];
     swprintf(find, MAX_PATH, L"%ls\\%ls", dir, pattern);
     WIN32_FIND_DATAW fd;
@@ -788,13 +788,11 @@ static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_
                 AiFile* f = &s->files[part][s->file_count[part]++];
                 SET(f->name, str_sub(name, pre.len, name.len - pre.len - suf.len));
                 f->bytes = (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
-                models += f->bytes;
             }
             rewind(m);
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    s->engine_bytes[part] = all - models;
     s->total_bytes += all;
 }
 

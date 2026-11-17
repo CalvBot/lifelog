@@ -48,7 +48,6 @@ struct Apps {
     List<AppInfo> list;
     char game_running[64];  // a game exe running now, "" if none
     volatile LONG game_on;  // game_running is set: an atomic other threads read (events.h)
-    bool scanned;           // the scan of installed apps and games has finished
     List<ExePath> paths;
 };
 

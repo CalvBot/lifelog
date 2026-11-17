@@ -43,7 +43,6 @@ struct Setup {
     // a download, a removal or a move). The main thread's.
     AiFile files[SETUP_PARTS][16];
     i32 file_count[SETUP_PARTS];
-    f64 engine_bytes[SETUP_PARTS];  // whisper.cpp's or llama.cpp's own files
     f64 total_bytes;                // all of the AI folder's whisper and llm
     f64 scanned_ts;
 };

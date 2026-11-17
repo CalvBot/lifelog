@@ -12,7 +12,6 @@
 
 struct App {
     HANDLE stop;  // manual-reset event: set when the program is ending
-    bool quitting;
     bool restarting;
 
     Config config;

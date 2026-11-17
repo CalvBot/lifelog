@@ -99,7 +99,6 @@ void ui_say(App* app, const char* fmt, ...) {
 }
 
 void app_quit(App* app) {
-    app->quitting = true;
     SetEvent(app->stop);
     PostThreadMessageW(app->ui.main_thread, WM_APP_QUIT, 0, 0);
 }
