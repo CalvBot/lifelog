@@ -10,8 +10,8 @@
 #include "vendor/whisper/whisper.h"
 
 // ---------------------------------------------------------------------------------------------
-// GPU load, from the counters Task Manager uses. Games load the 3D engine; Whisper runs on the
-// CUDA engine, so our own work is not counted.
+// GPU load, from the counters Task Manager uses. Games load the 3D engine; lifelog's own load is
+// left out of the sum.
 
 struct Gpu3d {
     PDH_HQUERY query;
@@ -31,7 +31,7 @@ static bool gpu3d_open(Gpu3d* g) {
     return true;
 }
 
-// Percent of the 3D engine in use since the last call, summed over every program (so it can
+// Percent of the 3D engine in use since the last call, summed over every other program (so it can
 // pass 100 with more than one GPU). Call at least a second apart. False if there is no reading.
 static bool gpu3d_sample(Gpu3d* g, f64* load) {
     if (PdhCollectQueryData(g->query) != ERROR_SUCCESS) return false;
@@ -42,9 +42,16 @@ static bool gpu3d_sample(Gpu3d* g, f64* load) {
     // The items come first, the instance names after them in the same buffer.
     PDH_FMT_COUNTERVALUE_ITEM_W* items = (PDH_FMT_COUNTERVALUE_ITEM_W*)arena_push(scratch(), size, 8);
     bool ok = PdhGetFormattedCounterArrayW(g->counter, PDH_FMT_DOUBLE, &size, &count, items) == ERROR_SUCCESS;
+    // Instances are named "pid_<n>_luid_...". Our own are skipped: Whisper's kernels and the window
+    // can show up as 3D work, and counting them made transcription pause itself.
+    wchar_t own[32];
+    i32 own_len = swprintf(own, 32, L"pid_%lu_", GetCurrentProcessId());
     f64 sum = 0;
-    for (DWORD i = 0; ok && i < count; i++)
-        if (items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA) sum += items[i].FmtValue.doubleValue;
+    for (DWORD i = 0; ok && i < count; i++) {
+        if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA) continue;
+        if (items[i].szName && wcsncmp(items[i].szName, own, own_len) == 0) continue;
+        sum += items[i].FmtValue.doubleValue;
+    }
     rewind(m);
     *load = sum;
     return ok;
