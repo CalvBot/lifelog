@@ -326,16 +326,15 @@ The window only exists while it is open. Closing it frees its memory; the record
 
 ## Voice commands
 
-- Say "lifelog" and a command as one sentence ("lifelog, clip the last hour"), or "lifelog" alone: it chimes and
+- Say "lifelog" and a command as one sentence ("lifelog, summarise the last hour"), or "lifelog" alone: it chimes and
   waits 6 s for the command. A "hey" or "ok" before the name is fine. The name in the middle of a sentence ("I was
   working on lifelog") is ignored.
 - The wake word is "lifelog" unless changed in Settings (`[voice] wake_word`): at least 3 letters or digits, and
   only letters, digits, spaces, - and '. A word of 6 or more letters also matches when one letter is heard wrong
   ("jarvus" for "jarvis") or split in two ("life log"). Whisper's prompt names it, which makes it heard more often.
 - The commands:
-  - **clip** with a spoken range ("the last hour", "fifteen minutes", "half an hour", "an hour and a half",
-    "today"; 15 minutes by default).
-  - **summarise** (or "sum up", "recap") with the same range: the summary AI writes a few sentences about it from
+  - **summarise** (or "sum up", "recap") with a spoken range ("the last hour", "fifteen minutes", "half an hour",
+    "an hour and a half", "today"; 15 minutes by default): the summary AI writes a few sentences about it from
     the newest 24,000 characters of the transcript. They go on the clipboard and show as a notification.
   - **remind me** / **set an alarm** / **set a timer** / **wake me up**: "in 10 minutes", "in an hour and a half",
     "at 5", "at 7 30 pm", "at noon", "tomorrow at 9", "in the morning". A time without am or pm is the next one
@@ -350,11 +349,15 @@ The window only exists while it is open. Closing it frees its memory; the record
 - An app is named as it is said: its exe without ".exe" or its display name ("spotify", "visual studio code"),
   a running one first. The API takes such names too.
 - The mic has a second segmenter for this (`capture.cpp`). It hears even in private mode and ends a sentence after
-  0.7 s of quiet. The voice thread transcribes each sentence with Whisper base.en on the processor (greedy, 4
+  0.7 s of quiet. The voice thread transcribes each sentence with a small Whisper model on the processor (greedy, 4
   threads, below-normal priority), so it works while the transcriber waits for a game. A sentence that is not for
   lifelog is dropped without being logged.
+- The model is the listener's own (`[voice] model`), picked in Settings: base.en (0.15 GB, the default), tiny.en
+  (0.08 GB, lightest) or small.en (0.49 GB, hears best). Changing it loads the new one at once; one not yet
+  downloaded shows a Download button. On 20 s clips, CPU only, each took about 1.0, 1.4 and 4.3 s.
+- There is no built-in "clip": the phrase is left for a custom command, such as one that saves an OBS replay.
 - In private mode only resume is carried out, and nothing about the sentence is kept.
-- Clip, open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's
+- Open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's
   do; a chime then says how it went. Its sentence also goes into the transcript as usual.
 - When a command works, a banner shows at the top of the screen with the window in front, for 2.5 s, then fades:
   the wake word and what was done ("Jarvis — Alarm set: 4 minutes"). It takes no focus or clicks (`banner.cpp`).
@@ -385,7 +388,7 @@ lifelog launch APP
 lifelog mics
 lifelog status
 lifelog check-ai
-lifelog voice "lifelog, clip the last hour"
+lifelog voice "lifelog, summarise the last hour"
 lifelog commands [allow ID | secret ID KEY]
 lifelog command "play bad guy"
 ```

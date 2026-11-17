@@ -47,12 +47,13 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
 - **Journal:** the daily summaries, a calendar, and reminders for things you said you'd do.
 - **Settings:** which apps to record, which are games, when to transcribe, the summary time, and voice commands.
-- **Voice commands:** say "lifelog" and a command, such as "lifelog, clip the last hour", "lifelog, summarise the
+- **Voice commands:** say "lifelog" and a command, such as "lifelog, summarise the
   last 30 minutes", "lifelog, remind me in 10 minutes to check the oven", "lifelog, open Spotify", "lifelog, pause"
   or "lifelog, pause transcription". You can also say "lifelog", wait for the chime, then give the command. When
   one works, a note shows at the top of the screen for a moment ("lifelog — Alarm set: 4 minutes"). In
   private mode only "resume" works. Settings lists them and can change the wake word from "lifelog" to your own;
-  the first time, it downloads a small model (0.15 GB) that runs on the processor.
+  the first time, it downloads a small model (0.15 GB) that runs on the processor. "Clip" is not built in: it
+  is left for a custom command, such as one that saves an OBS replay.
 - **Custom commands:** your own voice commands, each a folder with a small script, such as "lifelog, play Bad Guy"
   for a Spotify script. Each one runs only after you allow it in Settings. See
   [docs/custom-commands.md](docs/custom-commands.md) and the template in [commands/example](commands/example).
@@ -68,7 +69,7 @@ lifelog summarise 30m        # a few sentences about the last 30 minutes, from t
 lifelog launch spotify       # start an installed app or game
 lifelog mics                 # the mics plugged in; pick one in Settings (default: the Windows one)
 lifelog status
-lifelog voice "lifelog, clip the last hour"   # what a voice command would do, without doing it
+lifelog voice "lifelog, summarise the last hour"   # what a voice command would do, without doing it
 lifelog commands             # the custom commands and what to say for each
 lifelog command "play bad guy"                # run the custom command a sentence matches
 ```

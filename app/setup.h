@@ -67,8 +67,18 @@ void setup_start(App* app, SetupPart part, const char* model);
 // The same for voice commands' model (and whisper.cpp if missing), leaving the transcriber's
 // model and server as they are. The main thread.
 void setup_start_voice(App* app);
-// whisper\ggml-base.en.bin: voice commands' model.
-void voice_model_path(const char* ai_dir, wchar_t out[MAX_PATH]);
+// The models voice commands can listen with, the default (base.en) first.
+struct VoiceModel {
+    const char* name;  // the config's voice.model: "base.en"
+    const char* label; // "Base"
+    const char* note;  // what Settings says about it
+    f64 gb;            // the download
+};
+i32 voice_models(const VoiceModel** out);
+// Null if `name` is not one of them.
+const VoiceModel* voice_model(Str name);
+// whisper\ggml-<model>.bin: voice commands' model.
+void voice_model_path(const char* ai_dir, const char* model, wchar_t out[MAX_PATH]);
 // Deletes one downloaded model. The main thread. False, saying why, if it could not.
 bool setup_remove(App* app, SetupPart part, const char* model);
 // Deletes every model and both engines: what an uninstall leaves behind. What is in use right now

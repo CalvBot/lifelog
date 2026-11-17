@@ -7,8 +7,12 @@ static const wchar_t* WHISPER_ZIP = L"whisper-bin-win-cuda-12.4.0-x64.zip";
 static const char* WHISPER_VAD_MODEL = "ggml-silero-v6.2.0.bin";
 static const wchar_t* WHISPER_VAD_URL = L"https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
 // The small English model voice commands are heard with (voice.h), on the processor.
-static const char* WHISPER_VOICE_MODEL = "ggml-base.en.bin";
-static const wchar_t* WHISPER_VOICE_URL = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+// Voice commands' models run on the processor, beside a game, so they are the small English ones.
+static const VoiceModel VOICE_MODELS[] = {
+    {"base.en", "Base", "0.15 GB. Quick, and hears most commands. The default.", 0.15},
+    {"tiny.en", "Tiny", "0.08 GB. The lightest on the processor, but mishears more.", 0.08},
+    {"small.en", "Small", "0.49 GB. Hears best, but takes longer and uses more of the processor.", 0.49},
+};
 
 // The models offered in Settings, the default first. Each is a file published where its makers
 // put it; a new one needs only a line here (and a .gguf llama.cpp b11873 can run).
@@ -339,6 +343,7 @@ struct SetupJob {
     wchar_t bins[MAX_PATH];    // whisper's build folder
     wchar_t target[MAX_PATH];  // the model file
     bool voice_only;           // for voice commands: the transcriber's model stays as chosen
+    char voice[32];            // voice commands' model: "base.en"
 };
 
 static bool setup_transcriber(SetupJob* job, char* error, i32 cap) {
@@ -377,8 +382,10 @@ static bool setup_transcriber(SetupJob* job, char* error, i32 cap) {
     if (!job->voice_only && !exists(job->target) && !download(app, SETUP_TRANSCRIBER, "the model", job->url, job->target, error, cap)) return false;
     if (!exists(vad) && !download(app, SETUP_TRANSCRIBER, "the voice detection model", WHISPER_VAD_URL, vad, error, cap)) return false;
     wchar_t voice[MAX_PATH];
-    swprintf(voice, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VOICE_MODEL);
-    if (!exists(voice) && !download(app, SETUP_TRANSCRIBER, "the voice commands model", WHISPER_VOICE_URL, voice, error, cap)) return false;
+    swprintf(voice, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, job->voice);
+    wchar_t url[256];
+    swprintf(url, COUNT(url), L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%hs.bin", job->voice);
+    if (!exists(voice) && !download(app, SETUP_TRANSCRIBER, "the voice commands model", url, voice, error, cap)) return false;
     return true;
 }
 
@@ -835,6 +842,12 @@ static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_
     Setup* s = &app->setup;
     s->file_count[part] = 0;
     f64 all = tree_bytes(dir);
+    // Voice commands' model is not listed with the transcriber's, unless the transcriber uses it too.
+    // An old one, no longer chosen, is listed, so it can be deleted.
+    char voice[64] = {};
+    if (part == SETUP_TRANSCRIBER && strcmp(app->config.voice.model, app->config.worker.model))
+        snprintf(voice, sizeof(voice), "ggml-%s.bin", app->config.voice.model);
+    Str hidden = str(voice);
     wchar_t find[MAX_PATH];
     swprintf(find, MAX_PATH, L"%ls\\%ls", dir, pattern);
     WIN32_FIND_DATAW fd;
@@ -846,7 +859,7 @@ static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_
             Str name = narrow(scratch(), fd.cFileName);
             Str pre = str(prefix), suf = str(suffix);
             if (name.len > pre.len + suf.len && str_eq(str_sub(name, name.len - suf.len, suf.len), suf) &&
-                !str_eq(name, str(WHISPER_VAD_MODEL)) && !str_eq(name, str(WHISPER_VOICE_MODEL)) && s->file_count[part] < (i32)COUNT(s->files[part])) {
+                !str_eq(name, str(WHISPER_VAD_MODEL)) && !str_eq(name, hidden) && s->file_count[part] < (i32)COUNT(s->files[part])) {
                 AiFile* f = &s->files[part][s->file_count[part]++];
                 SET(f->name, str_sub(name, pre.len, name.len - pre.len - suf.len));
                 f->bytes = (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
@@ -891,6 +904,7 @@ static void setup_begin(App* app, SetupPart part, const char* model, bool voice_
     job->app = app;
     job->part = part;
     job->voice_only = voice_only;
+    SET(job->voice, str(app->config.voice.model));
     SET(job->model, str(known->name));
     wcsncpy_s(job->url, known->url, _TRUNCATE);
     if (part == SETUP_TRANSCRIBER) {
@@ -912,10 +926,21 @@ void setup_start(App* app, SetupPart part, const char* model) { setup_begin(app,
 
 void setup_start_voice(App* app) { setup_begin(app, SETUP_TRANSCRIBER, app->config.worker.model, true); }
 
-void voice_model_path(const char* ai_dir, wchar_t out[MAX_PATH]) {
+void voice_model_path(const char* ai_dir, const char* model, wchar_t out[MAX_PATH]) {
     wchar_t dir[MAX_PATH];
     whisper_dir(ai_dir, dir);
-    swprintf(out, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VOICE_MODEL);
+    swprintf(out, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+}
+
+i32 voice_models(const VoiceModel** out) {
+    *out = VOICE_MODELS;
+    return (i32)COUNT(VOICE_MODELS);
+}
+
+const VoiceModel* voice_model(Str name) {
+    for (i32 i = 0; i < (i32)COUNT(VOICE_MODELS); i++)
+        if (str_eq(name, str(VOICE_MODELS[i].name))) return &VOICE_MODELS[i];
+    return 0;
 }
 
 void summary_set_endpoint(App* app, Str url, Str model) {

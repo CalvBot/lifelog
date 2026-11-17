@@ -86,6 +86,7 @@ struct Config {
     struct {
         bool listen;    // voice commands: listen on the mic for the wake word (voice.h)
         char wake[64];  // "lifelog"
+        char model[32]; // the listener's Whisper model: tiny.en, base.en (default) or small.en
     } voice;
 
     struct {

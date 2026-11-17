@@ -60,7 +60,18 @@ static void voice_publish_wake(App* app) {
     Voice* v = &app->voice;
     AcquireSRWLockExclusive(&v->wake_lock);
     SET(v->wake_word, str(app->config.voice.wake));
+    SET(v->model, str(app->config.voice.model));
     ReleaseSRWLockExclusive(&v->wake_lock);
+}
+
+bool voice_set_model(App* app, Str model) {
+    if (!voice_model(model)) return false;
+    SET(app->config.voice.model, model);
+    config_save_string("voice", "model", app->config.voice.model);
+    voice_publish_wake(app);
+    LOG("voice commands: listening with %s", app->config.voice.model);
+    if (app->voice.wake) SetEvent(app->voice.wake);
+    return true;
 }
 
 bool voice_set_wake(App* app, Str word) {
@@ -85,8 +96,8 @@ bool voice_set_wake(App* app, Str word) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// What was said, as words: lower case, letters and digits ("Lifelog, clip the last 15 minutes." is
-// lifelog clip the last 15 minutes). An apostrophe joins ("today's" is todays).
+// What was said, as words: lower case, letters and digits ("Lifelog, sum up the last 15 minutes." is
+// lifelog sum up the last 15 minutes). An apostrophe joins ("today's" is todays).
 
 struct Words {
     Str w[48];
@@ -221,7 +232,7 @@ struct VoiceCommand {
     char text[128];   // DO_REMIND: what it is about
     Chime chime;      // when it worked
     bool private_ok;  // carried out in private mode too
-    char said[128];   // what it does, for the log and Settings: "clip 1h"
+    char said[128];   // what it does, for the log and Settings: "summarise the last hour"
     char shown[128];  // what the banner says when it worked: "Alarm set: 4 minutes"
     CmdMatch custom;  // DO_CUSTOM
 };
@@ -291,7 +302,7 @@ static char unit_of(Str w) {
     return 0;
 }
 
-// The stretch said for a clip, as clip_range takes it: "15m", "2h", "today". Default 15m.
+// The stretch said for a summary, as clip_range takes it: "15m", "2h", "today". Default 15m.
 static void clip_range_said(const Words* ws, char* out, i32 cap) {
     snprintf(out, cap, "15m");
     if (has(ws, "today") || has(ws, "todays")) {
@@ -572,19 +583,7 @@ static void parse_builtin(const Words* ws, VoiceCommand* c) {
         if (strcmp(c->query, "today") == 0) snprintf(c->said, sizeof(c->said), "summarise today");
         return;
     }
-    if (has(ws, "clip") || has(ws, "clips") || word_in(first, "copy", "save")) {
-        char range[16];
-        clip_range_said(ws, range, sizeof(range));
-        command(c, "POST", "/clip", "");
-        snprintf(c->query, sizeof(c->query), "range=%s", range);
-        snprintf(c->said, sizeof(c->said), "clip %s", range);
-        char words[32];
-        range_words(range, words, sizeof(words));
-        if (strcmp(range, "today") == 0) snprintf(c->shown, sizeof(c->shown), "Copied today");
-        else snprintf(c->shown, sizeof(c->shown), "Copied the last %s", words);
-        c->chime = CHIME_CLIP_SAVED;
-        return;
-    }
+    // No built-in "clip": that phrase is left for a custom command (OBS, a replay buffer).
 
     // Private mode. Resume comes first: "stop private mode" is a resume.
     bool private_word = has(ws, "private") || has(ws, "privacy");
@@ -891,12 +890,12 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
     rewind(m);
 }
 
-// Loads ggml-base.en.bin for the processor. Null, with the state set, if it could not.
-static whisper_context* voice_open(App* app, const char* ai_dir) {
+// Loads ggml-<model>.bin for the processor. Null, with the state set, if it could not.
+static whisper_context* voice_open(App* app, const char* ai_dir, const char* model) {
     wchar_t bins[MAX_PATH], dll[MAX_PATH], bin[MAX_PATH];
     whisper_bin_dir(ai_dir, bins);
     swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
-    voice_model_path(ai_dir, bin);
+    voice_model_path(ai_dir, model, bin);
     if (!exists(dll) || !exists(bin)) {
         atomic_set(&app->voice.state, VOICE_NEEDS_SETUP);
         return 0;
@@ -918,11 +917,11 @@ static whisper_context* voice_open(App* app, const char* ai_dir) {
     whisper_context* ctx = p_whisper_init_from_file_with_params(narrow(a, bin).ptr, cp);
     rewind(m);
     if (!ctx) {
-        WARN("voice commands: could not load ggml-base.en.bin");
+        WARN("voice commands: could not load ggml-%s.bin", model);
         atomic_set(&app->voice.state, VOICE_FAILED);
         return 0;
     }
-    LOG("voice commands: listening (base.en loaded in %.1f s)", now_ts() - began);
+    LOG("voice commands: listening (%s loaded in %.1f s)", model, now_ts() - began);
     atomic_set(&app->voice.state, VOICE_READY);
     return ctx;
 }
@@ -968,10 +967,12 @@ static DWORD WINAPI voice_main(void* p) {
     WorkerOptions o = {};
     LONG version = -1;
     char loaded_dir[MAX_PATH] = {};
+    char loaded_model[32] = {};
     whisper_context* ctx = 0;
     f64 armed_until = 0;  // the name was said alone: the next sentence is the command
     f64 tried = 0;
     char failed_dir[MAX_PATH] = {};  // the model would not load from there: not tried again
+    char failed_model[32] = {};
     while (!stopping(app)) {
         DWORD wait = 10000;
         if (armed_until) {
@@ -982,9 +983,15 @@ static DWORD WINAPI voice_main(void* p) {
         if (WaitForMultipleObjects(2, waits, FALSE, wait) == WAIT_OBJECT_0) break;
         worker_options_take(app, &o, &version);
         bool listen = atomic_get(&v->listen) != 0;
-        if (ctx && (!listen || strcmp(loaded_dir, o.ai_dir) != 0)) {
+        char model[32];
+        AcquireSRWLockShared(&v->wake_lock);
+        SET(model, str(v->model));
+        ReleaseSRWLockShared(&v->wake_lock);
+        bool changed = strcmp(loaded_dir, o.ai_dir) != 0 || strcmp(loaded_model, model) != 0;
+        if (ctx && (!listen || changed)) {
             p_whisper_free(ctx);
             ctx = 0;
+            tried = 0;  // the new one is loaded at once
         }
         if (!listen) {
             atomic_set(&v->state, VOICE_OFF);
@@ -993,11 +1000,17 @@ static DWORD WINAPI voice_main(void* p) {
             continue;
         }
         // Not there yet (set up from Settings, or the folder moved): look again every 10 s.
-        if (!ctx && o.ai_dir[0] && now_ts() - tried >= 9 && strcmp(failed_dir, o.ai_dir) != 0) {
+        bool failed_here = strcmp(failed_dir, o.ai_dir) == 0 && strcmp(failed_model, model) == 0;
+        if (!ctx && o.ai_dir[0] && now_ts() - tried >= 9 && !failed_here) {
             tried = now_ts();
-            ctx = voice_open(app, o.ai_dir);
-            if (ctx) SET(loaded_dir, str(o.ai_dir));
-            else if (atomic_get(&v->state) == VOICE_FAILED) SET(failed_dir, str(o.ai_dir));
+            ctx = voice_open(app, o.ai_dir, model);
+            if (ctx) {
+                SET(loaded_dir, str(o.ai_dir));
+                SET(loaded_model, str(model));
+            } else if (atomic_get(&v->state) == VOICE_FAILED) {
+                SET(failed_dir, str(o.ai_dir));
+                SET(failed_model, str(model));
+            }
         }
         if (!ctx) {
             voice_drop_all(v);

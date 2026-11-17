@@ -26,6 +26,7 @@ enum UndoKind : u8 {
     UNDO_CHIME_VOLUME,
     UNDO_VOICE,
     UNDO_WAKE,
+    UNDO_VOICE_MODEL,
     UNDO_MIC,        // the mic chosen before: its id in `folder`, its name in `text`
 };
 
@@ -250,6 +251,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
     case UNDO_VOICE: voice_set_listen(app, u.on); break;
     case UNDO_WAKE: voice_set_wake(app, str(u.text)); break;
+    case UNDO_VOICE_MODEL: voice_set_model(app, str(u.text)); break;
     case UNDO_MIC: capture_set_mic(app, str(u.folder), str(u.text)); break;
     }
     s->stale = true;
@@ -1006,9 +1008,10 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
         weak(fit(st->text, room));
     } else if (state == VOICE_NEEDS_SETUP) {
         ImGui::BeginDisabled(app->setup.move.running);
-        if (button(label(ICON_ARROW_DOWN, "Download, 0.15 GB"))) setup_start_voice(app);
+        const VoiceModel* vm = voice_model(str(c->voice.model));
+        if (button(label(ICON_ARROW_DOWN, tmp("Download, %.2f GB", vm ? vm->gb : 0.15)))) setup_start_voice(app);
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Whisper base.en, a small English model that runs on the processor");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Whisper %s, a small English model that runs on the processor", c->voice.model);
     } else if (state == VOICE_FAILED) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ERROR_RED, "%s", fit("could not load its model (see the log)", room));
@@ -1028,14 +1031,36 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
         s->wake_active = false;
     }
     ImGui::SameLine(0, px(12));
-    weak(fit(tmp("then a command: \"%s, clip the last hour\"", wake), ImGui::GetContentRegionAvail().x));
+    weak(fit(tmp("then a command: \"%s, summarise the last hour\"", wake), ImGui::GetContentRegionAvail().x));
+
+    // The model that listens for the wake word. It runs on the processor, beside a game, and only
+    // hears commands: the transcript is still the transcriber's.
+    row_label("Listener");
+    const VoiceModel* models;
+    i32 model_count = voice_models(&models);
+    const char* model_names[8];
+    i32 current = 0;
+    for (i32 i = 0; i < model_count && i < COUNT(model_names); i++) {
+        model_names[i] = models[i].label;
+        if (!strcmp(models[i].name, c->voice.model)) current = i;
+    }
+    i32 picked = segments("voice_model", model_names, model_count, current, px(70));
+    if (picked >= 0 && picked != current) {
+        SettingsUndo* u = remember(s, UNDO_VOICE_MODEL, "listener %s", models[picked].label);
+        SET(u->text, str(c->voice.model));
+        voice_set_model(app, str(models[picked].name));
+    }
+    ImGui::SameLine();
+    weak(fit(models[current].note, ImGui::GetContentRegionAvail().x));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Only listens for commands, on the processor, so it works while a game has the graphics card.\n"
+                          "The transcript still comes from the transcriber.");
 
     row_label("Commands");
     if (button(s->voice_list ? label(ICON_CHEVRON_UP, "Hide") : label(ICON_CHEVRON_DOWN, "Show all")))
         s->voice_list = !s->voice_list;
     if (s->voice_list) {
         struct { const char* say; const char* does; } cmds[] = {
-            {"clip the last hour", "copy that part of the transcript (or 15 minutes, today)"},
             {"summarise the last 30 minutes", "a few sentences from the summary AI, on the clipboard"},
             {"remind me in 10 minutes to ...", "a reminder (or \"at 5 pm\", \"tomorrow at 9\", \"set an alarm for 7\")"},
             {"open Spotify", "start an installed app or game"},

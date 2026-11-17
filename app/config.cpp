@@ -98,6 +98,8 @@ volume = 60
 listen = true
 # The word that starts a command.
 wake_word = "lifelog"
+# The model that listens for it: tiny.en (fastest), base.en, or small.en (hears best, a little slower).
+model = "base.en"
 
 [commands]
 # Custom voice commands: folders in %APPDATA%\lifelog\commands (docs/custom-commands.md). Settings
@@ -353,6 +355,7 @@ static void config_defaults(Config* cfg) {
     cfg->chimes.volume = 60;
     cfg->voice.listen = true;
     SET(cfg->voice.wake, str("lifelog"));
+    SET(cfg->voice.model, str("base.en"));
 }
 
 static char g_data_dir[MAX_PATH];
@@ -436,6 +439,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("voice"))) {
             if (str_eq(k, str("listen"))) take_bool(&cfg->voice.listen, &v);
             if (str_eq(k, str("wake_word"))) take_string(cfg->voice.wake, sizeof(cfg->voice.wake), &v);
+            if (str_eq(k, str("model")) && v.kind == Value::STRING && voice_model(str(v.s))) take_string(cfg->voice.model, sizeof(cfg->voice.model), &v);
         } else if (str_eq(tb, str("commands"))) {
             if (str_eq(k, str("allowed"))) take_names(&cfg->commands.allowed, &v);
             if (str_eq(k, str("disabled"))) take_names(&cfg->commands.disabled, &v);
