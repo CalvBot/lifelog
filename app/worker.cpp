@@ -653,8 +653,11 @@ static void worker_lines_apply(App* app, Event*) {
 }
 
 static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
-    atomic_set(&app->worker.live_queued, now->queued);
-    atomic_set(&app->worker.live_running, now->running);
+    Worker* w = &app->worker;
+    bool moved = atomic_get(&w->live_queued) != now->queued || (atomic_get(&w->live_running) != 0) != now->running;
+    atomic_set(&w->live_queued, now->queued);
+    atomic_set(&w->live_running, now->running);
+    if (moved) SetEvent(w->live_changed);
     if (memcmp(now, last, sizeof(WorkerSeen)) == 0) return;
     *last = *now;
     latest_send(app, &app->worker.seen, worker_seen_apply, *now);
@@ -754,12 +757,21 @@ static DWORD WINAPI supervisor_thread(void* p) {
             ctx = 0;
             ctx_model[0] = 0;
         }
+        if (!ctx) SetEvent(app->worker.gpu_free);  // the summary may have the GPU
         if (load) {
+            // The GPU is taken before the summary's flag is read a last time: a summary that asks
+            // after this waits for the model to load and be freed again.
+            ResetEvent(app->worker.gpu_free);
+            if (atomic_get(&app->worker.summary_needs_gpu)) {
+                SetEvent(app->worker.gpu_free);
+                continue;
+            }
             char error[512];
             ctx = whisper_open(c->ai_dir, model, error, sizeof(error));
             if (ctx) {
                 SET(ctx_model, str(model));
             } else {
+                SetEvent(app->worker.gpu_free);
                 WARN("%s; trying again in a minute", error);
                 SET(trouble, str(error));
                 next_load = now_ts() + 60;
@@ -814,6 +826,9 @@ void worker_start(App* app) {
     if (c->processing.gpu_busy_percent > 100) c->processing.gpu_busy_percent = 100;
     SET(app->worker.state, str("starting"));
     app->worker.done = CreateEventW(0, TRUE, FALSE, 0);
+    app->worker.gpu_free = CreateEventW(0, TRUE, TRUE, 0);  // no model yet
+    app->worker.live_changed = CreateEventW(0, FALSE, FALSE, 0);
+    CHECK(app->worker.done && app->worker.gpu_free && app->worker.live_changed, "the worker's events (error %lu)", GetLastError());
     // Made in run_app, before capture starts: the capture threads wake the supervisor.
     CHECK(app->worker.wake, "the worker's wake event made before worker_start");
     app->worker.options_lock = SRWLOCK_INIT;

@@ -100,7 +100,8 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
 void llm_close(Llm* llm) {
     if (llm->process) {
         TerminateProcess(llm->process, 0);
-        WaitForSingleObject(llm->process, 10000);
+        // Its memory on the graphics card is free once it has exited.
+        if (WaitForSingleObject(llm->process, 10000) != WAIT_OBJECT_0) WARN("llama-server did not exit in 10 s");
         CloseHandle(llm->process);
     }
     if (llm->job) CloseHandle(llm->job);

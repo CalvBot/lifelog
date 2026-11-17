@@ -38,9 +38,12 @@ struct Worker {
     // Atomics (events.h): the GPU monitor writes the first two itself.
     volatile LONG gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
     volatile LONG gpu_busy;         // over the limit
-    volatile LONG summary_needs_gpu;  // set by the summary while it writes
+    volatile LONG summary_needs_gpu;  // set by the summary while its model is (to be) on the GPU
     volatile LONG live_queued;      // `queued` and `running` as the supervisor has them now, for
     volatile LONG live_running;     // the summary writer
+    HANDLE live_changed;  // auto-reset: set when live_queued or live_running change
+    HANDLE gpu_free;      // manual-reset: set while our model is not on the GPU; the summary
+                          // waits for it after setting summary_needs_gpu
     u64 lines_version;    // bumped each time lines are written, so the timeline reloads
     f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model

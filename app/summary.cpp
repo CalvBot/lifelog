@@ -1482,8 +1482,24 @@ void summary_set_ask_reminders(App* app, bool on) {
 // ---------------------------------------------------------------------------------------------
 // Writing
 
-// Waits `ms`, false if the program is ending.
-static bool pause_ms(App* app, u32 ms) { return sleep_unless_stopping(app, ms); }
+// Asks the transcriber for the GPU and waits until it says its model is off it (Worker.gpu_free).
+// False if lifelog is closing. Not on the main thread.
+static bool gpu_take(App* app) {
+    Worker* w = &app->worker;
+    atomic_set(&w->summary_needs_gpu, 1);
+    worker_wake(app);
+    if (!w->gpu_free) return !stopping(app);  // the CLI: no transcriber here
+    HANDLE waits[2] = {app->stop, w->gpu_free};
+    DWORD got = WaitForMultipleObjects(2, waits, FALSE, 60000);
+    if (got == WAIT_TIMEOUT) WARN("the transcriber did not free the GPU in a minute: going ahead");
+    return got != WAIT_OBJECT_0;
+}
+
+// Hands the GPU back once the summary model's server has exited (llm_close waits for it).
+static void gpu_give_back(App* app) {
+    atomic_set(&app->worker.summary_needs_gpu, 0);
+    worker_wake(app);
+}
 
 // On the writer thread. `labels` are the apps' names, from its job.
 static bool write_day(App* app, const char* day, AppLabels* labels, char* error, i32 cap) {
@@ -1491,27 +1507,24 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
     const SummaryOptions* cfg = &options;
     LOG("writing the summary for %s with %s", day, cfg->model);
 
-    // 1. Let transcription catch up, so the end of the day is in it.
+    // 1. Let transcription catch up, so the end of the day is in it. The supervisor says when its
+    // queue or state changes (Worker.live_changed); at most 20 minutes, and only a minute while
+    // it cannot run (paused, or waiting for a game): then sum up what there is.
     phase_post(app, "waiting for transcription to catch up");
     f64 started = now_ts(), idle_since = now_ts();
-    while (now_ts() - started < 20 * 60) {
-        i32 queued = atomic_get(&app->worker.live_queued);
-        bool running = atomic_get(&app->worker.live_running) != 0;
-        if (queued == 0) break;
-        if (running) idle_since = now_ts();
-        else if (now_ts() - idle_since > 60) break;  // transcription is paused or waiting for a game: sum up what there is
-        if (!pause_ms(app, 2000)) break;
+    for (;;) {
+        f64 now = now_ts();
+        if (atomic_get(&app->worker.live_queued) == 0) break;
+        if (atomic_get(&app->worker.live_running)) idle_since = now;
+        f64 until = started + 20 * 60;
+        if (!atomic_get(&app->worker.live_running) && idle_since + 60 < until) until = idle_since + 60;
+        if (now >= until || !app->worker.live_changed) break;
+        HANDLE waits[2] = {app->stop, app->worker.live_changed};
+        if (WaitForMultipleObjects(2, waits, FALSE, (DWORD)((until - now) * 1000) + 1) == WAIT_OBJECT_0) break;
     }
 
     // 2. Take the GPU from the worker.
-    atomic_set(&app->worker.summary_needs_gpu, 1);
-    worker_wake(app);
-    f64 freed = now_ts();
-    for (;;) {
-        bool running = atomic_get(&app->worker.live_running) != 0;
-        if (!running || now_ts() - freed > 30 || !pause_ms(app, 250)) break;
-    }
-    if (stopping(app)) {
+    if (!gpu_take(app)) {
         snprintf(error, cap, "lifelog is closing");
         return false;
     }
@@ -1628,10 +1641,9 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
             if (!parts_ok) goto done;
         }
     }
-    // The server is stopped here, and the graphics card is free again.
+    // The server has exited here, so the graphics card is free again.
     llm_close(&llm);
-    atomic_set(&app->worker.summary_needs_gpu, 0);
-    worker_wake(app);
+    gpu_give_back(app);
 
     {
         Str summary = strip_never(a, str_trim(json_text(json_get(&result, "summary"))), never_low.items, never_low.count);
@@ -1729,8 +1741,7 @@ static DWORD WINAPI writer_main(void* param) {
     WriterJob* w = (WriterJob*)job->data;
     App* app = w->app;
     w->ok = write_day(app, w->day, &w->labels, w->error, sizeof(w->error));
-    atomic_set(&app->worker.summary_needs_gpu, 0);
-    worker_wake(app);
+    gpu_give_back(app);  // write_day closed the server on every path
     job_post_wait(app, job);
     return 0;
 }
@@ -1931,12 +1942,12 @@ void summary_start(App* app) {
 bool summary_check_ai(App* app, char* said, i32 cap) {
     SummaryOptions options = summary_options(app);
     const SummaryOptions* cfg = &options;
-    atomic_set(&app->worker.summary_needs_gpu, 1);
-    worker_wake(app);
     f64 started = now_ts();
     Llm llm = {};
     char error[512] = {};
-    bool ok = llm_open(app, cfg, 4096, &llm, error, sizeof(error));
+    bool ok = gpu_take(app);
+    if (!ok) snprintf(error, sizeof(error), "lifelog is closing");
+    ok = ok && llm_open(app, cfg, 4096, &llm, error, sizeof(error));
     f64 loaded = now_ts() - started;
     Arena a = {};
     Json reply = {};
@@ -1946,8 +1957,7 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
                       error, sizeof(error));
     }
     llm_close(&llm);
-    atomic_set(&app->worker.summary_needs_gpu, 0);
-    worker_wake(app);
+    gpu_give_back(app);
     if (ok) {
         Str text = json_string_of(&a, &reply);
         snprintf(said, cap, "loaded %s in %.0fs\n%s\nstopped after %.0fs", cfg->model, loaded, text.ptr, now_ts() - started);
