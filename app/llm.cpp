@@ -1,5 +1,5 @@
 // llm.cpp: the AI for the daily summary. By default it is lifelog's own copy of llama.cpp, in
-// %LOCALAPPDATA%\lifelog\llm (put there from Settings, see setup.h): llama-server.exe with its DLLs,
+// <ai dir>\llm (put there from Settings, see setup.h): llama-server.exe with its DLLs,
 // and <model>.gguf. The server is started only while a summary is written and stopped straight
 // after; it is tied to a job object, so it also goes if lifelog crashes.
 //
@@ -49,6 +49,7 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
         return false;
     }
     HINTERNET session = WinHttpOpen(L"lifelog", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+
     HINTERNET conn = session ? WinHttpConnect(session, host, parts.nPort, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, wide(scratch(), str(method)), path, 0, WINHTTP_NO_REFERER,
                                               WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -117,21 +118,18 @@ static HANDLE kill_with_lifelog(HANDLE process) {
 // Starts the server with `model` (a .gguf name in the llm folder) and waits until it has loaded.
 static bool llm_start(App* app, const Config* cfg, const char* model, u32 ctx, Llm* llm, char* error, i32 cap) {
     *llm = {};
-    wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
-    llm_dir(cfg, dir);
-    swprintf(exe, MAX_PATH, L"%ls\\llama-server.exe", dir);
-    Mark m = mark(scratch());
-    swprintf(gguf, MAX_PATH, L"%ls\\%ls.gguf", dir, wide(scratch(), str(model)));
-    if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(gguf) == INVALID_FILE_ATTRIBUTES) {
+    if (!summary_ai_ready(cfg, model)) {
         snprintf(error, cap, "the summary AI is not set up: see Settings, Summary");
-        rewind(m);
         return false;
     }
+    wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
+    llm_dir(cfg, dir);
+    llm_exe_path(cfg, exe);
+    model_path(cfg, SETUP_SUMMARY_AI, model, gguf);
     u16 port = llm_port();
     wchar_t cmd[2 * MAX_PATH + 256];
     swprintf(cmd, COUNT(cmd), L"\"%ls\" -m \"%ls\" --host %hs --port %u -ngl 999 -c %u --jinja --parallel 1", exe, gguf, LLM_HOST,
              (unsigned)port, ctx);
-    rewind(m);
     STARTUPINFOW si = {sizeof(si)};
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessW(exe, cmd, 0, 0, FALSE, CREATE_NO_WINDOW, 0, dir, &si, &pi)) {

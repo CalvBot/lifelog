@@ -240,11 +240,10 @@ static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
 
 // Loads ggml-<model>.bin onto the GPU. Null (with `error`) if it could not.
 static whisper_context* whisper_open(const Config* cfg, const char* model, char* error, i32 cap) {
-    wchar_t dir[MAX_PATH], bins[MAX_PATH], bin[MAX_PATH];
+    wchar_t bins[MAX_PATH], bin[MAX_PATH];
     whisper_bin_dir(cfg, bins);
     if (!whisper_load(bins, error, cap)) return 0;
-    whisper_dir(cfg, dir);
-    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+    model_path(cfg, SETUP_TRANSCRIBER, model, bin);
     whisper_context_params cp = p_whisper_context_default_params();
     cp.use_gpu = true;
     cp.flash_attn = true;

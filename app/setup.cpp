@@ -94,16 +94,24 @@ void llm_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"llm", out
 
 static bool exists(const wchar_t* path) { return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES; }
 
-// Where `part`'s `model` is kept.
-static void model_path(const Config* cfg, SetupPart part, const char* model, wchar_t out[MAX_PATH]) {
+void model_path(const Config* cfg, SetupPart part, const char* model, wchar_t out[MAX_PATH]) {
     wchar_t dir[MAX_PATH];
+    Mark m = mark(scratch());
+    wchar_t* name = wide(scratch(), str(model));
     if (part == SETUP_TRANSCRIBER) {
         whisper_dir(cfg, dir);
-        swprintf(out, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+        swprintf(out, MAX_PATH, L"%ls\\ggml-%ls.bin", dir, name);
     } else {
         llm_dir(cfg, dir);
-        swprintf(out, MAX_PATH, L"%ls\\%hs.gguf", dir, model);
+        swprintf(out, MAX_PATH, L"%ls\\%ls.gguf", dir, name);
     }
+    rewind(m);
+}
+
+void llm_exe_path(const Config* cfg, wchar_t out[MAX_PATH]) {
+    wchar_t dir[MAX_PATH];
+    llm_dir(cfg, dir);
+    swprintf(out, MAX_PATH, L"%ls\\llama-server.exe", dir);
 }
 
 bool whisper_ready(const Config* cfg, const char* model) {
@@ -117,9 +125,8 @@ bool whisper_ready(const Config* cfg, const char* model) {
 }
 
 bool summary_ai_ready(const Config* cfg, const char* model) {
-    wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
-    llm_dir(cfg, dir);
-    swprintf(exe, MAX_PATH, L"%ls\\llama-server.exe", dir);
+    wchar_t exe[MAX_PATH], gguf[MAX_PATH];
+    llm_exe_path(cfg, exe);
     model_path(cfg, SETUP_SUMMARY_AI, model, gguf);
     return exists(exe) && exists(gguf);
 }
