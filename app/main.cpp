@@ -531,7 +531,9 @@ static void open_main_window() {
         g_main.frames_wanted = 2;
         return;
     }
-    f32 scale = GetDpiForSystem() / 96.0f;
+    // The main monitor's own scale, as the content uses; the system DPI can differ (Remote Desktop).
+    POINT origin = {0, 0};
+    f32 scale = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY));
     i32 w = (i32)(1000 * scale), h = (i32)(720 * scale);
     RECT work;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
@@ -552,13 +554,14 @@ static void close_main_window() {
 
 static void open_popup(Popup which) {
     if (g_popup.hwnd) surface_close(&g_popup);
-    f32 scale = GetDpiForSystem() / 96.0f;
-    // A first guess at the height; popup_fit makes it match the content once drawn.
-    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 176 * scale : 380 * scale);
     // Above the tray, at the cursor (where the icon was clicked).
     POINT at;
     GetCursorPos(&at);
     HMONITOR mon = MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST);
+    // That monitor's own scale, as the content uses; the system DPI can differ (Remote Desktop).
+    f32 scale = ImGui_ImplWin32_GetDpiScaleForMonitor(mon);
+    // A first guess at the height; popup_fit makes it match the content once drawn.
+    i32 w = (i32)(300 * scale), h = (i32)(which == POPUP_DELAY ? 176 * scale : 380 * scale);
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(mon, &mi);
     i32 x = at.x - w / 2, y = at.y - h - (i32)(8 * scale);
