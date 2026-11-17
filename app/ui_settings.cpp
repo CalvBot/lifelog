@@ -939,7 +939,6 @@ static void mic_card(App* app, SettingsState* s, f32 width, bool opened) {
     ImGui::SetNextItemWidth(px(360));
     ImGui::BeginDisabled(!c->capture.mic);
     bool open = ImGui::BeginCombo("##mic", preview);
-    ImGui::EndDisabled();
     if (open) {
         // Plugged in or out since: look again each time the list opens.
         if (!s->mic_list_open) s->mic_count = capture_mics(s->mics, COUNT(s->mics), s->default_mic, sizeof(s->default_mic));
@@ -960,6 +959,7 @@ static void mic_card(App* app, SettingsState* s, f32 width, bool opened) {
             }
         }
     }
+    ImGui::EndDisabled();
     s->mic_list_open = open;
     ImGui::SameLine();
     f32 room = ImGui::GetContentRegionAvail().x;
@@ -1372,10 +1372,10 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     f32 x = ImGui::GetCursorPosX() + (avail - width) / 2;
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
-    mic_card(app, s, width, opened);
+    apps_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
-    apps_card(app, s, width);
+    mic_card(app, s, width, opened);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     transcription_card(app, s, width);
