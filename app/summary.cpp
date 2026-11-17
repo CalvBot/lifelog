@@ -622,7 +622,8 @@ static Slice<ItemRow> items_read(sqlite3* db, Arena* a, const char* day) {
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         ItemRow r = {};
         r.id = sqlite3_column_int64(st, 0);
-        r.kind = item_kind(col_str(st, 1, scratch()));
+        const char* kind = (const char*)sqlite3_column_text(st, 1);
+        r.kind = item_kind(str(kind ? kind : ""));
         r.text = col_str(st, 2, a);
         r.ts = sqlite3_column_double(st, 3);
         r.said = col_str(st, 4, a);
@@ -1345,8 +1346,11 @@ static void alerts_check(App* app) {
     }
     alerts_show_due(app, db);
     sqlite3_stmt* st = prepare(db, "SELECT MIN(due_ts) FROM alerts WHERE state = 'set'");
+    if (!st) alert_due_at(app, now_ts() + 60);  // could not say: look again in a minute
     if (st && sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
         f64 next = sqlite3_column_double(st, 0);
+        // One still due could not be marked shown: try again in a minute, not straight away.
+        if (next <= now_ts()) next = now_ts() + 60;
         LONG64 ms = (LONG64)(next * 1000.0), old = InterlockedCompareExchange64(&app->summary.next_alert_ms, 0, 0);
         while (ms < old) {
             LONG64 was = InterlockedCompareExchange64(&app->summary.next_alert_ms, ms, old);
@@ -1597,13 +1601,15 @@ static void edit_apply(App* app, Job* job) {
     SummaryEdit* e = (SummaryEdit*)job->data;
     Summary* s = &app->summary;
     bool done = e->outcome == EDIT_DONE;
-    if (done && e->kind == EDIT_NEVER_ADD) list_push(&s->never, e->topic);
+    // Saved even when taking its line out then failed: the topic is in the database either way.
+    bool never_added = e->kind == EDIT_NEVER_ADD && e->topic.id;
+    if (never_added) list_push(&s->never, e->topic);
     if (done && e->kind == EDIT_NEVER_REMOVE) {
         for (i32 i = 0; i < s->never.count; i++)
             if (s->never.items[i].id == e->id) list_remove(&s->never, i--);
     }
     if (e->has_row) day_put(app, &e->row);
-    if (e->changed || (done && (e->kind == EDIT_NEVER_ADD || e->kind == EDIT_NEVER_REMOVE))) s->version++;
+    if (e->changed || never_added || (done && e->kind == EDIT_NEVER_REMOVE)) s->version++;
     const char* say = 0;
     switch (e->outcome) {
     case EDIT_DONE:

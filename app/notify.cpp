@@ -331,8 +331,12 @@ static LRESULT CALLBACK notify_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (app && msg == WM_COPYDATA) {
         COPYDATASTRUCT* data = (COPYDATASTRUCT*)lp;
-        if (data->dwData != LINK_MAGIC || data->cbData > 1024) return FALSE;
-        char link[1025];
+        if (data->dwData != LINK_MAGIC) return FALSE;
+        if (data->cbData > EVENT_BYTES - 1) {  // it travels as an event record; ours are under 160 bytes
+            WARN("link of %lu bytes ignored: too long", data->cbData);
+            return FALSE;
+        }
+        char link[EVENT_BYTES];
         memcpy(link, data->lpData, data->cbData);
         link[data->cbData] = 0;
         LOG("link: %s", link);
