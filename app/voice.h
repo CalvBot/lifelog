@@ -1,0 +1,48 @@
+// voice.h: voice commands. Say "lifelog" and a command, as one sentence ("lifelog, clip the last
+// hour") or with a pause after the name (it chimes, then listens for six seconds). The commands are
+// the CLI's: clip, pause, resume, toggle, exclude, include, game, not a game, transcription,
+// summary, check the AI, status, open, quit, restart and config.
+//
+// The mic's capture thread has a second segmenter that hears even in private mode and ends a
+// sentence after a 0.7 s pause (capture.cpp); each sentence comes here (voice_heard), and the
+// voice thread runs Whisper base.en on the processor over it, so it works while the transcriber
+// waits for a game. A sentence that does not start with the name is dropped at once and never
+// logged. A command is carried out through the API's own handler (api_ask), so it does exactly
+// what the CLI's does, and a chime says how it went. In private mode only "resume" (or "toggle") is acted on.
+//
+// What is said also goes into the transcript as usual (the recording segmenter is apart).
+
+#pragma once
+
+enum VoiceState : i32 {
+    VOICE_OFF,          // listening is off in Settings
+    VOICE_NEEDS_SETUP,  // whisper.cpp or ggml-base.en.bin is not there
+    VOICE_LOADING,
+    VOICE_READY,
+    VOICE_FAILED,       // the model would not load (see the log)
+};
+
+struct VoiceSentence {
+    f32* samples;  // malloc
+    i32 n;
+};
+
+struct Voice {
+    // The queue from the mic's thread to the voice thread.
+    SRWLOCK lock;
+    VoiceSentence queue[4];
+    i32 head, count;
+    HANDLE wake;              // auto-reset: a sentence is waiting, or the settings changed
+    volatile LONG listen;     // config.voice.listen, for the capture thread
+    volatile LONG state;      // VoiceState, written by the voice thread
+    // The main thread's, for Settings: the last command and what came of it.
+    char heard[160];
+    char result[160];
+    f64 heard_ts;
+};
+
+void voice_start(App* app);
+// The mic's thread: a sentence it heard, `n` samples at 16 kHz, to be multiplied by `gain`.
+void voice_heard(App* app, const f32* samples, i32 n, f32 gain);
+// Main thread: turn listening on or off, and save it.
+void voice_set_listen(App* app, bool on);

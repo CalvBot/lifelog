@@ -706,6 +706,7 @@ static i32 run_app() {
     pool_start(app);
     apps_from_config(app);
     apps_start(app);
+    voice_start(app);  // before the mic, which hands it what it hears
     capture_start(app);
     worker_start(app);
     summary_start(app);

@@ -118,7 +118,8 @@ pointer into `App`.
 
 | Thread | Reads | Sends to the main thread |
 |---|---|---|
-| Audio streams (mic, one per app) | atomics: `paused`, `stop`; its own copy of exe, pid, device. The window title is the one value the watcher changes during a stream: it sits in the stream's own small block behind its own small lock. | segments go to disk as now; "loud at", "device", "ended" events |
+| Audio streams (mic, one per app) | atomics: `paused`, `stop`; its own copy of exe, pid, device. The window title is the one value the watcher changes during a stream: it sits in the stream's own small block behind its own small lock. | segments go to disk as now; "loud at", "device", "ended" events. The mic also hands each sentence to the voice thread's queue. |
+| Voice commands | atomics: `listen`, `paused`; the transcriber's config snapshot (for the AI folder); woken by a sentence | commands through the API's handler (`api_ask`), then the chime and "last heard" |
 | Watcher (every 1 s; today the capture and apps watchers, merged into one) | config snapshot | the processes, windows and playing sessions with their paths and titles; the main thread decides which streams to start or end, and which apps run |
 | Apps scan | config snapshot | new paths, icons and names (as a job), the line counts, installed games |
 | Transcriber | atomics, config snapshot; woken by "new WAV" and setting changes | state, "lines written" |
@@ -296,8 +297,9 @@ The window only exists while it is open. Closing it frees its memory; the record
   the GPU limit and the current load.
 - **Daily summary:** on/off, what it is doing, ask time, word limit, Edit prompt, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
-- **Voice commands:** for now, the chimes they will make (listening, done, clip saved, didn't catch, error, cancelled).
-  Glass (a warm bell, like an electric piano), Soft (a low marimba), Synth (a mellow synth) or Off, a volume, and
+- **Voice commands:** on/off with their state (a download button when the model is missing), the list of
+  commands, the last one heard and what came of it, and the chimes they make (listening, done, clip saved, didn't
+  catch, error, cancelled). Glass (a warm bell, like an electric piano), Soft (a low marimba), Synth (a mellow synth) or Off, a volume, and
   a button to hear each one. They are made in code (`chime.cpp`), not sound files: low and warm, around middle C
   with a body an octave below, in stereo with a soft echo and a little room. lifelog never records its own sound.
 - **Files:** open the recordings folder, the log and the config file.
@@ -317,6 +319,27 @@ The window only exists while it is open. Closing it frees its memory; the record
 - **Paste here:** saves the files, images or links on the clipboard into the timeline at the current time.
 - **Delay box** (from the summary notification): pick a time (+2 h, +3 h, 23:30, or type one) and Delay.
 
+## Voice commands
+
+- Say "lifelog" and a command as one sentence ("lifelog, clip the last hour"), or "lifelog" alone: it chimes and
+  waits 6 s for the command. A "hey" or "ok" before the name is fine. The name in the middle of a sentence ("I was
+  working on lifelog") is ignored.
+- The commands are the CLI's: clip (with a spoken range: "the last hour", "fifteen minutes", "half an hour",
+  "an hour and a half", "today"; 15 minutes by default), pause / go private, resume / stop private mode, toggle,
+  exclude / include APP, APP is (not) a game, transcription auto / always / paused, summary now / later / skip
+  (for yesterday), check the AI, status (the tray popup), open (Settings, the journal), config (opens config.toml),
+  restart, quit, and cancel / never mind. `run` and `icon` are left out.
+- An app is named as it is said: its exe without ".exe" or its display name ("spotify", "visual studio code"),
+  a running one first. The API takes such names too.
+- The mic has a second segmenter for this (`capture.cpp`). It hears even in private mode and ends a sentence after
+  0.7 s of quiet. The voice thread transcribes each sentence with Whisper base.en on the processor (greedy, 4
+  threads, below-normal priority), so it works while the transcriber waits for a game. A sentence that is not for
+  lifelog is dropped without being logged.
+- In private mode only resume and toggle are carried out, and nothing about the sentence is kept.
+- A command is carried out by the API's own handler, so it does exactly what the CLI's does; a chime then says how
+  it went. Its sentence also goes into the transcript as usual.
+- `lifelog voice "TEXT"` prints what a sentence would do, without doing it.
+
 ## Copying
 
 - Text: lines as "HH:MM app: text" on the clipboard.
@@ -333,6 +356,7 @@ lifelog exclude X.exe | include X.exe
 lifelog summary now | later | skip
 lifelog status
 lifelog check-ai
+lifelog voice "lifelog, clip the last hour"
 ```
 
 HTTP on 127.0.0.1:47800: `/status`, `/pause`, `/resume`, `/toggle`, `/exclude`, `/include`, `/game`,

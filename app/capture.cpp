@@ -35,6 +35,7 @@ static const i32 CLOSE_AFTER_QUIET = 60;       // 1.2 s of quiet ends a segment
 static const i32 SOFT_LIMIT = 20 * RATE;       // past this, any short pause ends it
 static const i32 SOFT_QUIET = 15;              // 300 ms
 static const i32 HARD_LIMIT = 30 * RATE;
+static const i32 VOICE_CLOSE_AFTER_QUIET = 35;  // 0.7 s: a command is answered soon after it is said
 static const i32 MIN_LOUD_BLOCKS = 10;         // under 200 ms of sound is a click, not speech
 static const i64 SYNC_GAP = RATE / 50;         // the device is 20 ms ahead of the count: samples were missed or not sent
 static const i64 SYNC_SLIP = RATE / 20;        // 50 ms behind: set the count back, between segments
@@ -81,6 +82,10 @@ struct Segmenter {
     i64 start;     // the open segment's first sample's position
     f32* samples;  // HARD_LIMIT of them
     i32 n;
+    // The mic's second segmenter, for voice commands: it hears even in private mode, closes
+    // after a shorter pause, and hands what it heard to voice_heard instead of writing a file.
+    bool voice;
+    i32 close_quiet;  // blocks of quiet that end a segment; 0 is CLOSE_AFTER_QUIET
     i32 quiet_run;
     i32 loud_blocks;
     StreamMeta meta;  // copied when a segment opens
@@ -91,6 +96,18 @@ struct Segmenter {
     i32 fail_count;
 };
 
+
+// What the open segment is multiplied by, so quiet speech comes up to TARGET_RMS without clipping.
+static f32 seg_gain(Segmenter* seg) {
+    f32 gain = 1, peak = 0;
+    for (i32 i = 0; i < seg->n; i++) peak = fabsf(seg->samples[i]) > peak ? fabsf(seg->samples[i]) : peak;
+    f32 loud_rms = (f32)sqrt(seg->loud_sum / ((f64)seg->loud_blocks * BLOCK));
+    if (loud_rms > 0) gain = TARGET_RMS / loud_rms;
+    if (gain > MAX_GAIN) gain = MAX_GAIN;
+    if (peak > 0 && gain * peak > MAX_PEAK) gain = MAX_PEAK / peak;
+    if (gain < 1) gain = 1;
+    return gain;
+}
 
 static void seg_write(Segmenter* seg) {
     Arena* a = scratch();
@@ -126,13 +143,7 @@ static void seg_write(Segmenter* seg) {
     }
     u32 data_len = (u32)seg->n * 2;
     u8* wav = PUSH_ARRAY(a, u8, WAV_HEADER + data_len);
-    f32 gain = 1, peak = 0;
-    for (i32 i = 0; i < seg->n; i++) peak = fabsf(seg->samples[i]) > peak ? fabsf(seg->samples[i]) : peak;
-    f32 loud_rms = (f32)sqrt(seg->loud_sum / ((f64)seg->loud_blocks * BLOCK));
-    if (loud_rms > 0) gain = TARGET_RMS / loud_rms;
-    if (gain > MAX_GAIN) gain = MAX_GAIN;
-    if (peak > 0 && gain * peak > MAX_PEAK) gain = MAX_PEAK / peak;
-    if (gain < 1) gain = 1;
+    f32 gain = seg_gain(seg);
     wav_header(wav, RATE, data_len);
     i16* pcm = (i16*)(wav + WAV_HEADER);
     for (i32 i = 0; i < seg->n; i++) {
@@ -168,7 +179,8 @@ static void seg_close(Segmenter* seg) {
     // Keep at most 300 ms of the trailing quiet.
     i32 trim = seg->quiet_run > SOFT_QUIET ? (seg->quiet_run - SOFT_QUIET) * BLOCK : 0;
     seg->n -= trim;
-    seg_write(seg);
+    if (seg->voice) voice_heard(seg->app, seg->samples, seg->n, seg_gain(seg));
+    else seg_write(seg);
 }
 
 // `block` starts at position `at`.
@@ -218,7 +230,8 @@ static void seg_block(Segmenter* seg, const f32* block, i64 at, StreamMeta* meta
     } else {
         seg->quiet_run++;
     }
-    if (seg->quiet_run >= CLOSE_AFTER_QUIET || (seg->n >= SOFT_LIMIT && seg->quiet_run >= SOFT_QUIET) || seg->n >= HARD_LIMIT)
+    i32 close_quiet = seg->close_quiet ? seg->close_quiet : CLOSE_AFTER_QUIET;
+    if (seg->quiet_run >= close_quiet || (seg->n >= SOFT_LIMIT && seg->quiet_run >= SOFT_QUIET) || seg->n >= HARD_LIMIT)
         seg_close(seg);
 }
 
@@ -471,7 +484,8 @@ static i64 clock_position(DeviceClock* c, f64 qpc_secs) {
     return (i64)floor((c->wall + (qpc_secs - c->qpc_secs)) * RATE + 0.5);
 }
 
-static RunEnd stream_run(Stream* s, Segmenter* seg) {
+// `voice`: the mic's segmenter for voice commands, or null.
+static RunEnd stream_run(Stream* s, Segmenter* seg, Segmenter* voice) {
     App* app = s->app;
     IMMDeviceEnumerator* en = 0;
     IMMDevice* dev = 0;
@@ -600,16 +614,24 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
                 down_push(&down, mono, &out);
             }
             TRY(capture->ReleaseBuffer(frames), "a packet to be released");
-            if (paused) continue;
             // Where the packet starts, by the device's timestamp. One without a timestamp follows
-            // on from the one before; only the first is placed by when it was read.
-            if (qpc && !(bflags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR))
-                seg_sync(seg, clock_position(&clock, (f64)qpc / 1e7), &meta);
-            else if (!seg->anchored)
-                seg_sync(seg, clock_position(&clock, qpc_secs_now(&clock)) - out.count, &meta);
-            seg_push(seg, out.items, out.count, &meta);
+            // on from the one before; only the first is placed by when it was read. Voice
+            // commands hear the mic in private mode too (to hear "lifelog, resume").
+            for (i32 k = 0; k < 2; k++) {
+                Segmenter* to = k == 0 ? (paused ? 0 : seg) : voice;
+                if (!to) continue;
+                if (qpc && !(bflags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR))
+                    seg_sync(to, clock_position(&clock, (f64)qpc / 1e7), &meta);
+                else if (!to->anchored)
+                    seg_sync(to, clock_position(&clock, qpc_secs_now(&clock)) - out.count, &meta);
+                seg_push(to, out.items, out.count, &meta);
+            }
         }
-        if (!paused && !packets && !got_event) seg_silence(seg, clock_position(&clock, qpc_secs_now(&clock)), &meta);
+        if (!packets && !got_event) {
+            i64 now = clock_position(&clock, qpc_secs_now(&clock));
+            if (!paused) seg_silence(seg, now, &meta);
+            if (voice) seg_silence(voice, now, &meta);
+        }
         AcquireSRWLockExclusive(&s->lock);
         s->loud_ts = seg->loud_ts;
         ReleaseSRWLockExclusive(&s->lock);
@@ -650,11 +672,22 @@ static DWORD WINAPI stream_main(void* p) {
     seg->gate = s->gate;
     seg->adaptive = s->source == SOURCE_MIC;
     seg->floor = s->gate / GATE_OVER_FLOOR;
+    Segmenter* voice = 0;
+    if (s->source == SOURCE_MIC) {
+        voice = (Segmenter*)calloc(1, sizeof(Segmenter));
+        CHECK(voice, "memory for a segmenter");
+        *voice = *seg;
+        voice->samples = (f32*)malloc(sizeof(f32) * HARD_LIMIT);
+        CHECK(voice->samples, "memory for %d samples", HARD_LIMIT);
+        voice->voice = true;
+        voice->close_quiet = VOICE_CLOSE_AFTER_QUIET;
+    }
 
     while (!s->stop) {
-        RunEnd end = stream_run(s, seg);
+        RunEnd end = stream_run(s, seg, voice);
         if (end == RUN_STOP) break;
         seg_close(seg);
+        if (voice) seg_discard(voice);
         // An app that has exited is ended by the watcher; the mic may have been unplugged, so
         // it keeps trying.
         for (i32 i = 0; end == RUN_ERROR && i < 50 && !s->stop; i++) Sleep(100);
@@ -662,6 +695,10 @@ static DWORD WINAPI stream_main(void* p) {
     if (s->discard) seg_discard(seg);
     seg_close(seg);
     LOG("%s: stream closed", seg->name);
+    if (voice) {
+        free(voice->samples);
+        free(voice);
+    }
     free(seg->samples);
     free(seg);
     CoUninitialize();

@@ -46,7 +46,11 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
   paste files or links into the timeline). Right-click to pause, restart or quit.
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
 - **Journal:** the daily summaries, a calendar, and reminders for things you said you'd do.
-- **Settings:** which apps to record, which are games, when to transcribe, the summary time, and the voice command chimes.
+- **Settings:** which apps to record, which are games, when to transcribe, the summary time, and voice commands.
+- **Voice commands:** say "lifelog" and a command, such as "lifelog, clip the last hour", "lifelog, pause" or
+  "lifelog, Valorant is a game". You can also say "lifelog", wait for the chime, then give the command. They are the
+  CLI's commands. In private mode only "resume" works. Settings lists them; the first time, it downloads a small
+  model (0.15 GB) that runs on the processor.
 
 From a terminal or a Stream Deck:
 
@@ -56,6 +60,7 @@ lifelog toggle               # private mode; also pause, resume
 lifelog exclude spotify.exe  # stop recording an app; "include" undoes it
 lifelog summary now          # or later, skip
 lifelog status
+lifelog voice "lifelog, clip the last hour"   # what a voice command would do, without doing it
 ```
 
 The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`, `/clip?range=15m`).
@@ -64,6 +69,8 @@ The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`
 
 - Get consent from the people you record. Excluded apps and private mode record nothing, and private mode drops
   the sentence in progress.
+- Voice commands listen to the mic even in private mode, so they can hear "resume". What they hear is never saved
+  and never leaves the computer; turn them off in Settings to stop that.
 - Audio is kept for 7 days for playback and then deleted; the text stays.
 
 ## Contributing

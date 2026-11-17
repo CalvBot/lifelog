@@ -17,7 +17,8 @@ static const char* CLI_USAGE =
     "  lifelog check-ai        start the summary AI, ask it one thing, stop it\n"
     "  lifelog status          what the running service is doing\n"
     "  lifelog quit            stop the running service\n"
-    "  lifelog config          print the config file path\n";
+    "  lifelog config          print the config file path\n"
+    "  lifelog voice \"TEXT\"    what a voice command would do with TEXT, without doing it\n";
 
 static i32 run_app();  // main.cpp, after this file in the unity build
 static bool single_instance();  // main.cpp
@@ -142,6 +143,19 @@ static i32 cli_check_ai() {
     return 0;
 }
 
+// What voice commands would make of a sentence, without doing it.
+static i32 cli_voice(Str text) {
+    Understood u;
+    voice_understand(text, false, &u);
+    const VoiceCommand* c = &u.c;
+    if (!u.for_us) cli_print("not for lifelog: it does not start with \"lifelog\"\n");
+    else if (u.name_only) cli_print("the name alone: it chimes and waits 6 s for the command\n");
+    else if (c->what == DO_NOTHING) cli_print("not a command\n");
+    else if (c->what == DO_API) cli_print("%s: %s %s%s%s\n", c->said, c->method, c->path, c->query[0] ? "?" : "", c->query);
+    else cli_print("%s\n", c->what == DO_CANCEL ? "cancel" : c->said);
+    return 0;
+}
+
 // For developers: writes the logo as an .ico (PNG images in it), as `lifelog icon` did.
 static i32 cli_icon(Str path) {
     if (!path.len) return cli_error("lifelog icon PATH.ico");
@@ -231,6 +245,7 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     }
     if (str_eq(cmd, str("check-ai"))) return cli_check_ai();
     if (str_eq(cmd, str("status"))) return cli_call("GET", str("/status"));
+    if (str_eq(cmd, str("voice"))) return cli_voice(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("icon"))) return cli_icon(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("config"))) {
         if (!cli_config(&g_cli.config)) return 1;

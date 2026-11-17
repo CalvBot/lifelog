@@ -79,6 +79,10 @@ struct Config {
     } chimes;
 
     struct {
+        bool listen;  // voice commands: listen on the mic for "lifelog" (voice.h)
+    } voice;
+
+    struct {
         Names hidden;        // speakers hidden in the timeline (and left out of copies and playback)
         bool show_dismissed;  // show the lines of excluded apps
     } ui;

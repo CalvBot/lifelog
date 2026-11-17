@@ -88,6 +88,11 @@ style = "glass"
 # 0 to 100.
 volume = 60
 
+[voice]
+# Voice commands: say "lifelog" and a command ("lifelog, clip the last hour"). Heard on this PC
+# with a small model on the processor; what it hears for commands is not kept.
+listen = true
+
 [ui]
 # Speakers hidden in the timeline (and left out of copies and playback).
 hidden = []
@@ -305,6 +310,7 @@ static void config_defaults(Config* cfg) {
     SET(cfg->worker.model, str("large-v3-turbo"));
     SET(cfg->worker.language, str("en"));
     cfg->chimes.volume = 60;
+    cfg->voice.listen = true;
 }
 
 static char g_data_dir[MAX_PATH];
@@ -405,6 +411,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("chimes"))) {
             if (str_eq(k, str("style")) && v.kind == Value::STRING) chime_style_parse(str(v.s), &cfg->chimes.style);
             if (str_eq(k, str("volume"))) take_u32(&cfg->chimes.volume, &v);
+        } else if (str_eq(tb, str("voice"))) {
+            if (str_eq(k, str("listen"))) take_bool(&cfg->voice.listen, &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);

@@ -6,6 +6,9 @@ static const wchar_t* WHISPER_BUILD = L"b5454";
 static const wchar_t* WHISPER_ZIP = L"whisper-bin-win-cuda-12.4.0-x64.zip";
 static const char* WHISPER_VAD_MODEL = "ggml-silero-v6.2.0.bin";
 static const wchar_t* WHISPER_VAD_URL = L"https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
+// The small English model voice commands are heard with (voice.h), on the processor.
+static const char* WHISPER_VOICE_MODEL = "ggml-base.en.bin";
+static const wchar_t* WHISPER_VOICE_URL = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 
 // The models offered in Settings, the default first. Each is a file published where its makers
 // put it; a new one needs only a line here (and a .gguf llama.cpp b11873 can run).
@@ -335,6 +338,7 @@ struct SetupJob {
     wchar_t dir[MAX_PATH];     // whisper or llm
     wchar_t bins[MAX_PATH];    // whisper's build folder
     wchar_t target[MAX_PATH];  // the model file
+    bool voice_only;           // for voice commands: the transcriber's model stays as chosen
 };
 
 static bool setup_transcriber(SetupJob* job, char* error, i32 cap) {
@@ -370,8 +374,11 @@ static bool setup_transcriber(SetupJob* job, char* error, i32 cap) {
     }
     wchar_t vad[MAX_PATH];
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
-    if (!exists(job->target) && !download(app, SETUP_TRANSCRIBER, "the model", job->url, job->target, error, cap)) return false;
+    if (!job->voice_only && !exists(job->target) && !download(app, SETUP_TRANSCRIBER, "the model", job->url, job->target, error, cap)) return false;
     if (!exists(vad) && !download(app, SETUP_TRANSCRIBER, "the voice detection model", WHISPER_VAD_URL, vad, error, cap)) return false;
+    wchar_t voice[MAX_PATH];
+    swprintf(voice, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VOICE_MODEL);
+    if (!exists(voice) && !download(app, SETUP_TRANSCRIBER, "the voice commands model", WHISPER_VOICE_URL, voice, error, cap)) return false;
     return true;
 }
 
@@ -419,7 +426,9 @@ static DWORD WINAPI setup_thread(void* p) {
     done.part = job->part;
     done.ok = job->part == SETUP_TRANSCRIBER ? setup_transcriber(job, done.error, sizeof(done.error))
                                              : setup_summary_ai(job, done.error, sizeof(done.error));
-    if (done.ok) {
+    if (done.ok && job->voice_only) {
+        LOG("voice commands are set up");
+    } else if (done.ok) {
         LOG("the %s is set up", name);
         SetupModel m = {job->part};
         SET(m.model, str(job->model));
@@ -837,7 +846,7 @@ static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_
             Str name = narrow(scratch(), fd.cFileName);
             Str pre = str(prefix), suf = str(suffix);
             if (name.len > pre.len + suf.len && str_eq(str_sub(name, name.len - suf.len, suf.len), suf) &&
-                !str_eq(name, str(WHISPER_VAD_MODEL)) && s->file_count[part] < (i32)COUNT(s->files[part])) {
+                !str_eq(name, str(WHISPER_VAD_MODEL)) && !str_eq(name, str(WHISPER_VOICE_MODEL)) && s->file_count[part] < (i32)COUNT(s->files[part])) {
                 AiFile* f = &s->files[part][s->file_count[part]++];
                 SET(f->name, str_sub(name, pre.len, name.len - pre.len - suf.len));
                 f->bytes = (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
@@ -861,7 +870,7 @@ void ai_scan(App* app) {
 
 // ---------------------------------------------------------------------------------------------
 
-void setup_start(App* app, SetupPart part, const char* model) {
+static void setup_begin(App* app, SetupPart part, const char* model, bool voice_only) {
     SetupState* s = &app->setup.part[part];
     if (setup_busy(app)) return;
     const AiModel* known = ai_model(part, model);
@@ -881,6 +890,7 @@ void setup_start(App* app, SetupPart part, const char* model) {
     holder->data = job;
     job->app = app;
     job->part = part;
+    job->voice_only = voice_only;
     SET(job->model, str(known->name));
     wcsncpy_s(job->url, known->url, _TRUNCATE);
     if (part == SETUP_TRANSCRIBER) {
@@ -896,6 +906,16 @@ void setup_start(App* app, SetupPart part, const char* model) {
     HANDLE t = CreateThread(0, 0, setup_thread, holder, 0, 0);
     CHECK(t, "the setup thread to start (error %lu)", GetLastError());
     CloseHandle(t);
+}
+
+void setup_start(App* app, SetupPart part, const char* model) { setup_begin(app, part, model, false); }
+
+void setup_start_voice(App* app) { setup_begin(app, SETUP_TRANSCRIBER, app->config.worker.model, true); }
+
+void voice_model_path(const char* ai_dir, wchar_t out[MAX_PATH]) {
+    wchar_t dir[MAX_PATH];
+    whisper_dir(ai_dir, dir);
+    swprintf(out, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VOICE_MODEL);
 }
 
 void summary_set_endpoint(App* app, Str url, Str model) {

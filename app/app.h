@@ -24,6 +24,7 @@ struct App {
     Setup setup;        // downloading the transcriber and the summary AI (setup.h)
     Clips clips;        // copying, pasting and playback (clip.h)
     Ui ui;              // the window and the tray menu (ui.h)
+    Voice voice;        // voice commands (voice.h)
     EventQueue events;  // results from other threads, for the main thread (events.h)
 };
 

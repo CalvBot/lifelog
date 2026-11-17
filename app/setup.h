@@ -64,6 +64,11 @@ const AiModel* ai_model(SetupPart part, const char* name);
 // Starts downloading `part` (its engine if missing, and `model`) unless a download or a move is
 // running; when done, `model` is used, and your own server for it is forgotten. The main thread.
 void setup_start(App* app, SetupPart part, const char* model);
+// The same for voice commands' model (and whisper.cpp if missing), leaving the transcriber's
+// model and server as they are. The main thread.
+void setup_start_voice(App* app);
+// whisper\ggml-base.en.bin: voice commands' model.
+void voice_model_path(const char* ai_dir, wchar_t out[MAX_PATH]);
 // Deletes one downloaded model. The main thread. False, saying why, if it could not.
 bool setup_remove(App* app, SetupPart part, const char* model);
 // Deletes every model and both engines: what an uninstall leaves behind. What is in use right now

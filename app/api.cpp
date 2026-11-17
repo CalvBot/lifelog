@@ -236,6 +236,47 @@ static void remind_check_apply(App* app, Job* job) {
 
 // The main thread: does what the call asks. True when `c->r` is the answer now; false when a job
 // will answer it (api_finish) once it is done.
+// Letters and digits only, lower case, so "Battle.net", "battlenet" and "Battle Net" are one.
+static Str name_key(Arena* a, Str s) {
+    char* out = PUSH_ARRAY(a, char, s.len + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < s.len; i++)
+        if (isalnum((u8)s.ptr[i])) out[n++] = (char)tolower((u8)s.ptr[i]);
+    out[n] = 0;
+    return {out, n};
+}
+
+// An app named without ".exe" ("spotify", "visual studio code", as voice commands say it): the exe
+// whose name or display name that is, or failing that the one display name it starts; a running
+// app first. Empty if there is none.
+static Str app_by_name(App* app, Arena* a, Str said) {
+    Str key = name_key(a, said);
+    if (!key.len) return {"", 0};
+    AppInfo* best = 0;
+    i32 best_score = 0;
+    i32 starts = 0;
+    for (i32 i = 0; i < app->apps.list.count; i++) {
+        AppInfo* info = &app->apps.list[i];
+        Str exe = str(info->exe);
+        if (str_ends(exe, str(".exe"))) exe.len -= 4;
+        Str k_exe = name_key(a, exe), k_name = name_key(a, str(info->name));
+        i32 score = 0;
+        if (str_eq(k_exe, key) || str_eq(k_name, key)) score = 4;
+        else if ((k_name.len && str_starts(k_name, key)) || str_starts(k_exe, key)) {
+            score = 2;
+            starts++;
+        }
+        if (score && info->running) score++;
+        if (score > best_score) {
+            best = info;
+            best_score = score;
+        }
+    }
+    // A start of a name only counts when it is the only one ("visual" could be many).
+    if (!best || (best_score < 4 && starts > 1)) return {"", 0};
+    return str(best->exe);
+}
+
 static bool api_handle(App* app, ApiCall* c) {
     Arena* a = scratch();
     Str method = c->method, path = c->path, query = c->query;
@@ -245,6 +286,8 @@ static bool api_handle(App* app, ApiCall* c) {
     Str exe = {};
     query_param(a, query, "app", &exe);
     exe = str_lower(a, str_trim(exe));
+    Str named = exe;
+    if (exe.len && !str_ends(exe, str(".exe"))) exe = app_by_name(app, a, exe);
 
     if (get && str_eq(path, str("/status"))) {
         status_json(app, &r->body);
@@ -262,7 +305,8 @@ static bool api_handle(App* app, ApiCall* c) {
     bool transcription = str_eq(path, str("/transcription"));
     if (pause || resume || toggle || exclude || include || game || not_game || transcription) {
         if ((exclude || include || game || not_game) && exe.len == 0) {
-            answer_error(r, 400, "say which app, e.g. spotify.exe");
+            if (named.len) answer_error(r, 400, str_fmt(a, "no app called '%s' (say its exe, e.g. spotify.exe)", named.ptr).ptr);
+            else answer_error(r, 400, "say which app, e.g. spotify.exe");
             return true;
         }
         Mode mode = MODE_AUTO;

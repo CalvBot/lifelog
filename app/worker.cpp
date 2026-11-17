@@ -374,9 +374,7 @@ static void whisper_log(enum ggml_log_level level, const char* text, void*) {
     else WARN("whisper: %.*s", (int)s.len, s.ptr);
 }
 
-// Loads whisper.dll and the ggml backends (the best CPU one for this processor, and CUDA) from
-// the setup's folder. Once per run.
-static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
+static bool whisper_load_now(const wchar_t* dir, char* error, i32 cap) {
     if (g_whisper_loaded) return true;
     wchar_t path[MAX_PATH];
     // whisper.dll's own imports (ggml.dll), and the CUDA libraries ggml-cuda.dll needs, are next
@@ -439,6 +437,16 @@ static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
     g_whisper_loaded = true;
     whisper_loaded_from(dir);
     return true;
+}
+
+// Loads whisper.dll and the ggml backends (the best CPU one for this processor, and CUDA) from
+// the setup's folder. Once per run; the transcriber and voice commands (voice.cpp) both ask.
+static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&lock);
+    bool ok = whisper_load_now(dir, error, cap);
+    ReleaseSRWLockExclusive(&lock);
+    return ok;
 }
 
 // The attention heads that line text up with audio, for a model by its name. Other models use

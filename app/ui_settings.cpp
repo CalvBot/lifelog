@@ -24,6 +24,7 @@ enum UndoKind : u8 {
     UNDO_NEVER,      // a never-mention topic that was allowed again: add it back
     UNDO_CHIME_STYLE,
     UNDO_CHIME_VOLUME,
+    UNDO_VOICE,
 };
 
 // One step back for Ctrl+Z: the value it puts back.
@@ -228,6 +229,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_NEVER: summary_add_never(app, str(u.text), 0, 0); break;
     case UNDO_CHIME_STYLE: chime_set_style(app, (ChimeStyle)u.n); break;
     case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
+    case UNDO_VOICE: voice_set_listen(app, u.on); break;
     }
     s->stale = true;
     ui_say(app, "Undone: %s", u.label);
@@ -896,12 +898,56 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Voice commands. For now, the chimes they make (chime.h).
+// Voice commands (voice.h), and the chimes they make (chime.h).
 
 static void voice_card(App* app, SettingsState* s, f32 width) {
     Config* c = &app->config;
+    Voice* v = &app->voice;
     settings_card("voice", width);
+
+    bool on = c->voice.listen;
+    if (toggle("##voice", &on)) {
+        SettingsUndo* u = remember(s, UNDO_VOICE, on ? "voice commands on" : "voice commands off");
+        u->on = !on;
+        voice_set_listen(app, on);
+    }
+    ImGui::SameLine();
     title("Voice commands");
+    ImGui::SameLine(0, px(10));
+    SetupState* st = &app->setup.part[SETUP_TRANSCRIBER];
+    VoiceState state = (VoiceState)atomic_get(&v->state);
+    f32 room = ImGui::GetContentRegionAvail().x;
+    if (!on) {
+        weak(fit("off", room));
+    } else if (st->running) {
+        weak(fit(st->text, room));
+    } else if (state == VOICE_NEEDS_SETUP) {
+        ImGui::BeginDisabled(app->setup.move.running);
+        if (button(label(ICON_ARROW_DOWN, "Download, 0.15 GB"))) setup_start_voice(app);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Whisper base.en, a small English model that runs on the processor");
+    } else if (state == VOICE_FAILED) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ERROR_RED, "%s", fit("could not load its model (see the log)", room));
+    } else {
+        weak(fit(state == VOICE_READY ? "say \"lifelog\" and a command" : "starting", room));
+    }
+
+    row_label("Commands");
+    ImGui::PushTextWrapPos(0);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextUnformatted("clip (the last hour, 15 minutes, today) · pause · resume · toggle · exclude / include APP "
+                           "· APP is (not) a game · transcription auto / always / paused · summary now / later / skip "
+                           "(yesterday) · check the AI · status · open (Settings, the journal) · config · "
+                           "restart · quit. As one sentence, or pause after \"lifelog\" for the chime. In private mode, only resume.");
+    ImGui::PopStyleColor();
+    ImGui::PopTextWrapPos();
+
+    if (v->heard_ts) {
+        row_label("Last");
+        LocalTime t = local_time(v->heard_ts);
+        weak(fit(tmp("%02d:%02d  %s: %s", t.hour, t.minute, v->heard, v->result), ImGui::GetContentRegionAvail().x));
+    }
 
     row_label("Chimes");
     const char* names[] = {"Glass", "Soft", "Synth", "Off"};
