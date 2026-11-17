@@ -21,6 +21,12 @@ static const f64 LINGER_SECS = 30;  // an app stream ends once its app has been 
 // It is only a cheap loudness gate so that silence is never written to disk; the worker runs a
 // real voice detector before transcribing. A segment opens when the sound gets loud, and closes
 // after a pause, or at the first short pause once it is long enough, or at a hard length limit.
+//
+// Where a segment sits in time comes from the audio device, not from when the samples happened to
+// be read: every sample has a position, counted at 16 kHz since 1970 (UTC), and positions run on
+// one by one from the device's own timestamp of a packet. A late wakeup or a busy machine moves
+// nothing. Only when the device's timestamps and the count part by more than a little (a silent
+// app sends no packets; the two clocks drift apart over hours) is the count set again, at a gap.
 
 static const i32 RATE = 16000;
 static const i32 BLOCK = RATE / 50;            // 20 ms
@@ -30,6 +36,9 @@ static const i32 SOFT_LIMIT = 20 * RATE;       // past this, any short pause end
 static const i32 SOFT_QUIET = 15;              // 300 ms
 static const i32 HARD_LIMIT = 30 * RATE;
 static const i32 MIN_LOUD_BLOCKS = 10;         // under 200 ms of sound is a click, not speech
+static const i64 SYNC_GAP = RATE / 50;         // the device is 20 ms ahead of the count: samples were missed or not sent
+static const i64 SYNC_SLIP = RATE / 20;        // 50 ms behind: set the count back, between segments
+static const i64 SILENCE_LAG = RATE / 5;       // no packets: the source is taken as silent up to 200 ms ago
 
 // The mic's gate follows its noise floor: a quiet but clean mic speaks at 0.001..0.006 RMS, so a
 // fixed gate cuts its soft words and the pauses inside a sentence close the segment.
@@ -66,8 +75,10 @@ struct Segmenter {
     f32 preroll[PREROLL_BLOCKS][BLOCK];  // a ring
     i32 preroll_first;
     i32 preroll_n;
+    bool anchored; // `next` has been set from the device
+    i64 next;      // the position of the next sample to come (see above)
     bool open;
-    f64 start_ts;
+    i64 start;     // the open segment's first sample's position
     f32* samples;  // HARD_LIMIT of them
     i32 n;
     i32 quiet_run;
@@ -81,7 +92,7 @@ struct Segmenter {
 };
 
 
-static void seg_write(Segmenter* seg, f64 end_ts) {
+static void seg_write(Segmenter* seg) {
     Arena* a = scratch();
     Mark m = mark(a);
     i32 err = SHCreateDirectoryExW(0, seg->spool, 0);
@@ -93,8 +104,8 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
     }
     StreamMeta* meta = &seg->meta;
     Buf b = {};
-    buf_fmt(&b, "{\"start_ts\":%.6f,\"end_ts\":%.6f,\"sample_rate\":%d,\"source\":\"%s\",\"exe\":", seg->start_ts, end_ts, RATE,
-            meta->source == SOURCE_MIC ? "mic" : "app");
+    buf_fmt(&b, "{\"start\":%lld,\"length\":%d,\"sample_rate\":%d,\"start_ts\":%.6f,\"source\":\"%s\",\"exe\":", seg->start, seg->n,
+            RATE, (f64)seg->start / RATE, meta->source == SOURCE_MIC ? "mic" : "app");
     json_quote_or_null(&b, meta->exe);
     if (meta->pid) buf_fmt(&b, ",\"pid\":%u", meta->pid);
     else buf_cstr(&b, ",\"pid\":null");
@@ -105,7 +116,7 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
     buf_cstr(&b, "}");
     Str json = buf_take(&b, a);
     wchar_t stem[MAX_PATH], path[MAX_PATH], part[MAX_PATH];
-    swprintf(stem, MAX_PATH, L"%s\\%014llu-%s", seg->spool, (u64)(seg->start_ts * 1000.0), wide(a, str(seg->name)));
+    swprintf(stem, MAX_PATH, L"%s\\%014llu-%s", seg->spool, (u64)(seg->start * 1000 / RATE), wide(a, str(seg->name)));
     swprintf(path, MAX_PATH, L"%s.json", stem);
     // The worker picks up *.wav, so the sidecar goes first and the WAV appears by a rename.
     if (!write_file(path, json)) {
@@ -157,10 +168,11 @@ static void seg_close(Segmenter* seg) {
     // Keep at most 300 ms of the trailing quiet.
     i32 trim = seg->quiet_run > SOFT_QUIET ? (seg->quiet_run - SOFT_QUIET) * BLOCK : 0;
     seg->n -= trim;
-    seg_write(seg, seg->start_ts + (f64)seg->n / RATE);
+    seg_write(seg);
 }
 
-static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta* meta) {
+// `block` starts at position `at`.
+static void seg_block(Segmenter* seg, const f32* block, i64 at, StreamMeta* meta) {
     f32 sum = 0;
     for (i32 i = 0; i < BLOCK; i++) sum += block[i] * block[i];
     f32 rms = sqrtf(sum / BLOCK);
@@ -172,13 +184,13 @@ static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta
         gate = moving < GATE_MIN ? GATE_MIN : moving > gate ? gate : moving;
     }
     bool loud = rms > gate;
-    if (loud) seg->loud_ts = block_ts + (f64)BLOCK / RATE;
+    if (loud) seg->loud_ts = (f64)(at + BLOCK) / RATE;
     if (!seg->open) {
         if (!loud) {
-            i32 at = (seg->preroll_first + seg->preroll_n) % PREROLL_BLOCKS;
+            i32 slot = (seg->preroll_first + seg->preroll_n) % PREROLL_BLOCKS;
             if (seg->preroll_n == PREROLL_BLOCKS) seg->preroll_first = (seg->preroll_first + 1) % PREROLL_BLOCKS;
             else seg->preroll_n++;
-            memcpy(seg->preroll[at], block, sizeof(f32) * BLOCK);
+            memcpy(seg->preroll[slot], block, sizeof(f32) * BLOCK);
             return;
         }
         seg->n = 0;
@@ -189,7 +201,7 @@ static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta
         memcpy(seg->samples + seg->n, block, sizeof(f32) * BLOCK);
         seg->n += BLOCK;
         seg->open = true;
-        seg->start_ts = block_ts - (f64)(seg->preroll_n * BLOCK) / RATE;
+        seg->start = at - (i64)seg->preroll_n * BLOCK;
         seg->quiet_run = 0;
         seg->loud_blocks = 1;
         seg->loud_sum = sum;
@@ -210,15 +222,16 @@ static void seg_block(Segmenter* seg, const f32* block, f64 block_ts, StreamMeta
         seg_close(seg);
 }
 
-// Samples that end "now". `meta` is copied when a segment opens.
+// The next `count` samples, from position `next` on. `meta` is copied when a segment opens.
 static void seg_push(Segmenter* seg, const f32* samples, i32 count, StreamMeta* meta) {
+    i64 first = seg->next - seg->pending_n;  // where `pending` starts
+    seg->next += count;
     i32 blocks = (seg->pending_n + count) / BLOCK;
     if (!blocks) {
         memcpy(seg->pending + seg->pending_n, samples, sizeof(f32) * count);
         seg->pending_n += count;
         return;
     }
-    f64 now = now_ts();
     f32 block[BLOCK];
     i32 have = seg->pending_n, at = 0;
     memcpy(block, seg->pending, sizeof(f32) * have);
@@ -226,28 +239,52 @@ static void seg_push(Segmenter* seg, const f32* samples, i32 count, StreamMeta* 
         memcpy(block + have, samples + at, sizeof(f32) * (BLOCK - have));
         at += BLOCK - have;
         have = 0;
-        // Wall-clock time of the start of this block.
-        seg_block(seg, block, now - (f64)((blocks - b) * BLOCK) / RATE, meta);
+        seg_block(seg, block, first + (i64)b * BLOCK, meta);
     }
     seg->pending_n = count - at;
     memcpy(seg->pending, samples + at, sizeof(f32) * seg->pending_n);
 }
 
-// The source sent nothing for `secs` (a silent app sends no packets at all).
-static void seg_silence(Segmenter* seg, f64 secs, StreamMeta* meta) {
-    if (!seg->open) {
-        seg->preroll_n = seg->pending_n = 0;
-        return;
-    }
-    static const f32 zeros[1600] = {};
-    for (i32 left = (i32)(secs * RATE); left > 0; left -= COUNT(zeros))
-        seg_push(seg, zeros, left < COUNT(zeros) ? left : COUNT(zeros), meta);
+// Starts the count again at `at`, dropping what was waiting before it.
+static void seg_restart(Segmenter* seg, i64 at) {
+    seg->preroll_n = seg->pending_n = 0;
+    seg->next = at;
+    seg->anchored = true;
 }
 
-// Throws away everything not yet written (private mode, or the app was just excluded).
+// Silence up to position `to`: an open segment hears it (so it can close), a closed one just
+// moves on.
+static void seg_zeros(Segmenter* seg, i64 to, StreamMeta* meta) {
+    static const f32 zeros[1600] = {};
+    // Enough quiet to close any segment; past that it is only the count moving.
+    i64 most = seg->next + (i64)(CLOSE_AFTER_QUIET + 1) * BLOCK;
+    while (seg->open && seg->next < to && seg->next < most) {
+        i64 left = (to < most ? to : most) - seg->next;
+        seg_push(seg, zeros, left < COUNT(zeros) ? (i32)left : COUNT(zeros), meta);
+    }
+    if (seg->next < to) seg_restart(seg, to);
+}
+
+// The device says the next samples start at position `at`. A small difference is left alone, so a
+// segment's samples stay one unbroken run; a gap is filled with silence.
+static void seg_sync(Segmenter* seg, i64 at, StreamMeta* meta) {
+    if (!seg->anchored) seg_restart(seg, at);
+    else if (at - seg->next > SYNC_GAP) seg_zeros(seg, at, meta);
+    else if (seg->next - at > SYNC_SLIP && !seg->open) seg_restart(seg, at);
+}
+
+// No packets: the source sent nothing up to position `now` (a silent app sends no packets at
+// all), so a segment that is open hears quiet and can close.
+static void seg_silence(Segmenter* seg, i64 now, StreamMeta* meta) {
+    if (seg->anchored && now - SILENCE_LAG > seg->next) seg_zeros(seg, now - SILENCE_LAG, meta);
+}
+
+// Throws away everything not yet written (private mode, or the app was just excluded). The count
+// is set again from the next packet.
 static void seg_discard(Segmenter* seg) {
     seg->open = false;
     seg->preroll_n = seg->pending_n = 0;
+    seg->anchored = false;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -407,6 +444,33 @@ static void stream_name(Stream* s, char out[64]) {
     snprintf(out, 64, "%s-%u", stem, s->pid);
 }
 
+// Turns QPC readings into sample positions. WASAPI stamps each packet with the QPC time (in 100 ns)
+// its first frame reached the device; this pairs QPC with the wall clock, again each minute so
+// a change to the system time is followed.
+struct DeviceClock {
+    f64 qpc_secs;  // a QPC reading, in seconds
+    f64 wall;      // the wall clock (unix seconds) at that reading
+    f64 freq;
+};
+
+static f64 qpc_secs_now(DeviceClock* c) {
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return (f64)q.QuadPart / c->freq;
+}
+
+static void clock_pair(DeviceClock* c) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    c->freq = (f64)f.QuadPart;
+    c->wall = now_ts();
+    c->qpc_secs = qpc_secs_now(c);
+}
+
+static i64 clock_position(DeviceClock* c, f64 qpc_secs) {
+    return (i64)floor((c->wall + (qpc_secs - c->qpc_secs)) * RATE + 0.5);
+}
+
 static RunEnd stream_run(Stream* s, Segmenter* seg) {
     App* app = s->app;
     IMMDeviceEnumerator* en = 0;
@@ -420,6 +484,8 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
     wchar_t mic_id[512] = {};
     f64 checked = now_ts();
     bool was_paused = false;
+    DeviceClock clock;
+    clock_pair(&clock);
     List<f32> out = {};
     Downsampler down;
     down_init(&down);
@@ -502,25 +568,11 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
             }
         }
         bool got_event = WaitForSingleObject(event, WAIT_MS) == WAIT_OBJECT_0;
-        out.count = 0;
-        for (;;) {
-            UINT32 packet = 0;
-            TRY(capture->GetNextPacketSize(&packet), "the next packet's size");
-            if (!packet) break;
-            BYTE* data = 0;
-            UINT32 frames = 0;
-            DWORD bflags = 0;
-            TRY(capture->GetBuffer(&data, &frames, &bflags, 0, 0), "a packet");
-            const f32* f = (const f32*)data;
-            bool silent = (bflags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-            for (UINT32 i = 0; i < frames; i++) {
-                f32 mono = silent ? 0 : (f[i * 2] + f[i * 2 + 1]) / CHANNELS;
-                down_push(&down, mono, &out);
-            }
-            TRY(capture->ReleaseBuffer(frames), "a packet to be released");
-        }
+        if (now_ts() - clock.wall >= 60) clock_pair(&clock);
 
         bool paused = atomic_get(&app->capture.paused) != 0;
+        if (paused && !was_paused) seg_discard(seg);
+        was_paused = paused;
         StreamMeta meta = {};
         meta.source = s->source;
         SET(meta.exe, str(s->exe));
@@ -528,20 +580,39 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
         AcquireSRWLockExclusive(&s->lock);
         SET(meta.title, str(s->title));
         SET(meta.device, str(s->device));
-        s->loud_ts = seg->loud_ts;
         ReleaseSRWLockExclusive(&s->lock);
 
-        if (paused) {
-            if (!was_paused) seg_discard(seg);
-            was_paused = true;
-            continue;
+        i32 packets = 0;
+        for (;; packets++) {
+            UINT32 packet = 0;
+            TRY(capture->GetNextPacketSize(&packet), "the next packet's size");
+            if (!packet) break;
+            BYTE* data = 0;
+            UINT32 frames = 0;
+            DWORD bflags = 0;
+            UINT64 device_pos = 0, qpc = 0;
+            TRY(capture->GetBuffer(&data, &frames, &bflags, &device_pos, &qpc), "a packet");
+            out.count = 0;
+            const f32* f = (const f32*)data;
+            bool silent = (bflags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            for (UINT32 i = 0; i < frames; i++) {
+                f32 mono = silent ? 0 : (f[i * 2] + f[i * 2 + 1]) / CHANNELS;
+                down_push(&down, mono, &out);
+            }
+            TRY(capture->ReleaseBuffer(frames), "a packet to be released");
+            if (paused) continue;
+            // Where the packet starts, by the device's timestamp. One without a timestamp follows
+            // on from the one before; only the first is placed by when it was read.
+            if (qpc && !(bflags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR))
+                seg_sync(seg, clock_position(&clock, (f64)qpc / 1e7), &meta);
+            else if (!seg->anchored)
+                seg_sync(seg, clock_position(&clock, qpc_secs_now(&clock)) - out.count, &meta);
+            seg_push(seg, out.items, out.count, &meta);
         }
-        was_paused = false;
-        if (!out.count) {
-            if (!got_event) seg_silence(seg, WAIT_MS / 1000.0, &meta);
-            continue;
-        }
-        seg_push(seg, out.items, out.count, &meta);
+        if (!paused && !packets && !got_event) seg_silence(seg, clock_position(&clock, qpc_secs_now(&clock)), &meta);
+        AcquireSRWLockExclusive(&s->lock);
+        s->loud_ts = seg->loud_ts;
+        ReleaseSRWLockExclusive(&s->lock);
     }
     end = RUN_STOP;
 #undef TRY
