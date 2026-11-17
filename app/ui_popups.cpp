@@ -49,6 +49,7 @@ struct PopupState {
 };
 
 static u64 g_preview_seq;
+static volatile LONG64 g_preview_wanted;  // for db_post_latest; 0 while the popup is closed
 
 struct PreviewJob {
     u64 asked;
@@ -210,9 +211,10 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
             Job* job = job_new(preview_apply);
             PreviewJob* p = PUSH(&job->arena, PreviewJob);
             p->asked = s->preview_asked = ++g_preview_seq;
+            InterlockedExchange64(&g_preview_wanted, (LONG64)p->asked);
             p->start = start;
             job->data = p;
-            db_post(job, preview_run);
+            db_post_latest(job, preview_run, &g_preview_wanted, p->asked);
         } else {
             popup_wait(next_frame_ms, (f32)(left * 1000) + 10);
         }
@@ -378,6 +380,7 @@ static bool popup_draw(App* app, PopupState* s, f32* next_frame_ms) {
 }
 
 static void popup_free(PopupState* s) {
+    InterlockedExchange64(&g_preview_wanted, 0);
     job_drop(s->preview_job);
     s->preview_job = 0;
 }

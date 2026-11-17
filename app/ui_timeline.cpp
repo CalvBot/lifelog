@@ -473,6 +473,18 @@ static int tl_chip_order(const void* a, const void* b) {
 static TimelineState* g_tl;  // the window's timeline while it is open; results find it here
 static u64 g_tl_seq;         // numbers the requests, across windows, so a late result is known
 
+enum TlKind { TL_DAY, TL_SEARCH, TL_DAYS, TL_APPS, TL_KINDS };
+// The newest request of each kind, for the database thread (db_post_latest): an older one still
+// queued is dropped before its query runs. 0 while no window wants any.
+static volatile LONG64 g_tl_wanted[TL_KINDS];
+
+// A new request of `kind`: numbered, and the one wanted from now on.
+static u64 tl_ask(TlKind kind, u64* asked) {
+    *asked = ++g_tl_seq;
+    InterlockedExchange64(&g_tl_wanted[kind], (LONG64)*asked);
+    return *asked;
+}
+
 struct TlDayJob {
     u64 asked;
     char day[11];
@@ -558,10 +570,10 @@ static void timeline_load(App* app, TimelineState* s) {
     }
     Job* job = job_new(tl_day_apply);
     TlDayJob* d = PUSH(&job->arena, TlDayJob);
-    d->asked = s->day_asked = ++g_tl_seq;
+    d->asked = tl_ask(TL_DAY, &s->day_asked);
     SET(d->day, str(s->day));
     job->data = d;
-    db_post(job, tl_day_run);
+    db_post_latest(job, tl_day_run, &g_tl_wanted[TL_DAY], d->asked);
 }
 
 // Another day was asked for and has not come yet.
@@ -570,6 +582,7 @@ static bool tl_day_pending(TimelineState* s) {
 }
 
 struct TlListJob {
+    TlKind kind;
     u64 asked;
     Str query;  // for a search
     Slice<Line> lines;
@@ -577,12 +590,18 @@ struct TlListJob {
     Slice<SpeakerCount> apps;
 };
 
-static Job* tl_list_job(JobApply* apply, u64* asked) {
+static Job* tl_list_job(JobApply* apply, TlKind kind, u64* asked) {
     Job* job = job_new(apply);
     TlListJob* d = PUSH(&job->arena, TlListJob);
-    d->asked = *asked = ++g_tl_seq;
+    d->kind = kind;
+    d->asked = tl_ask(kind, asked);
     job->data = d;
     return job;
+}
+
+static void tl_list_post(Job* job, DbRun* run) {
+    TlListJob* d = (TlListJob*)job->data;
+    db_post_latest(job, run, &g_tl_wanted[d->kind], d->asked);
 }
 
 static void tl_search_run(sqlite3* db, Job* job) {
@@ -851,12 +870,12 @@ static void tl_run_search(App* app, TimelineState* s) {
     s->results = {};
     s->find_at = 0;
     Str q = str_trim(str(s->search));
-    s->search_asked = ++g_tl_seq;  // drops a search still on the way
+    tl_ask(TL_SEARCH, &s->search_asked);  // drops a search still on the way
     if (!q.len || !app->storage.ready) return;
-    Job* job = tl_list_job(tl_search_apply, &s->search_asked);
+    Job* job = tl_list_job(tl_search_apply, TL_SEARCH, &s->search_asked);
     TlListJob* d = (TlListJob*)job->data;
     d->query = str_copy(&job->arena, q);
-    db_post(job, tl_search_run);
+    tl_list_post(job, tl_search_run);
 }
 
 static int tl_search_callback(ImGuiInputTextCallbackData* d) {
@@ -869,7 +888,7 @@ static int tl_search_callback(ImGuiInputTextCallbackData* d) {
 }
 
 static void tl_clear_search(TimelineState* s) {
-    s->search_asked = ++g_tl_seq;  // drops a search still on the way
+    tl_ask(TL_SEARCH, &s->search_asked);  // drops a search still on the way
     s->search[0] = 0;
     s->search_due = 0;
     job_drop(s->search_job);
@@ -992,7 +1011,7 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
             s->cal_year = y;
             s->cal_month = m;
             s->calendar_open = true;
-            if (app->storage.ready) db_post(tl_list_job(tl_days_apply, &s->days_asked), tl_days_run);
+            if (app->storage.ready) tl_list_post(tl_list_job(tl_days_apply, TL_DAYS, &s->days_asked), tl_days_run);
         }
     }
     ImGui::SetItemTooltip("Pick a day");
@@ -1155,7 +1174,7 @@ static void tl_show_filter(App* app, TimelineState* s, f32 left) {
         s->apps_filter[0] = 0;
         s->show_focus = true;
         // Every app ever heard, for the second half of the list.
-        if (app->storage.ready) db_post(tl_list_job(tl_apps_apply, &s->apps_asked), tl_apps_run);
+        if (app->storage.ready) tl_list_post(tl_list_job(tl_apps_apply, TL_APPS, &s->apps_asked), tl_apps_run);
     }
 
     ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + 4 * u));
@@ -1959,6 +1978,7 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
 
 static void timeline_free(TimelineState* s) {
     if (g_tl == s) g_tl = 0;  // results still on the way are dropped
+    for (i32 k = 0; k < TL_KINDS; k++) InterlockedExchange64(&g_tl_wanted[k], 0);  // and queries not run yet
     job_drop(s->day_job);
     job_drop(s->search_job);
     job_drop(s->days_job);

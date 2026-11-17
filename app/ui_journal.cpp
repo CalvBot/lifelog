@@ -62,6 +62,7 @@ struct JournalState {
 
 static JournalState* g_journal;  // the window's journal while it is open
 static u64 g_journal_seq;
+static volatile LONG64 g_journal_wanted;  // for db_post_latest; 0 while the journal is closed
 
 struct JournalJob {
     u64 asked;
@@ -95,6 +96,7 @@ static void journal_show_day(JournalState* s, const char* day) {
 
 static void journal_free(JournalState* s) {
     if (g_journal == s) g_journal = 0;
+    InterlockedExchange64(&g_journal_wanted, 0);
     job_drop(s->job);
     s->job = 0;
     // Count again next time the window opens: lines will have come in.
@@ -604,9 +606,10 @@ static void journal_draw(App* app, JournalState* s, f32* next_frame_ms) {
         Job* job = job_new(journal_apply);
         JournalJob* j = PUSH(&job->arena, JournalJob);
         j->asked = s->asked = ++g_journal_seq;
+        InterlockedExchange64(&g_journal_wanted, (LONG64)j->asked);
         SET(j->day, str(s->day));
         job->data = j;
-        db_post(job, journal_run);
+        db_post_latest(job, journal_run, &g_journal_wanted, j->asked);
         SET(s->loaded_day, str(s->day));
         s->version = app->summary.version;
         s->loaded = true;

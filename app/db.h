@@ -22,6 +22,10 @@ typedef void DbRun(sqlite3* db, Job* job);  // `db` is null if the database coul
 void db_thread_start(App* app);
 void db_thread_stop();
 void db_post(Job* job, DbRun* run);
+// For a request a newer one replaces (the day shown, a search): when its turn comes it is dropped,
+// without running, unless *wanted is still `asked`. The asker sets *wanted to each new request's
+// number, or 0 when it wants none. `wanted` must outlive the request: a static.
+void db_post_latest(Job* job, DbRun* run, volatile LONG64* wanted, u64 asked);
 
 struct Line {
     i64 id;

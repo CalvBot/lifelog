@@ -249,6 +249,8 @@ struct DbTask {
     DbTask* next;
     Job* job;
     DbRun* run;
+    volatile LONG64* wanted;  // db_post_latest: dropped unless this is still `asked`
+    u64 asked;
 };
 
 static struct {
@@ -273,7 +275,8 @@ static DWORD WINAPI db_thread_main(void*) {
         while (t) {
             DbTask* next = t->next;
             Job* job = t->job;  // t is in the job's arena
-            if (stopping(app)) {
+            bool stale = t->wanted && (u64)InterlockedCompareExchange64(t->wanted, 0, 0) != t->asked;
+            if (stale || stopping(app)) {
                 job_drop(job);
             } else {
                 if (!db && !tried && app->storage.ready) {
@@ -317,11 +320,13 @@ void db_thread_stop() {
     g_dbt.thread = 0;
 }
 
-void db_post(Job* job, DbRun* run) {
+void db_post_latest(Job* job, DbRun* run, volatile LONG64* wanted, u64 asked) {
     CHECK(g_dbt.thread, "db_post after db_thread_start");
     DbTask* t = PUSH(&job->arena, DbTask);
     t->job = job;
     t->run = run;
+    t->wanted = wanted;
+    t->asked = asked;
     AcquireSRWLockExclusive(&g_dbt.lock);
     if (g_dbt.tail) g_dbt.tail->next = t;
     else g_dbt.head = t;
@@ -329,3 +334,5 @@ void db_post(Job* job, DbRun* run) {
     ReleaseSRWLockExclusive(&g_dbt.lock);
     SetEvent(g_dbt.wake);
 }
+
+void db_post(Job* job, DbRun* run) { db_post_latest(job, run, 0, 0); }
