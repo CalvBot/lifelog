@@ -7,7 +7,7 @@
 //   POST /transcription?mode=auto|always|paused     when the GPU work may run
 //   POST /setup?part=transcriber|summary    download and set up that AI (as Settings' "Set up")
 //   POST /clip?range=15m    write the clip file and put it on the clipboard
-//   POST /summary?do=now|later|skip|until[&day=][&at=]
+//   POST /summary?do=now|later|skip|until|pick[&day=][&at=]     pick opens the delay box
 //   POST /remind?do=yes|no|done|snooze&id=N        a reminder notification's buttons
 //   POST /show?tab=summary[&day=] | /popup?page=delay[&day=]   open the window
 //   POST /quit | /restart
@@ -329,7 +329,7 @@ static bool api_handle(App* app, ApiCall* c) {
         bool ok = false;
         for (i32 i = 0; i < COUNT(known); i++) ok |= str_eq(action, str(known[i]));
         if (!ok) {
-            answer_error(r, 400, "do must be now, later, until or skip");
+            answer_error(r, 400, "do must be now, later, until, skip or pick");
             return true;
         }
         Str result = summary_act(app, a, action.ptr, day.ptr, at.len ? at.ptr : 0);

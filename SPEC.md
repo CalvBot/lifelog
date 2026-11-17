@@ -337,7 +337,7 @@ lifelog check-ai
 ```
 
 HTTP on 127.0.0.1:47800: `/status`, `/pause`, `/resume`, `/toggle`, `/exclude`, `/include`, `/game`,
-`/not-game`, `/transcription`, `/clip`, `/summary`, `/remind`, `/show`, `/popup`, `/quit`, `/restart`.
+`/not-game`, `/transcription`, `/setup`, `/clip`, `/summary`, `/remind`, `/show`, `/popup`, `/quit`, `/restart`.
 Browsers can't call it (Host and Origin are checked).
 
 ## Install
