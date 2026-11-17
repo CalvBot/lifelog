@@ -424,6 +424,7 @@ static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
     }
     swprintf(path, MAX_PATH, L"%ls\\ggml-base.dll", dir);
     HMODULE base = GetModuleHandleW(path);
+    if (!base) base = GetModuleHandleW(L"ggml-base.dll");  // ggml.dll's import, by its plain name
     p_ggml_backend_dev_count = (decltype(p_ggml_backend_dev_count))GetProcAddress(ggml, "ggml_backend_dev_count");
     p_ggml_backend_dev_get = (decltype(p_ggml_backend_dev_get))GetProcAddress(ggml, "ggml_backend_dev_get");
     if (base) {
@@ -548,7 +549,11 @@ static u64 whisper_adapter(bool loaded, char* name, i32 cap) {
         if (!got || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
         u64 luid = (u64)(u32)desc.AdapterLuid.HighPart << 32 | desc.AdapterLuid.LowPart;
         u32 b, d, f;
-        if (pci && adapter_pci(desc.AdapterLuid, &b, &d, &f) && b == bus && d == device && f == function) by_pci = luid;
+        bool located = adapter_pci(desc.AdapterLuid, &b, &d, &f);
+        // A virtual adapter (seen with Parsec's display) can carry the real card's name but has
+        // no PCI address; its counters stay empty, so it is never the one to watch.
+        if (located && b == 0xFFFFFFFF) continue;
+        if (pci && located && b == bus && d == device && f == function) by_pci = luid;
         Mark m = mark(scratch());
         if (name[0] && str_eq_nocase(str_trim(narrow(scratch(), desc.Description)), str_trim(str(name)))) {
             named++;
@@ -564,7 +569,16 @@ static u64 whisper_adapter(bool loaded, char* name, i32 cap) {
 static void whisper_adapter_publish(App* app, bool loaded) {
     char name[256];
     u64 luid = whisper_adapter(loaded, name, sizeof(name));
-    if (!luid || (u64)atomic_get64(&app->worker.gpu_luid) == luid) return;
+    if (!luid) {
+        static bool said;
+        if (!said) {
+            said = true;
+            WARN("could not tell which GPU Whisper runs on (%s): the load on all of them counts",
+                 !p_ggml_backend_dev_type ? "ggml-base.dll not found" : name[0] ? name : "no GPU device");
+        }
+        return;
+    }
+    if ((u64)atomic_get64(&app->worker.gpu_luid) == luid) return;
     InterlockedExchange64(&app->worker.gpu_luid, (LONG64)luid);
     LOG("Whisper runs on %s: only its load and memory decide when transcription waits", name);
 }
