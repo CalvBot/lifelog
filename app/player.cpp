@@ -263,7 +263,7 @@ static DWORD WINAPI player_thread(void* p) {
     Job* job = job_new(player_done);
     PlayerDone* d = PUSH(&job->arena, PlayerDone);
     d->pl = pl;
-    sqlite3* db = db_open_read(settings(app));
+    sqlite3* db = db_open_path(settings(app), true);
     if (!db) snprintf(d->error, sizeof(d->error), "could not open the database");
     else player_run(pl, db, d->error, sizeof(d->error));
     sqlite3_close(db);

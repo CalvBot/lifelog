@@ -328,21 +328,6 @@ static void version_apply(App* app, Event*) {
     wake_window(app);
 }
 
-static sqlite3_stmt* sql(sqlite3* db, const char* text) {
-    sqlite3_stmt* st = 0;
-    if (sqlite3_prepare_v2(db, text, -1, &st, 0) != SQLITE_OK) {
-        ERR("summary query failed: %s (%s)", sqlite3_errmsg(db), text);
-        return 0;
-    }
-    return st;
-}
-
-static Str col_text(sqlite3_stmt* st, int i, Arena* a) {
-    const char* t = (const char*)sqlite3_column_text(st, i);
-    return str_copy(a, {t ? t : "", t ? sqlite3_column_bytes(st, i) : 0});
-}
-
-static void bind_str(sqlite3_stmt* st, int i, Str s) { sqlite3_bind_text(st, i, s.ptr ? s.ptr : "", (int)s.len, SQLITE_TRANSIENT); }
 
 // Runs a statement that changes rows; returns how many, or -1 on failure.
 static i32 sql_done(sqlite3* db, sqlite3_stmt* st) {
@@ -357,7 +342,7 @@ static i32 sql_done(sqlite3* db, sqlite3_stmt* st) {
 }
 
 static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* never) {
-    sqlite3_stmt* st = sql(db, "SELECT day, status, created_ts, reminders FROM summaries ORDER BY day DESC LIMIT 400");
+    sqlite3_stmt* st = prepare(db, "SELECT day, status, created_ts, reminders FROM summaries ORDER BY day DESC LIMIT 400");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         SummaryDay d = {};
         SET(d.day, str((const char*)sqlite3_column_text(st, 0)));
@@ -365,12 +350,12 @@ static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* ne
         d.created_ts = sqlite3_column_double(st, 2);
         Mark m = mark(scratch());
         Json r = {};
-        if (json_parse(scratch(), col_text(st, 3, scratch()), &r, 0, 0)) d.reminders = json_len(&r);
+        if (json_parse(scratch(), col_str(st, 3, scratch()), &r, 0, 0)) d.reminders = json_len(&r);
         rewind(m);
         list_push(days, d);
     }
     sqlite3_finalize(st);
-    st = sql(db, "SELECT id, topic FROM summary_never ORDER BY id");
+    st = prepare(db, "SELECT id, topic FROM summary_never ORDER BY id");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         NeverTopic t = {};
         t.id = sqlite3_column_int64(st, 0);
@@ -419,7 +404,7 @@ static void lists_refresh(App* app, sqlite3* db) {
 
 // 1 if `day` has a summary (or was skipped), 0 if not, -1 if the database could not say.
 static i32 status_of(sqlite3* db, const char* day) {
-    sqlite3_stmt* st = sql(db, "SELECT status FROM summaries WHERE day = ?1");
+    sqlite3_stmt* st = prepare(db, "SELECT status FROM summaries WHERE day = ?1");
     if (!st) return -1;
     bind_str(st, 1, str(day));
     int rc = sqlite3_step(st);
@@ -428,7 +413,7 @@ static i32 status_of(sqlite3* db, const char* day) {
 }
 
 static bool save(sqlite3* db, const char* day, const char* status, const char* model, Str summary, Str reminders) {
-    sqlite3_stmt* st = sql(db, "INSERT OR REPLACE INTO summaries (day, status, created_ts, model, summary, reminders) "
+    sqlite3_stmt* st = prepare(db, "INSERT OR REPLACE INTO summaries (day, status, created_ts, model, summary, reminders) "
                                "VALUES (?1, ?2, ?3, ?4, ?5, ?6)");
     if (!st) return false;
     bind_str(st, 1, str(day));
@@ -442,7 +427,7 @@ static bool save(sqlite3* db, const char* day, const char* status, const char* m
 
 // The alert for `day`'s reminder `text`: false if there is none.
 static bool alert_find(sqlite3* db, Arena* a, const char* day, Str text, i64* id, f64* due, Str* state) {
-    sqlite3_stmt* st = sql(db, "SELECT id, due_ts, state FROM alerts WHERE day = ?1 AND text = ?2");
+    sqlite3_stmt* st = prepare(db, "SELECT id, due_ts, state FROM alerts WHERE day = ?1 AND text = ?2");
     if (!st) return false;
     bind_str(st, 1, str(day));
     bind_str(st, 2, text);
@@ -450,7 +435,7 @@ static bool alert_find(sqlite3* db, Arena* a, const char* day, Str text, i64* id
     if (found) {
         *id = sqlite3_column_int64(st, 0);
         *due = sqlite3_column_double(st, 1);
-        *state = col_text(st, 2, a);
+        *state = col_str(st, 2, a);
     }
     sqlite3_finalize(st);
     return found;
@@ -468,16 +453,16 @@ struct SavedRow {
 
 static SavedRow saved_row(sqlite3* db, Arena* a, const char* day) {
     SavedRow row = {};
-    sqlite3_stmt* st = sql(db, "SELECT status, created_ts, model, summary, reminders FROM summaries WHERE day = ?1");
+    sqlite3_stmt* st = prepare(db, "SELECT status, created_ts, model, summary, reminders FROM summaries WHERE day = ?1");
     if (!st) return row;
     bind_str(st, 1, str(day));
     if (sqlite3_step(st) == SQLITE_ROW) {
         row.found = true;
-        row.status = col_text(st, 0, a);
+        row.status = col_str(st, 0, a);
         row.created_ts = sqlite3_column_double(st, 1);
-        row.model = col_text(st, 2, a);
-        row.summary = col_text(st, 3, a);
-        if (!json_parse(a, col_text(st, 4, a), &row.reminders, 0, 0) || row.reminders.type != JSON_ARRAY) {
+        row.model = col_str(st, 2, a);
+        row.summary = col_str(st, 3, a);
+        if (!json_parse(a, col_str(st, 4, a), &row.reminders, 0, 0) || row.reminders.type != JSON_ARRAY) {
             row.reminders = {};
             row.reminders.type = JSON_ARRAY;
         }
@@ -577,7 +562,7 @@ static void name_lines(AppLabels* labels, Arena* a, Slice<SLine> lines) {
 
 static Slice<SLine> day_lines(sqlite3* db, Arena* a, f64 from, f64 to) {
     Slice<SLine> out = {};
-    sqlite3_stmt* st = sql(db, "SELECT start_ts, end_ts, source, speaker, title, text FROM segments "
+    sqlite3_stmt* st = prepare(db, "SELECT start_ts, end_ts, source, speaker, title, text FROM segments "
                                "WHERE end_ts >= ?1 AND start_ts <= ?2 ORDER BY start_ts, id LIMIT 20000");
     if (!st) return out;
     sqlite3_bind_double(st, 1, from);
@@ -587,10 +572,10 @@ static Slice<SLine> day_lines(sqlite3* db, Arena* a, f64 from, f64 to) {
         SLine l = {};
         l.start_ts = sqlite3_column_double(st, 0);
         l.end_ts = sqlite3_column_double(st, 1);
-        l.source = col_text(st, 2, a);
-        l.speaker = col_text(st, 3, a);
-        l.title = col_text(st, 4, a);
-        l.text = col_text(st, 5, a);
+        l.source = col_str(st, 2, a);
+        l.speaker = col_str(st, 3, a);
+        l.title = col_str(st, 4, a);
+        l.text = col_str(st, 5, a);
         list_push(&list, l);
     }
     sqlite3_finalize(st);
@@ -606,7 +591,7 @@ static bool talk_secs(sqlite3* db, const char* day, f64* mine, f64* apps) {
     *mine = *apps = 0;
     f64 from, to;
     day_bounds(day, &from, &to);
-    sqlite3_stmt* st = sql(db, "SELECT COALESCE(SUM(CASE WHEN source = 'mic' THEN end_ts - start_ts END), 0), "
+    sqlite3_stmt* st = prepare(db, "SELECT COALESCE(SUM(CASE WHEN source = 'mic' THEN end_ts - start_ts END), 0), "
                                "COALESCE(SUM(CASE WHEN source <> 'mic' THEN end_ts - start_ts END), 0) "
                                "FROM segments WHERE start_ts >= ?1 AND start_ts < ?2");
     if (!st) return false;
@@ -839,15 +824,15 @@ static Str history(sqlite3* db, Arena* a, const char* day, Str* never, i32 never
     if (!parse_day(day, &y, &m, &d)) return {"", 0};
     char from[11];
     day_text(day_plus(y, m, d, -30), from);
-    sqlite3_stmt* st = sql(db, "SELECT day, summary FROM summaries WHERE status = 'done' AND day < ?1 AND day >= ?2 ORDER BY day DESC");
+    sqlite3_stmt* st = prepare(db, "SELECT day, summary FROM summaries WHERE status = 'done' AND day < ?1 AND day >= ?2 ORDER BY day DESC");
     if (!st) return {"", 0};
     bind_str(st, 1, str(day));
     bind_str(st, 2, str(from));
     Buf out = {};
     for (i32 i = 0; sqlite3_step(st) == SQLITE_ROW; i++) {
         Mark mk = mark(scratch());
-        Str row_day = col_text(st, 0, scratch());
-        Str text = strip_never(scratch(), col_text(st, 1, scratch()), never, never_count);
+        Str row_day = col_str(st, 0, scratch());
+        Str text = strip_never(scratch(), col_str(st, 1, scratch()), never, never_count);
         // Bullets only (no labels or "To remember" heading), one per line.
         Buf line = {};
         Str rest = text, l = {};
@@ -1074,7 +1059,7 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         rewind(m);
         if (known) continue;
         Str said = str_trim(json_text(json_get(r, "said")));
-        sqlite3_stmt* st = sql(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'asked')");
+        sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'asked')");
         if (!st) return;
         bind_str(st, 1, str(day));
         bind_str(st, 2, text);
@@ -1102,7 +1087,7 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
 
 // Shows the reminders that have come due. On the summary thread.
 static void alerts_show_due(App* app, sqlite3* db) {
-    sqlite3_stmt* st = sql(db, "SELECT id, day, text, said, said_time FROM alerts WHERE state = 'set' AND due_ts <= ?1");
+    sqlite3_stmt* st = prepare(db, "SELECT id, day, text, said, said_time FROM alerts WHERE state = 'set' AND due_ts <= ?1");
     if (!st) return;
     sqlite3_bind_double(st, 1, now_ts());
     struct Due {
@@ -1116,15 +1101,15 @@ static void alerts_show_due(App* app, sqlite3* db) {
         Due d = {};
         d.id = sqlite3_column_int64(st, 0);
         SET(d.day, str((const char*)sqlite3_column_text(st, 1)));
-        d.text = col_text(st, 2, scratch());
-        d.said = col_text(st, 3, scratch());
-        d.time = col_text(st, 4, scratch());
+        d.text = col_str(st, 2, scratch());
+        d.said = col_str(st, 3, scratch());
+        d.time = col_str(st, 4, scratch());
         list_push(&due, d);
     }
     sqlite3_finalize(st);
     for (i32 i = 0; i < due.count; i++) {
         Due* d = &due.items[i];
-        sqlite3_stmt* up = sql(db, "UPDATE alerts SET state = 'shown' WHERE id = ?1");
+        sqlite3_stmt* up = prepare(db, "UPDATE alerts SET state = 'shown' WHERE id = ?1");
         if (!up) break;
         sqlite3_bind_int64(up, 1, d->id);
         if (sql_done(db, up) < 0) break;
@@ -1206,7 +1191,7 @@ static void edit_answer(sqlite3* db, SummaryEdit* e) {
         WARN("reminder answer must be yes, no, done or snooze, not \"%s\"", e->action);
         return;
     }
-    sqlite3_stmt* st = sql(db, text);
+    sqlite3_stmt* st = prepare(db, text);
     if (st) {
         sqlite3_bind_int64(st, 1, e->id);
         if (strcmp(e->action, "snooze") == 0) sqlite3_bind_double(st, 2, now_ts() + 3600.0);
@@ -1239,7 +1224,7 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
         bool known = alert_find(db, a, day, text, &id, &old_due, &state);
         if (!e->on) {
             if (known) {
-                sqlite3_stmt* st = sql(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
+                sqlite3_stmt* st = prepare(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
                 if (st) sqlite3_bind_int64(st, 1, id);
                 sql_done(db, st);
             }
@@ -1249,13 +1234,13 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
             if (due <= now_ts()) due = next_morning();
             sqlite3_stmt* st = 0;
             if (known) {
-                st = sql(db, "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1");
+                st = prepare(db, "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1");
                 if (st) {
                     sqlite3_bind_int64(st, 1, id);
                     sqlite3_bind_double(st, 2, due);
                 }
             } else {
-                st = sql(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'set')");
+                st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'set')");
                 if (st) {
                     bind_str(st, 1, str(day));
                     bind_str(st, 2, text);
@@ -1304,7 +1289,7 @@ static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bu
         memmove(&list->items[reminder], &list->items[reminder + 1], sizeof(Json) * (list->count - reminder - 1));
         list->count--;
     }
-    sqlite3_stmt* st = sql(db, "UPDATE summaries SET summary = ?1, reminders = ?2 WHERE day = ?3");
+    sqlite3_stmt* st = prepare(db, "UPDATE summaries SET summary = ?1, reminders = ?2 WHERE day = ?3");
     if (st) {
         bind_str(st, 1, text);
         bind_str(st, 2, json_string_of(a, list));
@@ -1329,7 +1314,7 @@ static void edit_run(sqlite3* db, Job* job) {
     case EDIT_REMIND: edit_remind(db, a, e); break;
     case EDIT_DISMISS: edit_dismiss(e->app, db, a, e, e->text, e->n); break;
     case EDIT_NEVER_ADD: {
-        sqlite3_stmt* st = sql(db, "INSERT INTO summary_never (topic, created_ts) VALUES (?1, ?2)");
+        sqlite3_stmt* st = prepare(db, "INSERT INTO summary_never (topic, created_ts) VALUES (?1, ?2)");
         if (st) {
             bind_str(st, 1, e->text);
             sqlite3_bind_double(st, 2, now_ts());
@@ -1349,7 +1334,7 @@ static void edit_run(sqlite3* db, Job* job) {
         break;
     }
     case EDIT_NEVER_REMOVE: {
-        sqlite3_stmt* st = sql(db, "DELETE FROM summary_never WHERE id = ?1");
+        sqlite3_stmt* st = prepare(db, "DELETE FROM summary_never WHERE id = ?1");
         if (st) sqlite3_bind_int64(st, 1, e->id);
         if (sql_done(db, st) >= 0) edit_lists(db, e);
         break;
@@ -1549,8 +1534,8 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
     Str flagged = flags_material(a, flags);
     List<Str> never = {};
     {
-        sqlite3_stmt* st = sql(db, "SELECT topic FROM summary_never ORDER BY id");
-        while (st && sqlite3_step(st) == SQLITE_ROW) list_push(&never, col_text(st, 0, a));
+        sqlite3_stmt* st = prepare(db, "SELECT topic FROM summary_never ORDER BY id");
+        while (st && sqlite3_step(st) == SQLITE_ROW) list_push(&never, col_str(st, 0, a));
         sqlite3_finalize(st);
     }
     List<Str> never_low = {};

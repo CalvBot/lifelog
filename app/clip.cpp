@@ -45,25 +45,6 @@ bool clip_range(Str range, f64 now, f64* from, char* label, i32 label_cap) {
     return ok;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The database, read only: copying and playback never write.
-
-static sqlite3* db_open_read(const Config* cfg) {
-    wchar_t path[MAX_PATH];
-    db_path(cfg, path);
-    Mark m = mark(scratch());
-    Str utf8 = narrow(scratch(), path);
-    sqlite3* db = 0;
-    int rc = sqlite3_open_v2(utf8.ptr, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, 0);
-    rewind(m);
-    if (rc != SQLITE_OK) {
-        ERR("opening the database to read: %s", db ? sqlite3_errmsg(db) : "out of memory");
-        sqlite3_close(db);
-        return 0;
-    }
-    sqlite3_busy_timeout(db, 5000);
-    return db;
-}
 
 // A worker clip's path under the audio folder. False if it would leave the folder (the worker
 // writes these, but a path from the database is never followed out of it).
@@ -450,7 +431,7 @@ ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Nam
         snprintf(r.error, sizeof(r.error), "the range must end after it starts");
         return r;
     }
-    sqlite3* db = db_open_read(cfg);
+    sqlite3* db = db_open_path(cfg, true);
     if (!db) {
         snprintf(r.error, sizeof(r.error), "could not open the database");
         return r;

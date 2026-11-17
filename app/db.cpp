@@ -12,21 +12,24 @@ static Str schema_text(Arena* a) {
     return s;
 }
 
-static sqlite3* open_path(const Config* cfg) {
+// Opens the database for reading and writing (made if missing), or `read_only` for copying and
+// playback, which never write.
+static sqlite3* db_open_path(const Config* cfg, bool read_only) {
     wchar_t path[MAX_PATH];
     db_path(cfg, path);
     Mark m = mark(scratch());
     Str utf8 = narrow(scratch(), path);
     sqlite3* db = 0;
-    int rc = sqlite3_open_v2(utf8.ptr, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, 0);
+    int flags = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    int rc = sqlite3_open_v2(utf8.ptr, &db, flags | SQLITE_OPEN_NOMUTEX, 0);
     rewind(m);
     if (rc != SQLITE_OK) {
-        ERR("opening the database: %s", db ? sqlite3_errmsg(db) : "out of memory");
+        ERR("opening the database%s: %s", read_only ? " to read" : "", db ? sqlite3_errmsg(db) : "out of memory");
         sqlite3_close(db);
         return 0;
     }
     sqlite3_busy_timeout(db, 5000);
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL", 0, 0, 0);
+    if (!read_only) sqlite3_exec(db, "PRAGMA journal_mode = WAL", 0, 0, 0);
     return db;
 }
 
@@ -49,7 +52,7 @@ bool db_init(Config* cfg) {
     SHCreateDirectoryExW(0, dir, 0);
     rewind(m);
 
-    sqlite3* db = open_path(cfg);
+    sqlite3* db = db_open_path(cfg, false);
     if (!db) return false;
     Str schema = schema_text(scratch());
     bool ok = schema.ptr != 0;
@@ -70,13 +73,23 @@ bool db_init(Config* cfg) {
 }
 
 sqlite3* db_open(App* app) {
-    return open_path(settings(app));
+    return db_open_path(settings(app), false);
 }
 
 // A column as a Str copied into `a` ("" for NULL).
 static Str col_str(sqlite3_stmt* st, int i, Arena* a) {
     const char* t = (const char*)sqlite3_column_text(st, i);
     return str_copy(a, {t ? t : "", t ? sqlite3_column_bytes(st, i) : 0});
+}
+
+// Binds `s` as text, "" when it is empty: for NOT NULL columns.
+static void bind_str(sqlite3_stmt* st, int i, Str s) { sqlite3_bind_text(st, i, s.ptr ? s.ptr : "", (int)s.len, SQLITE_TRANSIENT); }
+
+// Binds `s` as text, or NULL when it is empty: for columns where NULL means "none" (a line's
+// audio, exe or title).
+static void bind_opt(sqlite3_stmt* st, int i, Str s) {
+    if (s.len) sqlite3_bind_text(st, i, s.ptr, (int)s.len, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(st, i);
 }
 
 #define LINE_COLUMNS "s.id, s.start_ts, s.end_ts, s.source, s.speaker, s.title, s.text, s.audio IS NOT NULL"

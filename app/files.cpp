@@ -466,7 +466,7 @@ struct OpenJob {
 };
 
 static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error, i32 cap) {
-    sqlite3* db = db_open_read(cfg);
+    sqlite3* db = db_open_path(cfg, true);
     if (!db) {
         snprintf(error, cap, "could not open the database");
         return;

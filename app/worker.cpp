@@ -512,10 +512,6 @@ static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* m
     }
 }
 
-static void bind_text(sqlite3_stmt* st, int i, Str s) {
-    if (s.len) sqlite3_bind_text(st, i, s.ptr, (int)s.len, SQLITE_TRANSIENT);
-    else sqlite3_bind_null(st, i);
-}
 
 // Transcribes spool\<name> (with `ctx`, or your server `t` when ctx is null) and saves its lines.
 // SENT_OK also when the file was set aside; on SENT_RETRY and SENT_ABORTED the file stays where
@@ -578,15 +574,15 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
             Heard* h = &heard.items[i];
             sqlite3_bind_double(st, 1, start_ts + h->start);
             sqlite3_bind_double(st, 2, start_ts + h->end);
-            bind_text(st, 3, source);
-            bind_text(st, 4, speaker);
-            bind_text(st, 5, exe);
+            bind_str(st, 3, source);
+            bind_str(st, 4, speaker);
+            bind_opt(st, 5, exe);
             if (pid->type == JSON_NUMBER) sqlite3_bind_int64(st, 6, (i64)pid->num);
             else sqlite3_bind_null(st, 6);
-            bind_text(st, 7, json_text(json_get(&meta, "title")));
-            bind_text(st, 8, json_text(json_get(&meta, "device")));
-            bind_text(st, 9, h->text);
-            bind_text(st, 10, kept);
+            bind_opt(st, 7, json_text(json_get(&meta, "title")));
+            bind_opt(st, 8, json_text(json_get(&meta, "device")));
+            bind_str(st, 9, h->text);
+            bind_opt(st, 10, kept);
             sqlite3_bind_double(st, 11, h->start);
             saved = sqlite3_step(st) == SQLITE_DONE;
             sqlite3_reset(st);
