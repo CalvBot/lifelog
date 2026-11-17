@@ -84,8 +84,10 @@ struct Summary {
     char phase[160];      // what it is doing: "", "asks at 21:00", "writing: notes for 3 of 5 parts", ...
     bool writing;
     char writing_day[11];
-    List<SummaryDay> days;      // every day with a summary, newest first
+    List<SummaryDay> days;      // every day with a summary, newest first; read once at start, then
+                                // kept up to date from what each change reports
     List<NeverTopic> never;     // topics never to mention
+    bool lists_ready;           // `days` and `never` have been read
     u64 version;                // bumped when a summary, a reminder or the never list changes
     // The summary thread's own:
     f64 snooze_ts;              // no asking before this (after "in an hour" or "delay until")
@@ -99,7 +101,31 @@ struct Summary {
     SRWLOCK options_lock;
     SummaryOptions options;
     HANDLE wake;                // auto-reset: the summary's clock looks again
+    // The earliest moment a set reminder is due, in unix milliseconds (INT64_MAX: none). The
+    // database thread lowers it when it sets one; the clock opens the database only then.
+    volatile LONG64 next_alert_ms;
 };
+
+// What summary_act did.
+enum SummaryActed : u8 {
+    ACTED_WRITING,
+    ACTED_ALREADY_WRITING,
+    ACTED_LATER,      // asks again in an hour (`at`)
+    ACTED_UNTIL,      // asks again at `at`
+    ACTED_SKIPPED,    // saved on the database thread; the window says if that fails
+    ACTED_PICKING,    // the delay box is open
+    // Failures:
+    ACTED_BAD_DAY,
+    ACTED_BAD_TIME,
+    ACTED_BAD_ACTION,
+};
+struct SummaryActResult {
+    SummaryActed what;
+    f64 at;  // ACTED_LATER, ACTED_UNTIL: when it asks again
+};
+inline bool acted_failed(SummaryActResult r) { return r.what >= ACTED_BAD_DAY; }
+// For a message: "writing", "asking again at 23:30", "skipped", or what was wrong.
+const char* summary_acted_text(SummaryActResult r, char* out, i32 cap);
 
 void summary_start(App* app);
 // Hands the summary threads the settings in App.config now, and wakes the clock. The setters
@@ -111,8 +137,7 @@ SummaryOptions summary_options(App* app);
 
 // The notification's and the window's buttons. `action`: "now", "later" (in an hour), "until"
 // (with `at`, "HH:MM"), "skip", "pick" (opens the delay box). `day` defaults to today.
-// Returns what happened, for a message: "writing", "at 23:30", "skipped".
-Str summary_act(App* app, Arena* a, const char* action, const char* day, const char* at);
+SummaryActResult summary_act(App* app, const char* action, const char* day, const char* at);
 
 void summary_set_enabled(App* app, bool on);
 void summary_set_ask_at(App* app, Str hhmm);
@@ -138,8 +163,9 @@ void summary_remove_never(App* app, i64 id);
 // The journal's bell: notify about reminder `n` of `day` when it is due (or tomorrow at 09:00).
 // The window then says when it will show ("tomorrow at 09:00").
 //
-// These change the database on its thread (db_post) and return at once; the window shows the
-// result when it comes. The main thread.
+// These change the database on its thread (db_post) and return at once. Each reports what it
+// did (the row, topic or due time it changed); the main thread updates Summary's lists from that
+// and the window says what happened. The main thread.
 void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet = false);
 // A reminder notification's buttons: "yes", "no", "done", "snooze".
 void reminder_answer(App* app, i64 id, const char* action);

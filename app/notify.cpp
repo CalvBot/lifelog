@@ -290,8 +290,8 @@ bool notify_open_link(App* app, Str link) {
         ui_popup(app, POPUP_DELAY, day);
     } else if (str_eq(path, str("summary/now")) || str_eq(path, str("summary/later")) || str_eq(path, str("summary/skip"))) {
         Str action = str_copy(scratch(), str_sub(path, 8));
-        Str said = summary_act(app, scratch(), action.ptr, day, 0);
-        LOG("summary link %s: %s", action.ptr, said.ptr);
+        char text[64];
+        LOG("summary link %s: %s", action.ptr, summary_acted_text(summary_act(app, action.ptr, day, 0), text, sizeof(text)));
     } else if (str_eq(path, str("remind/yes")) || str_eq(path, str("remind/no")) || str_eq(path, str("remind/done")) ||
                str_eq(path, str("remind/snooze"))) {
         Str action = str_copy(scratch(), str_sub(path, 7));

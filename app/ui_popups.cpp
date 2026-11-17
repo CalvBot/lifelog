@@ -328,16 +328,19 @@ static bool delay_draw(App* app, PopupState* s) {
     ImGui::Dummy(ImVec2(0, px(4)));
 
     if (ImGui::Button(label(ICON_CHECK, "Delay")) || enter) {
-        Str r = summary_act(app, scratch(), "until", day, str_trim(str(s->at)).ptr);
-        bool ok = str_starts(r, str("asking"));
-        popup_say(s, ok, ok ? tmp("OK, %.*s", (int)r.len, r.ptr) : tmp("%.*s", (int)r.len, r.ptr));
+        SummaryActResult r = summary_act(app, "until", day, str_trim(str(s->at)).ptr);
+        char text[64];
+        const char* said = summary_acted_text(r, text, sizeof(text));
+        bool ok = r.what == ACTED_UNTIL;
+        popup_say(s, ok, ok ? tmp("OK, %s", said) : said);
         if (ok) s->close_ts = now_ts() + 0.9;
     }
     ImGui::SameLine();
     if (ImGui::Button("Skip the day")) {
-        Str r = summary_act(app, scratch(), "skip", day, 0);
-        bool ok = str_eq(r, str("skipped"));
-        popup_say(s, ok, ok ? "OK, skipped" : tmp("%.*s", (int)r.len, r.ptr));
+        SummaryActResult r = summary_act(app, "skip", day, 0);
+        char text[64];
+        bool ok = r.what == ACTED_SKIPPED;
+        popup_say(s, ok, ok ? "OK, skipped" : summary_acted_text(r, text, sizeof(text)));
         if (ok) s->close_ts = now_ts() + 0.9;
     }
     ImGui::SameLine();

@@ -407,9 +407,10 @@ static void never_list(App* app) {
 }
 
 static void write_now(App* app, const char* day, const char* said) {
-    Str r = summary_act(app, scratch(), "now", day, 0);
-    if (str_eq(r, str("writing"))) ui_say(app, "%s", said);
-    else ui_say(app, "Summary: %.*s", (int)r.len, r.ptr);
+    SummaryActResult r = summary_act(app, "now", day, 0);
+    char text[64];
+    if (r.what == ACTED_WRITING) ui_say(app, "%s", said);
+    else ui_say(app, "Summary: %s", summary_acted_text(r, text, sizeof(text)));
 }
 
 static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* next_frame_ms) {
@@ -434,8 +435,8 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             if (!sum->found) {
                 ImGui::SameLine();
                 if (ImGui::Button("Skip this day")) {
-                    Str r = summary_act(app, scratch(), "skip", day, 0);
-                    ui_say(app, "Summary: %.*s", (int)r.len, r.ptr);
+                    char text[64];
+                    ui_say(app, "Summary: %s", summary_acted_text(summary_act(app, "skip", day, 0), text, sizeof(text)));
                 }
             }
         }

@@ -341,23 +341,22 @@ static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* ne
     sqlite3_finalize(st);
 }
 
-static void lists_publish(App* app, List<SummaryDay> days, List<NeverTopic> never) {
-    list_free(&app->summary.days);
-    list_free(&app->summary.never);
-    app->summary.days = days;
-    app->summary.never = never;
-    app->summary.version++;
-    wake_window(app);
-}
-
 struct ListsRead {
     List<SummaryDay> days;
     List<NeverTopic> never;
 };
 
+// At start: the lists are the main thread's now.
 static void lists_apply(App* app, Job* job) {
     ListsRead* r = (ListsRead*)job->data;
-    lists_publish(app, r->days, r->never);  // the lists are the main thread's now
+    Summary* s = &app->summary;
+    list_free(&s->days);
+    list_free(&s->never);
+    s->days = r->days;
+    s->never = r->never;
+    s->lists_ready = true;
+    s->version++;
+    wake_window(app);
 }
 
 // At start, on the database thread.
@@ -366,35 +365,60 @@ static void lists_run(sqlite3* db, Job* job) {
     if (db) lists_read(db, &r->days, &r->never);
 }
 
-// From the summary threads: reads them and posts them to the main thread.
-static void lists_refresh(App* app, sqlite3* db) {
-    Job* job = job_new(lists_apply);
-    ListsRead* r = PUSH(&job->arena, ListsRead);
-    lists_read(db, &r->days, &r->never);
-    job->data = r;
-    job_post(app, job);
+// The main thread: a day's row as a change saved it, put in Summary.days (newest first).
+static void day_put(App* app, const SummaryDay* row) {
+    List<SummaryDay>* days = &app->summary.days;
+    for (i32 i = 0; i < days->count; i++) {
+        if (strcmp(days->items[i].day, row->day) == 0) {
+            days->items[i] = *row;
+            return;
+        }
+    }
+    list_push(days, *row);
+    for (i32 i = days->count - 1; i > 0 && strcmp(days->items[i - 1].day, days->items[i].day) < 0; i--) {
+        SummaryDay t = days->items[i - 1];
+        days->items[i - 1] = days->items[i];
+        days->items[i] = t;
+    }
+}
+
+static const SummaryDay* day_find(App* app, const char* day) {
+    for (i32 i = 0; i < app->summary.days.count; i++)
+        if (strcmp(app->summary.days.items[i].day, day) == 0) return &app->summary.days.items[i];
+    return 0;
+}
+
+static SummaryDay day_row(const char* day, const char* status, f64 created_ts, i32 reminders) {
+    SummaryDay d = {};
+    SET(d.day, str(day));
+    SET(d.status, str(status));
+    d.created_ts = created_ts;
+    d.reminders = reminders;
+    return d;
+}
+
+// Any thread, after a reminder is set to show at `due`: the clock wakes for it then.
+static void alert_due_at(App* app, f64 due) {
+    volatile LONG64* next = &app->summary.next_alert_ms;
+    LONG64 ms = (LONG64)(due * 1000.0), old = InterlockedCompareExchange64(next, 0, 0);
+    while (ms < old) {
+        LONG64 was = InterlockedCompareExchange64(next, ms, old);
+        if (was == old) break;
+        old = was;
+    }
+    if (app->summary.wake) SetEvent(app->summary.wake);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Storage
 
-// 1 if `day` has a summary (or was skipped), 0 if not, -1 if the database could not say.
-static i32 status_of(sqlite3* db, const char* day) {
-    sqlite3_stmt* st = prepare(db, "SELECT status FROM summaries WHERE day = ?1");
-    if (!st) return -1;
-    bind_str(st, 1, str(day));
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    return rc == SQLITE_ROW ? 1 : rc == SQLITE_DONE ? 0 : -1;
-}
-
-static bool save(sqlite3* db, const char* day, const char* status, const char* model, Str summary, Str reminders) {
+static bool save(sqlite3* db, const char* day, const char* status, f64 ts, const char* model, Str summary, Str reminders) {
     sqlite3_stmt* st = prepare(db, "INSERT OR REPLACE INTO summaries (day, status, created_ts, model, summary, reminders) "
                                "VALUES (?1, ?2, ?3, ?4, ?5, ?6)");
     if (!st) return false;
     bind_str(st, 1, str(day));
     bind_str(st, 2, str(status));
-    sqlite3_bind_double(st, 3, now_ts());
+    sqlite3_bind_double(st, 3, ts);
     if (model) bind_str(st, 4, str(model));
     if (summary.ptr) bind_str(st, 5, summary);
     bind_str(st, 6, reminders);
@@ -1060,7 +1084,8 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
     }
 }
 
-// Shows the reminders that have come due. On the summary thread.
+// Shows the reminders that have come due. On the summary thread, when Summary.next_alert_ms
+// has come.
 static void alerts_show_due(App* app, sqlite3* db) {
     sqlite3_stmt* st = prepare(db, "SELECT id, day, text, said, said_time FROM alerts WHERE state = 'set' AND due_ts <= ?1");
     if (!st) return;
@@ -1113,9 +1138,44 @@ static void alerts_show_due(App* app, sqlite3* db) {
     if (any) event_send(app, version_apply);
 }
 
+// The clock, when a reminder is due: opens the database, shows what has come due and reads when
+// the next one is. A reminder set meanwhile lowers next_alert_ms itself (alert_due_at), so it is
+// cleared before the read, not after.
+static void alerts_check(App* app) {
+    InterlockedExchange64(&app->summary.next_alert_ms, INT64_MAX);
+    sqlite3* db = db_open(app);
+    if (!db) {
+        alert_due_at(app, now_ts() + 60);  // look again in a minute
+        return;
+    }
+    alerts_show_due(app, db);
+    sqlite3_stmt* st = prepare(db, "SELECT MIN(due_ts) FROM alerts WHERE state = 'set'");
+    if (st && sqlite3_step(st) == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
+        f64 next = sqlite3_column_double(st, 0);
+        LONG64 ms = (LONG64)(next * 1000.0), old = InterlockedCompareExchange64(&app->summary.next_alert_ms, 0, 0);
+        while (ms < old) {
+            LONG64 was = InterlockedCompareExchange64(&app->summary.next_alert_ms, ms, old);
+            if (was == old) break;
+            old = was;
+        }
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The window's changes: the database thread makes them (db_post), the main thread shows what
 // came of them.
+
+enum EditOutcome : u8 {
+    EDIT_DONE,
+    EDIT_NO_DB,         // the database could not be opened
+    EDIT_FAILED,        // a statement failed (it is in the log)
+    EDIT_NO_DAY,        // no summary for that day
+    EDIT_NO_REMINDER,
+    EDIT_BAD_DAY,
+    EDIT_BAD_ACTION,
+};
 
 enum EditKind : u8 {
     EDIT_ANSWER,        // a reminder notification's button
@@ -1137,24 +1197,14 @@ struct SummaryEdit {
     char action[16];  // EDIT_ANSWER
     Str text;         // EDIT_DISMISS: the bullet; EDIT_NEVER_ADD: the topic
     Str bullet;       // EDIT_NEVER_ADD: the point to take out too
-    // What came of it.
-    char say[200];    // shown at the bottom of the window, if anything
+    // What came of it, for the main thread (edit_apply).
+    EditOutcome outcome;
     bool changed;     // the stored summaries changed: Summary.version
-    bool lists;       // `read` holds the lists read again
-    ListsRead read;
+    bool has_row;     // `row` is the day as now saved (a dismiss, a skip)
+    SummaryDay row;
+    NeverTopic topic; // EDIT_NEVER_ADD: the topic as saved, with its id
+    f64 due;          // EDIT_REMIND, turned on: when it shows
 };
-
-static void edit_say(SummaryEdit* e, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(e->say, sizeof(e->say), fmt, args);
-    va_end(args);
-}
-
-static void edit_lists(sqlite3* db, SummaryEdit* e) {
-    lists_read(db, &e->read.days, &e->read.never);
-    e->lists = true;
-}
 
 static void edit_answer(sqlite3* db, SummaryEdit* e) {
     const char* text = 0;
@@ -1164,6 +1214,7 @@ static void edit_answer(sqlite3* db, SummaryEdit* e) {
     else if (strcmp(e->action, "snooze") == 0) text = "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1";
     if (!text) {
         WARN("reminder answer must be yes, no, done or snooze, not \"%s\"", e->action);
+        e->outcome = EDIT_BAD_ACTION;
         return;
     }
     sqlite3_stmt* st = prepare(db, text);
@@ -1172,10 +1223,21 @@ static void edit_answer(sqlite3* db, SummaryEdit* e) {
         if (strcmp(e->action, "snooze") == 0) sqlite3_bind_double(st, 2, now_ts() + 3600.0);
     }
     i32 changed = sql_done(db, st);
-    if (changed == 0) WARN("no reminder %lld", e->id);
+    if (changed < 0) e->outcome = EDIT_FAILED;
+    if (changed == 0) {
+        WARN("no reminder %lld", e->id);
+        e->outcome = EDIT_NO_REMINDER;
+    }
     if (changed > 0) {
         LOG("reminder %lld: %s", e->id, e->action);
         e->changed = true;
+        if (strcmp(e->action, "yes") == 0 || strcmp(e->action, "snooze") == 0) {
+            // It shows when due: the clock wakes then.
+            sqlite3_stmt* q = prepare(db, "SELECT due_ts FROM alerts WHERE id = ?1");
+            if (q) sqlite3_bind_int64(q, 1, e->id);
+            if (q && sqlite3_step(q) == SQLITE_ROW) alert_due_at(e->app, sqlite3_column_double(q, 0));
+            sqlite3_finalize(q);
+        }
     }
 }
 
@@ -1185,11 +1247,11 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
     SavedRow row = saved_row(db, a, day);
     i32 y, mo, d;
     if (!row.found) {
-        edit_say(e, "No summary for that day");
+        e->outcome = EDIT_NO_DAY;
     } else if (n < 0 || n >= row.reminders.count) {
-        edit_say(e, "No such reminder");
+        e->outcome = EDIT_NO_REMINDER;
     } else if (!parse_day(day, &y, &mo, &d)) {
-        edit_say(e, "Bad day");
+        e->outcome = EDIT_BAD_DAY;
     } else {
         const Json* r = &row.reminders.items[n];
         Str text = str_trim(json_text(json_get(r, "text")));
@@ -1201,9 +1263,8 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
             if (known) {
                 sqlite3_stmt* st = prepare(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
                 if (st) sqlite3_bind_int64(st, 1, id);
-                sql_done(db, st);
+                if (sql_done(db, st) < 0) e->outcome = EDIT_FAILED;
             }
-            edit_say(e, "Reminder turned off");
         } else {
             f64 due = due_of(day, r);
             if (due <= now_ts()) due = next_morning();
@@ -1225,8 +1286,10 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
                 }
             }
             if (sql_done(db, st) >= 0) {
-                Str when = when_text(a, due);
-                edit_say(e, "I'll remind you %.*s", (int)when.len, when.ptr);
+                e->due = due;
+                alert_due_at(e->app, due);
+            } else {
+                e->outcome = EDIT_FAILED;
             }
         }
         e->changed = true;
@@ -1237,7 +1300,7 @@ static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bu
     const char* day = e->day;
     SavedRow row = saved_row(db, a, day);
     if (!row.found) {
-        edit_say(e, "No summary for that day");
+        e->outcome = EDIT_NO_DAY;
         return;
     }
     Str text = row.summary;
@@ -1258,7 +1321,7 @@ static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bu
     Json* list = &row.reminders;
     if (reminder >= 0) {
         if (reminder >= list->count) {
-            edit_say(e, "No such reminder");
+            e->outcome = EDIT_NO_REMINDER;
             return;
         }
         memmove(&list->items[reminder], &list->items[reminder + 1], sizeof(Json) * (list->count - reminder - 1));
@@ -1270,17 +1333,21 @@ static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bu
         bind_str(st, 2, json_string_of(a, list));
         bind_str(st, 3, str(day));
     }
-    if (sql_done(db, st) >= 0) {
-        i32 y, mo, d;
-        if (parse_day(day, &y, &mo, &d)) write_markdown(app, day, text, list);
-        edit_lists(db, e);
+    if (sql_done(db, st) < 0) {
+        e->outcome = EDIT_FAILED;
+        return;
     }
+    i32 y, mo, d;
+    if (parse_day(day, &y, &mo, &d)) write_markdown(app, day, text, list);
+    e->has_row = true;
+    e->row = day_row(day, row.status.ptr, row.created_ts, list->count);
+    e->changed = true;
 }
 
 static void edit_run(sqlite3* db, Job* job) {
     SummaryEdit* e = (SummaryEdit*)job->data;
     if (!db) {
-        edit_say(e, "The database could not be opened");
+        e->outcome = EDIT_NO_DB;
         return;
     }
     Arena* a = &job->arena;
@@ -1294,38 +1361,64 @@ static void edit_run(sqlite3* db, Job* job) {
             bind_str(st, 1, e->text);
             sqlite3_bind_double(st, 2, now_ts());
         }
-        if (sql_done(db, st) >= 0) {
-            LOG("the summary will never mention: %.*s", (int)e->text.len, e->text.ptr);
-            edit_lists(db, e);
+        if (sql_done(db, st) < 0) {
+            e->outcome = EDIT_FAILED;
+            break;
         }
-        if (e->day[0] && e->bullet.len) {
-            if (e->lists) {  // read again by the dismiss
-                list_free(&e->read.days);
-                list_free(&e->read.never);
-                e->lists = false;
-            }
-            edit_dismiss(e->app, db, a, e, e->bullet, -1);
-        }
+        e->topic.id = sqlite3_last_insert_rowid(db);
+        set(e->topic.topic, sizeof(e->topic.topic), e->text);
+        LOG("the summary will never mention: %.*s", (int)e->text.len, e->text.ptr);
+        if (e->day[0] && e->bullet.len) edit_dismiss(e->app, db, a, e, e->bullet, -1);
         break;
     }
     case EDIT_NEVER_REMOVE: {
         sqlite3_stmt* st = prepare(db, "DELETE FROM summary_never WHERE id = ?1");
         if (st) sqlite3_bind_int64(st, 1, e->id);
-        if (sql_done(db, st) >= 0) edit_lists(db, e);
+        if (sql_done(db, st) < 0) e->outcome = EDIT_FAILED;
         break;
     }
-    case EDIT_SKIP:
-        if (save(db, e->day, "skipped", 0, {}, str("[]"))) edit_lists(db, e);
-        else edit_say(e, "Could not save the skip");
+    case EDIT_SKIP: {
+        f64 ts = now_ts();
+        if (!save(db, e->day, "skipped", ts, 0, {}, str("[]"))) {
+            e->outcome = EDIT_FAILED;
+            break;
+        }
+        e->has_row = true;
+        e->row = day_row(e->day, "skipped", ts, 0);
+        e->changed = true;
         break;
+    }
     }
 }
 
+// The main thread: updates Summary's lists from what the edit reports, and says how it went.
 static void edit_apply(App* app, Job* job) {
     SummaryEdit* e = (SummaryEdit*)job->data;
-    if (e->lists) lists_publish(app, e->read.days, e->read.never);
-    if (e->changed) app->summary.version++;
-    if (e->say[0] && !e->quiet) ui_say(app, "%s", e->say);
+    Summary* s = &app->summary;
+    bool done = e->outcome == EDIT_DONE;
+    if (done && e->kind == EDIT_NEVER_ADD) list_push(&s->never, e->topic);
+    if (done && e->kind == EDIT_NEVER_REMOVE) {
+        for (i32 i = 0; i < s->never.count; i++)
+            if (s->never.items[i].id == e->id) list_remove(&s->never, i--);
+    }
+    if (e->has_row) day_put(app, &e->row);
+    if (e->changed || (done && (e->kind == EDIT_NEVER_ADD || e->kind == EDIT_NEVER_REMOVE))) s->version++;
+    const char* say = 0;
+    switch (e->outcome) {
+    case EDIT_DONE:
+        if (e->kind == EDIT_REMIND) {
+            if (e->on) say = str_fmt(scratch(), "I'll remind you %s", when_text(scratch(), e->due).ptr).ptr;
+            else say = "Reminder turned off";
+        }
+        break;
+    case EDIT_NO_DB: say = "The database could not be opened"; break;
+    case EDIT_FAILED: say = e->kind == EDIT_SKIP ? "Could not save the skip" : "Could not save that (see the log)"; break;
+    case EDIT_NO_DAY: say = "No summary for that day"; break;
+    case EDIT_NO_REMINDER: say = "No such reminder"; break;
+    case EDIT_BAD_DAY: say = "Bad day"; break;
+    case EDIT_BAD_ACTION: break;  // a link from an old notification: in the log
+    }
+    if (say && !e->quiet) ui_say(app, "%s", say);
     wake_window(app);
 }
 
@@ -1502,7 +1595,8 @@ static void gpu_give_back(App* app) {
 }
 
 // On the writer thread. `labels` are the apps' names, from its job.
-static bool write_day(App* app, const char* day, AppLabels* labels, char* error, i32 cap) {
+// `saved`: the day's row, once it is saved.
+static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* saved, char* error, i32 cap) {
     SummaryOptions options = summary_options(app);  // as they are now: a change counts from the next summary
     const SummaryOptions* cfg = &options;
     LOG("writing the summary for %s with %s", day, cfg->model);
@@ -1655,11 +1749,12 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
         while (section.len && isspace((u8)section.ptr[section.len - 1])) section.len--;
         summary = str_trim(str_fmt(a, "%.*s%.*s", (int)summary.len, summary.ptr, (int)section.len, section.ptr));
         Json reminders = keep_real_reminders(a, json_get(&result, "reminders"), mine);
-        if (!save(db, day, "done", cfg->model, summary, json_string_of(a, &reminders))) {
+        f64 saved_ts = now_ts();
+        if (!save(db, day, "done", saved_ts, cfg->model, summary, json_string_of(a, &reminders))) {
             snprintf(error, cap, "could not save the summary: %s", sqlite3_errmsg(db));
             goto done;
         }
-        lists_refresh(app, db);
+        *saved = day_row(day, "done", saved_ts, reminders.count);
         if (cfg->ask_reminders) alerts_offer(app, db, day, &reminders);
         if (!write_markdown(app, day, summary, &reminders)) WARN("could not write the summary file for %s", day);
         i32 count = reminders.count;
@@ -1711,6 +1806,7 @@ struct WriterJob {
     char day[11];
     AppLabels labels;
     bool ok;
+    SummaryDay saved;  // the day's row, if it was saved
     char error[512];
 };
 
@@ -1719,6 +1815,10 @@ static void writer_done(App* app, Job* job) {
     WriterJob* w = (WriterJob*)job->data;
     app->summary.writing = false;
     app->summary.writing_day[0] = 0;
+    if (w->saved.day[0]) {
+        day_put(app, &w->saved);
+        app->summary.version++;
+    }
     if (!w->ok) {
         ERR("summary for %s: %s", w->day, w->error);
         phase_set(app, "failed: %s", w->error);
@@ -1740,7 +1840,7 @@ static DWORD WINAPI writer_main(void* param) {
     Job* job = (Job*)param;
     WriterJob* w = (WriterJob*)job->data;
     App* app = w->app;
-    w->ok = write_day(app, w->day, &w->labels, w->error, sizeof(w->error));
+    w->ok = write_day(app, w->day, &w->labels, &w->saved, w->error, sizeof(w->error));
     gpu_give_back(app);  // write_day closed the server on every path
     job_post_wait(app, job);
     return 0;
@@ -1790,11 +1890,34 @@ static void ask(App* app, const char* day, f64 mine, f64 apps) {
     LOG("the summary for %s starts at %s unless delayed", day, at);
 }
 
-Str summary_act(App* app, Arena* a, const char* action, const char* day_in, const char* at) {
+const char* summary_acted_text(SummaryActResult r, char* out, i32 cap) {
+    char at[6];
+    switch (r.what) {
+    case ACTED_WRITING: return "writing";
+    case ACTED_ALREADY_WRITING: return "already writing";
+    case ACTED_LATER: return "asking again in an hour";
+    case ACTED_UNTIL:
+        hm_of(r.at, at);
+        snprintf(out, cap, "asking again at %s", at);
+        return out;
+    case ACTED_SKIPPED: return "skipped";
+    case ACTED_PICKING: return "pick a time";
+    case ACTED_BAD_DAY: return "bad day: it must look like 2026-03-01";
+    case ACTED_BAD_TIME: return "time must look like 23:00";
+    case ACTED_BAD_ACTION: return "do must be now, later, until, skip or pick";
+    }
+    return "";
+}
+
+SummaryActResult summary_act(App* app, const char* action, const char* day_in, const char* at) {
+    SummaryActResult r = {};
     char day[11];
     i32 y, m, d;
     if (day_in && day_in[0]) {
-        if (!parse_day(day_in, &y, &m, &d)) return str_fmt(a, "bad day '%s'", day_in);
+        if (!parse_day(day_in, &y, &m, &d)) {
+            r.what = ACTED_BAD_DAY;
+            return r;
+        }
         SET(day, str(day_in));
     } else {
         day_of(now_ts(), day);
@@ -1802,64 +1925,89 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
     // "Delay until…" only opens the delay box; the countdown goes on until a time is picked.
     if (strcmp(action, "pick") == 0) {
         ui_popup(app, POPUP_DELAY, day);
-        return str_copy(a, str("pick a time"));
+        r.what = ACTED_PICKING;
+        return r;
+    }
+    i32 h = 0, mi = 0;
+    bool now = strcmp(action, "now") == 0, later = strcmp(action, "later") == 0, until = strcmp(action, "until") == 0,
+         skip = strcmp(action, "skip") == 0;
+    if (!now && !later && !until && !skip) {
+        r.what = ACTED_BAD_ACTION;
+        return r;
+    }
+    if (until && !parse_hhmm(str(at), &h, &mi)) {
+        r.what = ACTED_BAD_TIME;
+        return r;
     }
     notify_remove(app, TOAST_TAG);
     app->summary.countdown_ts = 0;
-    if (strcmp(action, "now") == 0) {
-        if (app->summary.writing) return str_copy(a, str("already writing"));
+    if (now) {
+        if (app->summary.writing) {
+            r.what = ACTED_ALREADY_WRITING;
+            return r;
+        }
         app->summary.writing = true;
         SET(app->summary.writing_day, str(day));
         writer_start(app, day);
         wake_window(app);
-        return str_copy(a, str("writing"));
-    }
-    if (strcmp(action, "later") == 0) {
-        app->summary.snooze_ts = now_ts() + 3600;
+        r.what = ACTED_WRITING;
+    } else if (later) {
+        app->summary.snooze_ts = r.at = now_ts() + 3600;
         LOG("summary for %s: asking again in an hour", day);
         phase_set(app, "asking again in an hour");
-        return str_copy(a, str("asking again in an hour"));
-    }
-    if (strcmp(action, "until") == 0) {
-        i32 h, mi;
-        if (!parse_hhmm(str(at), &h, &mi)) return str_fmt(a, "time must look like 23:00 (got '%s')", at ? at : "");
+        r.what = ACTED_LATER;
+    } else if (until) {
         f64 when = next_at(h, mi);
         char text[6];
         hm_of(when, text);
-        app->summary.snooze_ts = when;
+        app->summary.snooze_ts = r.at = when;
         LOG("summary for %s: asking again at %s", day, text);
         phase_set(app, "asking again at %s", text);
-        return str_fmt(a, "asking again at %s", text);
-    }
-    if (strcmp(action, "skip") == 0) {
-        // Saved on the database thread; if that fails, the window says so.
+        r.what = ACTED_UNTIL;
+    } else {
+        // Saved on the database thread; if that fails, the window says so (edit_apply).
         Job* job;
         edit_new(app, &job, EDIT_SKIP, day);
         db_post(job, edit_run);
         LOG("summary for %s: skipped", day);
         phase_set(app, "skipped today");
-        return str_copy(a, str("skipped"));
+        r.what = ACTED_SKIPPED;
     }
-    return str_copy(a, str("do must be now, later, until or skip"));
+    return r;
 }
 
-// What the summary thread read this round, for the main thread's clock (summary_tick).
+// How much was said today, read on the database thread once it is time to ask.
+struct TalkJob {
+    char day[11];
+    bool ok;
+    f64 mine, apps;
+};
+
+static void talk_run(sqlite3* db, Job* job) {
+    TalkJob* t = (TalkJob*)job->data;
+    if (db) t->ok = talk_secs(db, t->day, &t->mine, &t->apps);
+}
+
+// The main thread: asks, unless there is too little to sum up (or it started meanwhile).
+static void talk_apply(App* app, Job* job) {
+    TalkJob* t = (TalkJob*)job->data;
+    Summary* s = &app->summary;
+    if (s->writing || s->countdown_ts) return;
+    if (t->ok && t->mine + t->apps >= 120.0) ask(app, t->day, t->mine, t->apps);
+    else phase_set(app, "too little recorded today to sum up");
+}
+
+// The clock's reading, for the main thread (summary_tick).
 struct SummaryTick {
     char day[11];
     bool gaming;   // a game runs or the GPU is busy
-    bool talked;   // `mine` and `apps` were read
-    i32 status;    // the day's summary status; -1 when it did not look
-    f64 mine;      // seconds of my talk today
-    f64 apps;      // and of the apps'
 };
 
 // The main thread: asks once it is time and starts the summary when the countdown ends.
 static void summary_tick(App* app, Event* e) {
     SummaryTick t = latest_take<SummaryTick>(e);
     const char* day = t.day;
-    bool gaming = t.gaming, talked = t.talked;
-    i32 status = t.status;
-    f64 mine = t.mine, apps = t.apps;
+    bool gaming = t.gaming;
     Summary* s = &app->summary;
     if (gaming) s->last_game_ts = now_ts();
     // Counting down to a summary: a game starting puts it off; otherwise it starts on time.
@@ -1873,51 +2021,52 @@ static void summary_tick(App* app, Event* e) {
         } else if (now_ts() >= s->countdown_ts) {
             char countdown_day[11];
             SET(countdown_day, str(s->countdown_day));
-            Mark m = mark(scratch());
-            summary_act(app, scratch(), "now", countdown_day, 0);
-            rewind(m);
+            summary_act(app, "now", countdown_day, 0);
         }
     }
     bool look = !counting && app->config.summary.enabled && !s->writing && now_ts() >= ask_moment(day, app->config.summary.ask_at) &&
                 now_ts() >= s->snooze_ts;
-    // Not done or skipped yet (and the database could say).
-    if (!look || status != 0) return;
+    // Not done or skipped yet: Summary.days has every saved day.
+    if (!look || !s->lists_ready || day_find(app, day)) return;
     if (s->last_game_ts && now_ts() - s->last_game_ts < AFTER_GAME_SECS) {
         // Never during a game: wait until it has been closed for a while.
         phase_set(app, "waiting until you stop playing");
         return;
     }
-    // Too little to sum up: look again in an hour.
+    // Asks if enough was said (talk_apply); either way not again for an hour.
     s->snooze_ts = now_ts() + 3600;
-    if (talked && mine + apps >= 120.0) ask(app, day, mine, apps);
-    else phase_set(app, "too little recorded today to sum up");
+    Job* job = job_new(talk_apply);
+    TalkJob* tj = PUSH(&job->arena, TalkJob);
+    SET(tj->day, str(day));
+    job->data = tj;
+    db_post(job, talk_run);
 }
 
-// Every 15 s: shows the reminders that have come due, reads what the clock
-// needs from the database, and posts it to the main thread (summary_tick).
+// The summary's clock. Every 15 s (and when woken) it posts what the main thread's clock needs
+// (summary_tick): two flags, no database. It opens the database only when a reminder is due
+// (Summary.next_alert_ms).
 static DWORD WINAPI summary_main(void* param) {
     App* app = (App*)param;
+    Summary* s = &app->summary;
+    f64 next_tick = 0;
     for (;;) {
-        sqlite3* db = db_open(app);
-        if (db) alerts_show_due(app, db);
-        HANDLE waits[2] = {app->stop, app->summary.wake};
-        if (WaitForMultipleObjects(2, waits, FALSE, 15000) == WAIT_OBJECT_0) {
-            if (db) sqlite3_close(db);
-            break;
+        f64 now = now_ts();
+        if (now * 1000.0 >= (f64)InterlockedCompareExchange64(&s->next_alert_ms, 0, 0)) alerts_check(app);
+        if (now >= next_tick) {
+            SummaryTick t = {};
+            day_of(now, t.day);
+            t.gaming = atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy);
+            latest_send(app, &s->tick, summary_tick, t);
+            next_tick = now + 15;
         }
-        SummaryTick t = {};
-        day_of(now_ts(), t.day);
-        SummaryOptions c_ = summary_options(app);
-        const SummaryOptions* c = &c_;
-        t.gaming = atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy);
-        t.status = -1;
-        // Only once it is time to ask: whether today is done, and how much was said.
-        if (db && c->enabled && now_ts() >= ask_moment(t.day, c->ask_at)) {
-            t.status = status_of(db, t.day);
-            if (t.status == 0) t.talked = talk_secs(db, t.day, &t.mine, &t.apps);
-        }
-        latest_send(app, &app->summary.tick, summary_tick, t);
-        if (db) sqlite3_close(db);
+        f64 until = next_tick, alert = (f64)InterlockedCompareExchange64(&s->next_alert_ms, 0, 0) / 1000.0;
+        if (alert < until) until = alert;
+        now = now_ts();
+        DWORD ms = until <= now ? 0 : (DWORD)((until - now) * 1000.0) + 1;
+        HANDLE waits[2] = {app->stop, s->wake};
+        DWORD got = WaitForMultipleObjects(2, waits, FALSE, ms);
+        if (got == WAIT_OBJECT_0) break;
+        if (got == WAIT_OBJECT_0 + 1) next_tick = 0;  // the settings changed: look again now
     }
     return 0;
 }

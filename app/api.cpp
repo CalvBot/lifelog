@@ -332,17 +332,15 @@ static bool api_handle(App* app, ApiCall* c) {
             answer_error(r, 400, "do must be now, later, until, skip or pick");
             return true;
         }
-        Str result = summary_act(app, a, action.ptr, day.ptr, at.len ? at.ptr : 0);
-        // summary_act answers in words; these ones are failures, as they were errors in the old app.
-        const char* failures[] = {"bad day", "time must look like", "could not save", "do must be"};
-        for (i32 i = 0; i < COUNT(failures); i++) {
-            if (str_starts(result, str(failures[i]))) {
-                answer_error(r, 400, result.ptr);
-                return true;
-            }
+        SummaryActResult acted = summary_act(app, action.ptr, day.ptr, at.len ? at.ptr : 0);
+        char said[64];
+        const char* result = summary_acted_text(acted, said, sizeof(said));
+        if (acted_failed(acted)) {
+            answer_error(r, 400, result);
+            return true;
         }
         buf_cstr(&r->body, "{\"result\":");
-        json_quote(&r->body, result);
+        json_quote(&r->body, str(result));
         buf_cstr(&r->body, "}");
         return true;
     }
