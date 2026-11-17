@@ -93,12 +93,15 @@ style = "glass"
 volume = 60
 
 [voice]
-# Voice commands: say "lifelog" and a command ("lifelog, clip the last hour"). Heard on this PC
-# with a small model on the processor; what it hears for commands is not kept.
+# Voice commands: say "lifelog" and a command ("lifelog, summarise the last hour"). Heard on this
+# PC with the transcriber's model while it is loaded; what it hears for commands is not kept.
 listen = true
 # The word that starts a command.
 wake_word = "lifelog"
-# The model that listens for it: tiny.en (fastest), base.en, or small.en (hears best, a little slower).
+# While the transcriber waits (for a game, or paused), listen with a small model on the processor
+# instead: tiny.en (lightest), base.en, or small.en (hears best, but slower). With backup off,
+# voice commands wait for the transcriber too.
+backup = true
 model = "base.en"
 
 [commands]
@@ -355,6 +358,7 @@ static void config_defaults(Config* cfg) {
     cfg->chimes.volume = 60;
     cfg->voice.listen = true;
     SET(cfg->voice.wake, str("lifelog"));
+    cfg->voice.backup = true;
     SET(cfg->voice.model, str("base.en"));
 }
 
@@ -438,6 +442,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("volume"))) take_u32(&cfg->chimes.volume, &v);
         } else if (str_eq(tb, str("voice"))) {
             if (str_eq(k, str("listen"))) take_bool(&cfg->voice.listen, &v);
+            if (str_eq(k, str("backup"))) take_bool(&cfg->voice.backup, &v);
             if (str_eq(k, str("wake_word"))) take_string(cfg->voice.wake, sizeof(cfg->voice.wake), &v);
             if (str_eq(k, str("model")) && v.kind == Value::STRING && voice_model(str(v.s))) take_string(cfg->voice.model, sizeof(cfg->voice.model), &v);
         } else if (str_eq(tb, str("commands"))) {

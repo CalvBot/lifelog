@@ -353,12 +353,17 @@ The window only exists while it is open. Closing it frees its memory; the record
 - An app is named as it is said: its exe without ".exe" or its display name ("spotify", "visual studio code"),
   a running one first. The API takes such names too.
 - The mic has a second segmenter for this (`capture.cpp`). It hears even in private mode and ends a sentence after
-  0.7 s of quiet. The voice thread transcribes each sentence with a small Whisper model on the processor (greedy, 4
-  threads, below-normal priority), so it works while the transcriber waits for a game. A sentence that is not for
+  0.7 s of quiet. The voice thread transcribes each sentence with the transcriber's own model while it is loaded
+  (in a whisper_state of its own, on the graphics card), and otherwise with a small backup model on the processor
+  (greedy, 4 threads, below-normal priority), so it works while the transcriber waits for a game. A sentence that is not for
   lifelog is dropped without being logged.
-- The model is the listener's own (`[voice] model`), picked in Settings: base.en (0.15 GB, the default), tiny.en
-  (0.08 GB, lightest) or small.en (0.49 GB, hears best). Changing it loads the new one at once; one not yet
-  downloaded shows a Download button. On 20 s clips, CPU only, each took about 1.0, 1.4 and 4.3 s.
+- The backup is a checkbox in Settings, Transcription (shown unless the mode is Always; `[voice] backup`, on by
+  default), with its model (`[voice] model`): base.en (0.15 GB, the default), tiny.en (0.08 GB, lightest) or
+  small.en (0.49 GB, hears best). It is loaded only while the transcriber's model is not, and changing it loads the
+  new one at once; one not yet downloaded shows a Download button in Voice commands. On 20 s clips, CPU only, each
+  took about 1.0, 1.4 and 4.3 s. With the backup off, voice commands wait for the transcriber.
+- A sentence for lifelog that is not a command yet, or a summary or reminder with no stretch or time, waits 1.6 s
+  for more; what follows is joined to it and heard again as one (up to 15 s), since a pause ends a sentence.
 - There is no built-in "clip": the phrase is left for a custom command, such as one that saves an OBS replay.
 - In private mode only resume and the media keys are carried out, and nothing about the sentence is kept.
 - Open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's

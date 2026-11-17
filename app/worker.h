@@ -58,6 +58,13 @@ struct Worker {
     SRWLOCK options_lock;
     WorkerOptions options;
     volatile LONG options_version;
+    // The transcriber's model while it is loaded, for voice commands (voice.cpp), which run it
+    // with their own whisper_state. The voice thread holds the lock shared while it uses it; the
+    // supervisor takes it exclusive to clear it before freeing the model. `model_gen` moves each
+    // time it changes.
+    SRWLOCK model_lock;
+    struct whisper_context* model;
+    volatile LONG model_gen;
 };
 
 void worker_start(App* app);

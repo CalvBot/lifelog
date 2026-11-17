@@ -23,6 +23,7 @@ enum VoiceState : i32 {
     VOICE_LOADING,
     VOICE_READY,
     VOICE_FAILED,       // the model would not load (see the log)
+    VOICE_WAITING,      // the transcriber's model is not loaded, and the backup is off
 };
 
 struct VoiceSentence {
@@ -38,6 +39,8 @@ struct Voice {
     HANDLE wake;              // auto-reset: a sentence is waiting, or the settings changed
     volatile LONG listen;     // config.voice.listen, for the capture thread
     volatile LONG state;      // VoiceState, written by the voice thread
+    volatile LONG shared;     // it hears with the transcriber's model now (not the backup)
+    volatile LONG backup;     // config.voice.backup, for the voice thread
     SRWLOCK wake_lock;        // guards wake_word and model
     char wake_word[64];       // config.voice.wake, for the voice thread
     char model[32];           // config.voice.model: "base.en"
@@ -58,6 +61,8 @@ bool voice_set_wake(App* app, Str word);
 // Main thread: the model that listens (one of voice_models), saved; the voice thread loads it, and
 // Settings offers to download it if it is not there. False if it is not one of them.
 bool voice_set_model(App* app, Str model);
+// Main thread: whether the backup model listens while the transcriber's is not loaded, saved.
+void voice_set_backup(App* app, bool on);
 
 // banner.cpp. Main thread: a note at the top of the screen for 2.5 s, "WHO — TEXT" ("Jarvis — Alarm
 // set: 4 minutes"); it takes no focus or clicks.

@@ -27,6 +27,7 @@ enum UndoKind : u8 {
     UNDO_VOICE,
     UNDO_WAKE,
     UNDO_VOICE_MODEL,
+    UNDO_VOICE_BACKUP,
     UNDO_MIC,        // the mic chosen before: its id in `folder`, its name in `text`
 };
 
@@ -252,6 +253,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_VOICE: voice_set_listen(app, u.on); break;
     case UNDO_WAKE: voice_set_wake(app, str(u.text)); break;
     case UNDO_VOICE_MODEL: voice_set_model(app, str(u.text)); break;
+    case UNDO_VOICE_BACKUP: voice_set_backup(app, u.on); break;
     case UNDO_MIC: capture_set_mic(app, str(u.folder), str(u.text)); break;
     }
     s->stale = true;
@@ -914,6 +916,41 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
         }
     }
 
+    // Voice commands are heard with the transcriber's model while it is loaded. While it waits, a
+    // small model on the processor can listen instead, beside the game.
+    if (c->processing.mode != MODE_ALWAYS) {
+        row_label("Voice commands");
+        bool backup = c->voice.backup;
+        if (ImGui::Checkbox("Backup listener while waiting##voice_backup", &backup)) {
+            SettingsUndo* u = remember(s, UNDO_VOICE_BACKUP, backup ? "backup listener on" : "backup listener off");
+            u->on = !backup;
+            voice_set_backup(app, backup);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("While transcription waits for a game (or is paused), a small model on the processor listens for\n"
+                              "voice commands, so they still work. Off: they wait for the transcriber too. The transcript\n"
+                              "always comes from the transcriber.");
+        if (backup) {
+            const VoiceModel* models;
+            i32 model_count = voice_models(&models);
+            const char* model_names[8];
+            i32 current = 0;
+            for (i32 i = 0; i < model_count && i < COUNT(model_names); i++) {
+                model_names[i] = models[i].label;
+                if (!strcmp(models[i].name, c->voice.model)) current = i;
+            }
+            row_label("");
+            i32 picked = segments("voice_model", model_names, model_count, current, px(70));
+            if (picked >= 0 && picked != current) {
+                SettingsUndo* u = remember(s, UNDO_VOICE_MODEL, "backup listener %s", models[picked].label);
+                SET(u->text, str(c->voice.model));
+                voice_set_model(app, str(models[picked].name));
+            }
+            ImGui::SameLine();
+            weak(fit(models[current].note, ImGui::GetContentRegionAvail().x));
+        }
+    }
+
     // lifelog's own whisper.cpp, or any OpenAI-compatible transcription server.
     model_row(app, s, SETUP_TRANSCRIBER);
     if (c->worker.endpoint[0] || s->own[SETUP_TRANSCRIBER]) own_server_row(app, s, SETUP_TRANSCRIBER);
@@ -1015,8 +1052,13 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
     } else if (state == VOICE_FAILED) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ERROR_RED, "%s", fit("could not load its model (see the log)", room));
+    } else if (state == VOICE_WAITING) {
+        weak(fit("waits for the transcriber (the backup listener is off, in Transcription)", room));
+    } else if (state == VOICE_READY) {
+        bool shared = atomic_get(&v->shared) != 0;
+        weak(fit(shared ? "listening, with the transcriber's model" : tmp("listening, with the backup (%s)", c->voice.model), room));
     } else {
-        weak(fit(state == VOICE_READY ? "listening" : "starting", room));
+        weak(fit("starting", room));
     }
 
     row_label("Wake word");
@@ -1032,29 +1074,6 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
     }
     ImGui::SameLine(0, px(12));
     weak(fit(tmp("then a command: \"%s, summarise the last hour\"", wake), ImGui::GetContentRegionAvail().x));
-
-    // The model that listens for the wake word. It runs on the processor, beside a game, and only
-    // hears commands: the transcript is still the transcriber's.
-    row_label("Listener");
-    const VoiceModel* models;
-    i32 model_count = voice_models(&models);
-    const char* model_names[8];
-    i32 current = 0;
-    for (i32 i = 0; i < model_count && i < COUNT(model_names); i++) {
-        model_names[i] = models[i].label;
-        if (!strcmp(models[i].name, c->voice.model)) current = i;
-    }
-    i32 picked = segments("voice_model", model_names, model_count, current, px(70));
-    if (picked >= 0 && picked != current) {
-        SettingsUndo* u = remember(s, UNDO_VOICE_MODEL, "listener %s", models[picked].label);
-        SET(u->text, str(c->voice.model));
-        voice_set_model(app, str(models[picked].name));
-    }
-    ImGui::SameLine();
-    weak(fit(models[current].note, ImGui::GetContentRegionAvail().x));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Only listens for commands, on the processor, so it works while a game has the graphics card.\n"
-                          "The transcript still comes from the transcriber.");
 
     row_label("Commands");
     if (button(s->voice_list ? label(ICON_CHEVRON_UP, "Hide") : label(ICON_CHEVRON_DOWN, "Show all")))

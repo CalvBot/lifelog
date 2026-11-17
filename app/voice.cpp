@@ -68,6 +68,14 @@ static void voice_publish_wake(App* app) {
     ReleaseSRWLockExclusive(&v->wake_lock);
 }
 
+void voice_set_backup(App* app, bool on) {
+    app->config.voice.backup = on;
+    config_save_bool("voice", "backup", on);
+    atomic_set(&app->voice.backup, on);
+    LOG("voice commands: the backup listener is %s", on ? "on" : "off");
+    if (app->voice.wake) SetEvent(app->voice.wake);
+}
+
 bool voice_set_model(App* app, Str model) {
     if (!voice_model(model)) return false;
     SET(app->config.voice.model, model);
@@ -971,8 +979,9 @@ static whisper_context* voice_open(App* app, const char* ai_dir, const char* mod
     return ctx;
 }
 
-// What was said, or empty if it was not speech.
-static Str voice_text(Arena* a, whisper_context* ctx, const VoiceSentence* s, const char* wake) {
+// What was said, or empty if it was not speech. With `st`, heard with the transcriber's model
+// (`ctx`) in voice commands' own state; without, with the backup model.
+static Str voice_text(Arena* a, whisper_context* ctx, whisper_state* st, const VoiceSentence* s, const char* wake) {
     const i32 pad = VOICE_RATE * 3 / 10;
     i32 total = s->n + 2 * pad;
     f32* samples = PUSH_ARRAY(a, f32, total);  // zeroed: the silence around it
@@ -993,12 +1002,14 @@ static Str voice_text(Arena* a, whisper_context* ctx, const VoiceSentence* s, co
     char prompt[128];
     snprintf(prompt, sizeof(prompt), "Commands for %s, the app.", wake);
     wp.initial_prompt = prompt;
-    if (p_whisper_full(ctx, wp, samples, total) != 0) return {"", 0};
+    if (st) wp.n_threads = 2;  // the graphics card does the work
+    if ((st ? p_whisper_full_with_state(ctx, st, wp, samples, total) : p_whisper_full(ctx, wp, samples, total)) != 0) return {"", 0};
     Buf b = {};
-    i32 n = p_whisper_full_n_segments(ctx);
+    i32 n = st ? p_whisper_full_n_segments_from_state(st) : p_whisper_full_n_segments(ctx);
     for (i32 i = 0; i < n; i++) {
-        if (p_whisper_full_get_segment_no_speech_prob(ctx, i) > 0.6f) continue;
-        buf_cstr(&b, p_whisper_full_get_segment_text(ctx, i));
+        f32 none = st ? p_whisper_full_get_segment_no_speech_prob_from_state(st, i) : p_whisper_full_get_segment_no_speech_prob(ctx, i);
+        if (none > 0.6f) continue;
+        buf_cstr(&b, st ? p_whisper_full_get_segment_text_from_state(st, i) : p_whisper_full_get_segment_text(ctx, i));
         buf_cstr(&b, " ");
     }
     return buf_take(&b, a);
@@ -1013,7 +1024,10 @@ static DWORD WINAPI voice_main(void* p) {
     LONG version = -1;
     char loaded_dir[MAX_PATH] = {};
     char loaded_model[32] = {};
-    whisper_context* ctx = 0;
+    whisper_context* ctx = 0;  // the backup model, on the processor
+    whisper_state* st = 0;     // ours, for the transcriber's model while it is loaded
+    LONG st_gen = 0;           // the model_gen it was made for
+    bool said_waiting = false;
     f64 armed_until = 0;  // the name was said alone: the next sentence is the command
     // What was said to us that is not a command yet (malloc), joined to the next sentence until
     // held_until. `held_said` is what it was heard as, for the "not a command" when nothing comes.
@@ -1041,12 +1055,39 @@ static DWORD WINAPI voice_main(void* p) {
         AcquireSRWLockShared(&v->wake_lock);
         SET(model, str(v->model));
         ReleaseSRWLockShared(&v->wake_lock);
+        // The transcriber's model, while it is loaded: heard with it, the backup is not needed.
+        Worker* w = &app->worker;
+        if (st && (!listen || atomic_get(&w->model_gen) != st_gen)) {
+            p_whisper_free_state(st);
+            st = 0;
+            tried = 0;  // the backup, if on, is loaded at once
+        }
+        if (!st && listen) {
+            AcquireSRWLockShared(&w->model_lock);
+            if (w->model) {
+                st = p_whisper_init_state(w->model);
+                st_gen = w->model_gen;
+            }
+            ReleaseSRWLockShared(&w->model_lock);
+            if (st) LOG("voice commands: listening with the transcriber's model");
+        }
+        atomic_set(&v->shared, st != 0);
+        bool backup = listen && !st && atomic_get(&v->backup);
         bool changed = strcmp(loaded_dir, o.ai_dir) != 0 || strcmp(loaded_model, model) != 0;
-        if (ctx && (!listen || changed)) {
+        if (ctx && (!backup || changed)) {
             p_whisper_free(ctx);
             ctx = 0;
             tried = 0;  // the new one is loaded at once
         }
+        if (listen && !st && !backup) {
+            if (!said_waiting) LOG("voice commands: waiting for the transcriber (the backup listener is off)");
+            said_waiting = true;
+            atomic_set(&v->state, VOICE_WAITING);
+            voice_drop_all(v);
+            continue;
+        }
+        said_waiting = false;
+        if (st) atomic_set(&v->state, VOICE_READY);
         if (!listen) {
             atomic_set(&v->state, VOICE_OFF);
             voice_drop_all(v);
@@ -1057,7 +1098,7 @@ static DWORD WINAPI voice_main(void* p) {
         }
         // Not there yet (set up from Settings, or the folder moved): look again every 10 s.
         bool failed_here = strcmp(failed_dir, o.ai_dir) == 0 && strcmp(failed_model, model) == 0;
-        if (!ctx && o.ai_dir[0] && now_ts() - tried >= 9 && !failed_here) {
+        if (backup && !ctx && o.ai_dir[0] && now_ts() - tried >= 9 && !failed_here) {
             tried = now_ts();
             ctx = voice_open(app, o.ai_dir, model);
             if (ctx) {
@@ -1068,7 +1109,7 @@ static DWORD WINAPI voice_main(void* p) {
                 SET(failed_model, str(model));
             }
         }
-        if (!ctx) {
+        if (!ctx && !st) {
             voice_drop_all(v);
             continue;
         }
@@ -1130,7 +1171,15 @@ static DWORD WINAPI voice_main(void* p) {
             held = {};
             held_until = 0;
             held_said[0] = 0;
-            Str text = voice_text(a, ctx, &s, wake);
+            Str text = {"", 0};
+            if (st) {
+                AcquireSRWLockShared(&w->model_lock);
+                // Being freed for a game: this one is lost, the backup takes the next.
+                if (w->model && w->model_gen == st_gen) text = voice_text(a, w->model, st, &s, wake);
+                ReleaseSRWLockShared(&w->model_lock);
+            } else {
+                text = voice_text(a, ctx, 0, &s, wake);
+            }
             bool armed = joined || (armed_until && now_ts() < armed_until);
             Understood u;
             voice_understand(text, wake, armed, &u);
@@ -1178,6 +1227,7 @@ static DWORD WINAPI voice_main(void* p) {
         }
     }
     if (ctx) p_whisper_free(ctx);
+    if (st) p_whisper_free_state(st);
     free(held.samples);
     voice_drop_all(v);
     CoUninitialize();
@@ -1190,6 +1240,7 @@ void voice_start(App* app) {
     CHECK(v->wake, "the voice thread's event (error %lu)", GetLastError());
     voice_publish_wake(app);
     atomic_set(&v->listen, app->config.voice.listen);
+    atomic_set(&v->backup, app->config.voice.backup);
     atomic_set(&v->state, app->config.voice.listen ? VOICE_LOADING : VOICE_OFF);
     start_thread(app, "voice", voice_main);
     SetEvent(v->wake);

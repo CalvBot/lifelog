@@ -339,6 +339,12 @@ WHISPER_FN(whisper_full_get_segment_t0)
 WHISPER_FN(whisper_full_get_segment_t1)
 WHISPER_FN(whisper_full_get_segment_text)
 WHISPER_FN(whisper_full_get_segment_no_speech_prob)
+WHISPER_FN(whisper_init_state)
+WHISPER_FN(whisper_free_state)
+WHISPER_FN(whisper_full_with_state)
+WHISPER_FN(whisper_full_n_segments_from_state)
+WHISPER_FN(whisper_full_get_segment_text_from_state)
+WHISPER_FN(whisper_full_get_segment_no_speech_prob_from_state)
 WHISPER_FN(whisper_full_n_tokens)
 WHISPER_FN(whisper_full_get_token_data)
 WHISPER_FN(whisper_token_eot)
@@ -401,6 +407,12 @@ static bool whisper_load_now(const wchar_t* dir, char* error, i32 cap) {
     WHISPER_FN(whisper, whisper_full_get_segment_t1)
     WHISPER_FN(whisper, whisper_full_get_segment_text)
     WHISPER_FN(whisper, whisper_full_get_segment_no_speech_prob)
+    WHISPER_FN(whisper, whisper_init_state)
+    WHISPER_FN(whisper, whisper_free_state)
+    WHISPER_FN(whisper, whisper_full_with_state)
+    WHISPER_FN(whisper, whisper_full_n_segments_from_state)
+    WHISPER_FN(whisper, whisper_full_get_segment_text_from_state)
+    WHISPER_FN(whisper, whisper_full_get_segment_no_speech_prob_from_state)
     WHISPER_FN(whisper, whisper_full_n_tokens)
     WHISPER_FN(whisper, whisper_full_get_token_data)
     WHISPER_FN(whisper, whisper_token_eot)
@@ -1220,6 +1232,17 @@ static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
     latest_send(app, &app->worker.seen, worker_seen_apply, *now);
 }
 
+// Hands the loaded model to voice commands, or takes it back (0) before it is freed: that waits
+// for a command being heard with it to finish.
+static void worker_share_model(App* app, whisper_context* ctx) {
+    Worker* w = &app->worker;
+    AcquireSRWLockExclusive(&w->model_lock);
+    w->model = ctx;
+    InterlockedIncrement(&w->model_gen);
+    ReleaseSRWLockExclusive(&w->model_lock);
+    if (app->voice.wake) SetEvent(app->voice.wake);
+}
+
 static DWORD WINAPI supervisor_thread(void* p) {
     App* app = (App*)p;
     wchar_t spool[MAX_PATH];
@@ -1320,6 +1343,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         worker_post_seen(app, &seen, &last);
 
         if (unload) {
+            worker_share_model(app, 0);
             p_whisper_free(ctx);
             ctx = 0;
             ctx_model[0] = 0;
@@ -1338,6 +1362,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             if (ctx) {
                 SET(ctx_model, str(model));
                 whisper_adapter_publish(app, true);
+                worker_share_model(app, ctx);
             } else {
                 SetEvent(app->worker.gpu_free);
                 WARN("%s; trying again in a minute", error);
@@ -1379,6 +1404,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         if (got == WAIT_OBJECT_0 + 1 || got == WAIT_TIMEOUT) count = true;
     }
     // A clip being transcribed was stopped by the abort check; it stays queued for next time.
+    worker_share_model(app, 0);
     if (ctx) p_whisper_free(ctx);
     if (db) sqlite3_close(db);
     SetEvent(app->worker.done);
