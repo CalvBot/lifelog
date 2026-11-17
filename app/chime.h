@@ -1,5 +1,6 @@
-// chime.h: the short sounds voice commands make, synthesised here (no sound files). The style and
-// volume are in config.toml's [chimes] and the Settings card of that name.
+// chime.h: the short sounds voice commands make, played on recorded instruments (assets\chimes,
+// built into the exe). The style and volume are in config.toml's [chimes] and the Settings card of
+// that name.
 
 #pragma once
 

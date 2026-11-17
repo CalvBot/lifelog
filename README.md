@@ -70,3 +70,8 @@ The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`
 
 GitHub is a mirror that is overwritten on every sync. To send a change, fork it and open a pull request; it gets
 merged on the main copy. Don't merge pull requests on GitHub.
+
+## Credits
+
+- The chime sounds are recordings from [VCSL](https://github.com/sgossner/VCSL) by Versilian Studios (CC0).
+- Icons are from [Lucide](https://lucide.dev) (ISC licence).

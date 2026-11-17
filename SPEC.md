@@ -297,9 +297,10 @@ The window only exists while it is open. Closing it frees its memory; the record
 - **Daily summary:** on/off, what it is doing, ask time, word limit, Edit prompt, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
 - **Chimes:** the sounds voice commands will make (listening, done, clip saved, didn't catch, error, cancelled).
-  Glass (a warm bell, like an electric piano), Soft (a low marimba), Synth (a mellow synth) or Off, a volume, and
-  a button to hear each one. They are made in code (`chime.cpp`), not sound files: low and warm, around middle C
-  with a body an octave below, in stereo with a soft echo and a little room. lifelog never records its own sound.
+  Vibes (vibraphone), Marimba, Kalimba, Bells (hand chimes) or Off, a volume, and a button to hear each one. Each
+  chime is a few notes around middle C played on real recordings: two single notes per instrument from VCSL by
+  Versilian Studios (CC0), in `assets/chimes` and built into the exe, played faster or slower to reach each pitch,
+  placed across the stereo field with a little room. lifelog never records its own sound.
 - **Files:** open the recordings folder, the log and the config file.
 - **AI models:** the transcription and summary models on this computer with their sizes; delete one, remove all
   of lifelog's AI, or move the AI folder to another drive.

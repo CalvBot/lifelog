@@ -81,8 +81,8 @@ dir = ""
 cleanup = ""
 
 [chimes]
-# The sounds voice commands make: "glass", "soft", "synth" or "off".
-style = "glass"
+# The sounds voice commands make: "vibes", "marimba", "kalimba", "bells" or "off".
+style = "vibes"
 # 0 to 100.
 volume = 60
 )toml";
@@ -105,17 +105,23 @@ bool mode_parse(Str s, Mode* out) {
 
 const char* chime_style_name(ChimeStyle s) {
     switch (s) {
-        case CHIME_SOFT: return "soft";
-        case CHIME_SYNTH: return "synth";
+        case CHIME_MARIMBA: return "marimba";
+        case CHIME_KALIMBA: return "kalimba";
+        case CHIME_BELLS: return "bells";
         case CHIME_OFF: return "off";
-        default: return "glass";
+        default: return "vibes";
     }
 }
 
 bool chime_style_parse(Str s, ChimeStyle* out) {
-    if (str_eq(s, str("glass"))) *out = CHIME_GLASS;
-    else if (str_eq(s, str("soft"))) *out = CHIME_SOFT;
-    else if (str_eq(s, str("synth"))) *out = CHIME_SYNTH;
+    if (str_eq(s, str("vibes"))) *out = CHIME_VIBES;
+    else if (str_eq(s, str("marimba"))) *out = CHIME_MARIMBA;
+    else if (str_eq(s, str("kalimba"))) *out = CHIME_KALIMBA;
+    else if (str_eq(s, str("bells"))) *out = CHIME_BELLS;
+    // The names of the synthesised sets that came before.
+    else if (str_eq(s, str("glass"))) *out = CHIME_VIBES;
+    else if (str_eq(s, str("soft"))) *out = CHIME_MARIMBA;
+    else if (str_eq(s, str("synth"))) *out = CHIME_BELLS;
     else if (str_eq(s, str("off"))) *out = CHIME_OFF;
     else return false;
     return true;
