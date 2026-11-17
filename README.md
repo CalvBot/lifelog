@@ -62,6 +62,7 @@ lifelog exclude spotify.exe  # stop recording an app; "include" undoes it
 lifelog summary now          # or later, skip
 lifelog summarise 30m        # a few sentences about the last 30 minutes, from the summary AI
 lifelog launch spotify       # start an installed app or game
+lifelog mics                 # the mics plugged in; pick one in Settings (default: the Windows one)
 lifelog status
 lifelog voice "lifelog, clip the last hour"   # what a voice command would do, without doing it
 ```

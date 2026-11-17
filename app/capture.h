@@ -32,10 +32,23 @@ struct Capture {
     List<Stream*> streams;   // the mic first, then apps; a Stream lives until its thread ends
     List<Stream*> ending;    // told to stop, their threads still writing out; freed once ended
     HANDLE watcher;          // the thread that starts and stops app streams
+    SRWLOCK mic_lock;        // guards mic_want
+    wchar_t mic_want[256];   // config.capture.mic_device, for the mic's thread: "" is the default
+};
+
+struct MicDevice {
+    char id[256];
+    char name[128];
 };
 
 // Starts the mic and the watcher that starts and stops a stream per app.
 void capture_start(App* app);
+// Main thread: record this mic ("" for the Windows default), saved; the mic's stream switches
+// within 3 seconds.
+void capture_set_mic(App* app, Str id, Str name);
+// Main thread: the mics plugged in now, up to `cap`, and the Windows default's name into
+// `default_name`. Returns how many.
+i32 capture_mics(MicDevice* out, i32 cap, char* default_name, i32 name_cap);
 // Private mode on or off; the tray icon follows.
 void capture_set_paused(App* app, bool paused);
 // Stops every stream and writes out what each had (when the program ends). It lets go of the

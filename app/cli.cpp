@@ -14,6 +14,7 @@ static const char* CLI_USAGE =
     "  lifelog game APP.exe | not-game APP.exe       while a game runs, only record; transcribe after\n"
     "  lifelog transcription auto | always | paused | continue   when the GPU work may run (auto = not while\n"
     "                          gaming; continue = back to the mode before it was paused)\n"
+    "  lifelog mics            list the mics plugged in (the one to record is picked in Settings)\n"
     "  lifelog launch APP      start an installed app or game (spotify, \"visual studio code\")\n"
     "  lifelog summary [now | later | skip] [DAY]       the daily summary (DAY = YYYY-MM-DD, default today)\n"
     "  lifelog check-ai        start the summary AI, ask it one thing, stop it\n"
@@ -257,6 +258,17 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
         if (has_arg && str_eq(str_lower(a, args[1]), str("continue"))) return cli_call("POST", str("/transcription?mode=continue"));
         if (!has_arg || !mode_from_text(args[1], &mode)) return cli_error("say which: lifelog transcription auto | always | paused | continue");
         return cli_call("POST", str_fmt(a, "/transcription?mode=%s", mode_name(mode)));
+    }
+    if (str_eq(cmd, str("mics"))) {
+        if (!cli_config(&g_cli.config)) return 1;
+        MicDevice mics[32];
+        char def[128];
+        i32 n = capture_mics(mics, COUNT(mics), def, sizeof(def));
+        Config* c = &g_cli.config;
+        cli_print("Windows default: %s\n", def[0] ? def : "(none)");
+        for (i32 i = 0; i < n; i++) cli_print("  %s%s\n", mics[i].name, strcmp(mics[i].id, c->capture.mic_device) == 0 ? "  (chosen)" : "");
+        cli_print("Recording from: %s\n", c->capture.mic_device[0] ? c->capture.mic_name : "the Windows default");
+        return 0;
     }
     if (str_eq(cmd, str("launch"))) {
         if (!has_arg) return cli_error("say which app: lifelog launch spotify");

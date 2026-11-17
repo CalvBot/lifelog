@@ -11,6 +11,10 @@ api_port = 47800
 
 [capture]
 mic = true
+# The mic to record, by Windows device id (Settings sets it). Empty: the Windows default, followed
+# when it changes. A chosen mic that is not plugged in falls back to the default until it is.
+mic_device = ''
+mic_name = ''
 apps = true
 # Every app that makes a sound is recorded, except the excluded ones (exe names, case-insensitive).
 # New apps wait on the Settings page for a yes (included) or no (excluded); they are recorded meanwhile.
@@ -378,6 +382,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("api_port")) && v.kind == Value::NUMBER) cfg->api_port = (u16)v.number;
         } else if (str_eq(tb, str("capture"))) {
             if (str_eq(k, str("mic"))) take_bool(&cfg->capture.mic, &v);
+            if (str_eq(k, str("mic_device"))) take_string(cfg->capture.mic_device, sizeof(cfg->capture.mic_device), &v);
+            if (str_eq(k, str("mic_name"))) take_string(cfg->capture.mic_name, sizeof(cfg->capture.mic_name), &v);
             if (str_eq(k, str("apps"))) take_bool(&cfg->capture.apps, &v);
             if (str_eq(k, str("included_apps"))) take_names(&cfg->capture.included_apps, &v);
             // Old name of included_apps, merged into it.

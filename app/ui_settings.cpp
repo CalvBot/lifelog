@@ -26,6 +26,7 @@ enum UndoKind : u8 {
     UNDO_CHIME_VOLUME,
     UNDO_VOICE,
     UNDO_WAKE,
+    UNDO_MIC,        // the mic chosen before: its id in `folder`, its name in `text`
 };
 
 // One step back for Ctrl+Z: the value it puts back.
@@ -75,6 +76,12 @@ struct SettingsState {
     bool wake_active;
     bool voice_list;      // the list of voice commands is open
     bool own[SETUP_PARTS];  // "Your own server" was picked, before its address is typed
+
+    // The mics plugged in, looked at when Settings opens and when the list is opened.
+    MicDevice mics[16];
+    i32 mic_count;
+    char default_mic[128];
+    bool mic_list_open;
 
     // The AI file to delete once the confirmation says yes.
     SetupPart remove_part;
@@ -235,6 +242,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
     case UNDO_VOICE: voice_set_listen(app, u.on); break;
     case UNDO_WAKE: voice_set_wake(app, str(u.text)); break;
+    case UNDO_MIC: capture_set_mic(app, str(u.folder), str(u.text)); break;
     }
     s->stale = true;
     ui_say(app, "Undone: %s", u.label);
@@ -903,6 +911,68 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Microphone: the Windows default (followed when it changes), or one picked from the list.
+
+static void mic_card(App* app, SettingsState* s, f32 width, bool opened) {
+    Config* c = &app->config;
+    settings_card("mic", width);
+    title("Microphone");
+    // What the mic's stream is recording from now.
+    char now[128] = "";
+    Capture* cap = &app->capture;
+    if (cap->streams.count && cap->streams.items[0]->source == SOURCE_MIC) {
+        Stream* st = cap->streams.items[0];
+        AcquireSRWLockShared(&st->lock);
+        SET(now, str(st->device));
+        ReleaseSRWLockShared(&st->lock);
+    }
+    status_right(!c->capture.mic ? "off in config.toml" : now[0] ? tmp("recording %s", now) : "no mic");
+
+    if (opened) s->mic_count = capture_mics(s->mics, COUNT(s->mics), s->default_mic, sizeof(s->default_mic));
+    bool chosen = c->capture.mic_device[0] != 0;
+    bool present = false;
+    for (i32 i = 0; i < s->mic_count; i++) present |= strcmp(s->mics[i].id, c->capture.mic_device) == 0;
+    const char* windows = s->default_mic[0] ? tmp("Windows default (%s)", s->default_mic) : "Windows default";
+    const char* preview = !chosen ? windows : c->capture.mic_name[0] ? c->capture.mic_name : "A chosen mic";
+
+    row_label("Record from");
+    ImGui::SetNextItemWidth(px(360));
+    ImGui::BeginDisabled(!c->capture.mic);
+    bool open = ImGui::BeginCombo("##mic", preview);
+    ImGui::EndDisabled();
+    if (open) {
+        // Plugged in or out since: look again each time the list opens.
+        if (!s->mic_list_open) s->mic_count = capture_mics(s->mics, COUNT(s->mics), s->default_mic, sizeof(s->default_mic));
+        i32 picked = -2;  // -1 is the Windows default
+        if (ImGui::Selectable(windows, !chosen)) picked = -1;
+        ImGui::Separator();
+        for (i32 i = 0; i < s->mic_count; i++)
+            if (ImGui::Selectable(tmp("%s##mic%d", s->mics[i].name, i), chosen && strcmp(s->mics[i].id, c->capture.mic_device) == 0)) picked = i;
+        if (!s->mic_count) weak("No mics are plugged in");
+        ImGui::EndCombo();
+        if (picked >= -1) {
+            Str id = picked < 0 ? str("") : str(s->mics[picked].id);
+            if (!str_eq(id, str(c->capture.mic_device))) {
+                SettingsUndo* u = remember(s, UNDO_MIC, "mic %s", picked < 0 ? "Windows default" : s->mics[picked].name);
+                SET(u->folder, str(c->capture.mic_device));
+                SET(u->text, str(c->capture.mic_name));
+                capture_set_mic(app, id, picked < 0 ? str("") : str(s->mics[picked].name));
+            }
+        }
+    }
+    s->mic_list_open = open;
+    ImGui::SameLine();
+    f32 room = ImGui::GetContentRegionAvail().x;
+    if (chosen && !present) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ERROR_RED, "%s", fit("not plugged in: using the Windows default", room));
+    } else {
+        weak(fit(chosen ? "always this one" : "follows Windows when it changes", room));
+    }
+    settings_card_end();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Voice commands (voice.h), and the chimes they make (chime.h).
 
 static void voice_card(App* app, SettingsState* s, f32 width) {
@@ -1300,6 +1370,9 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     f32 avail = ImGui::GetContentRegionAvail().x;
     f32 width = avail < px(760) ? avail : px(760);
     f32 x = ImGui::GetCursorPosX() + (avail - width) / 2;
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::SetCursorPosX(x);
+    mic_card(app, s, width, opened);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     apps_card(app, s, width);

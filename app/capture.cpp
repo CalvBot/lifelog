@@ -363,6 +363,39 @@ static void default_mic_id(IMMDeviceEnumerator* en, wchar_t* out, i32 cap) {
     dev->Release();
 }
 
+// A device's friendly name ("Microphone (USB Audio)"), into `out`; "" if it has none.
+static void device_name(IMMDevice* dev, char* out, i32 cap) {
+    out[0] = 0;
+    IPropertyStore* props = 0;
+    if (FAILED(dev->OpenPropertyStore(STGM_READ, &props))) return;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    if (SUCCEEDED(props->GetValue(FRIENDLY_NAME, &v)) && v.vt == VT_LPWSTR) {
+        Mark m = mark(scratch());
+        set(out, cap, narrow(scratch(), v.pwszVal));
+        rewind(m);
+    }
+    PropVariantClear(&v);
+    props->Release();
+}
+
+// The mic to record, into `out`: the one chosen in Settings while it is plugged in, otherwise the
+// Windows default. True when it is the chosen one.
+static bool wanted_mic_id(App* app, IMMDeviceEnumerator* en, wchar_t* out, i32 cap) {
+    AcquireSRWLockShared(&app->capture.mic_lock);
+    wcsncpy_s(out, cap, app->capture.mic_want, _TRUNCATE);
+    ReleaseSRWLockShared(&app->capture.mic_lock);
+    if (out[0]) {
+        IMMDevice* dev = 0;
+        DWORD state = 0;
+        bool ok = SUCCEEDED(en->GetDevice(out, &dev)) && SUCCEEDED(dev->GetState(&state)) && state == DEVICE_STATE_ACTIVE;
+        if (dev) dev->Release();
+        if (ok) return true;
+    }
+    default_mic_id(en, out, cap);
+    return false;
+}
+
 // Process loopback is opened asynchronously, and Windows calls back on a COM object of ours.
 // This is the one place a vtable is needed: COM requires it.
 struct Activation : IActivateAudioInterfaceCompletionHandler {
@@ -526,26 +559,13 @@ static RunEnd stream_run(Stream* s, Segmenter* seg, Segmenter* voice) {
             step = "the audio devices";
             goto done;
         }
-        TRY(en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev), "the default mic");
-        LPWSTR id = 0;
-        if (SUCCEEDED(dev->GetId(&id))) {
-            wcsncpy_s(mic_id, id, _TRUNCATE);
-            CoTaskMemFree(id);
-        }
-        IPropertyStore* props = 0;
-        char name[128] = {};
-        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
-            PROPVARIANT v;
-            PropVariantInit(&v);
-            if (SUCCEEDED(props->GetValue(FRIENDLY_NAME, &v)) && v.vt == VT_LPWSTR) {
-                Mark m = mark(scratch());
-                SET(name, narrow(scratch(), v.pwszVal));
-                rewind(m);
-            }
-            PropVariantClear(&v);
-            props->Release();
-        }
-        LOG("mic: %s", name[0] ? name : "default device");
+        bool chosen = wanted_mic_id(app, en, mic_id, COUNT(mic_id));
+        step = "a mic";
+        hr = mic_id[0] ? en->GetDevice(mic_id, &dev) : E_NOTFOUND;
+        if (FAILED(hr)) goto done;
+        char name[128];
+        device_name(dev, name, sizeof(name));
+        LOG("mic: %s (%s)", name[0] ? name : "no name", chosen ? "chosen in Settings" : "the Windows default");
         AcquireSRWLockExclusive(&s->lock);
         SET(s->device, str(name));
         ReleaseSRWLockExclusive(&s->lock);
@@ -570,13 +590,14 @@ static RunEnd stream_run(Stream* s, Segmenter* seg, Segmenter* voice) {
     }
 
     while (!s->stop) {
-        // Follow the default mic when it changes (a headset plugged in, or changed in Windows).
+        // Follow the mic to record when it changes: the Windows default changed, the chosen mic
+        // was plugged in or out, or another was chosen in Settings.
         if (en && now_ts() - checked >= 3) {
             checked = now_ts();
             wchar_t now_id[512];
-            default_mic_id(en, now_id, COUNT(now_id));
+            wanted_mic_id(app, en, now_id, COUNT(now_id));
             if (now_id[0] && wcscmp(now_id, mic_id) != 0) {
-                LOG("the default mic changed; switching");
+                LOG("the mic changed; switching");
                 end = RUN_RESTART;
                 goto done;
             }
@@ -946,7 +967,62 @@ static DWORD WINAPI capture_watch_main(void* p) {
 
 // ---------------------------------------------------------------------------------------------
 
+static void publish_mic(App* app) {
+    Mark m = mark(scratch());
+    wchar_t* id = wide(scratch(), str(app->config.capture.mic_device));
+    AcquireSRWLockExclusive(&app->capture.mic_lock);
+    wcsncpy_s(app->capture.mic_want, id, _TRUNCATE);
+    ReleaseSRWLockExclusive(&app->capture.mic_lock);
+    rewind(m);
+}
+
+void capture_set_mic(App* app, Str id, Str name) {
+    SET(app->config.capture.mic_device, id);
+    SET(app->config.capture.mic_name, id.len ? name : str(""));
+    config_save_string("capture", "mic_device", app->config.capture.mic_device);
+    config_save_string("capture", "mic_name", app->config.capture.mic_name);
+    publish_mic(app);
+    LOG("mic: %s chosen", id.len ? app->config.capture.mic_name : "the Windows default");
+}
+
+i32 capture_mics(MicDevice* out, i32 cap, char* default_name, i32 name_cap) {
+    default_name[0] = 0;
+    HRESULT co = CoInitializeEx(0, COINIT_APARTMENTTHREADED);
+    IMMDeviceEnumerator* en = device_enumerator();
+    i32 n = 0;
+    if (en) {
+        IMMDevice* dev = 0;
+        if (SUCCEEDED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) {
+            device_name(dev, default_name, name_cap);
+            dev->Release();
+        }
+        IMMDeviceCollection* all = 0;
+        UINT count = 0;
+        if (SUCCEEDED(en->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &all)) && SUCCEEDED(all->GetCount(&count))) {
+            for (UINT i = 0; i < count && n < cap; i++) {
+                if (FAILED(all->Item(i, &dev))) continue;
+                LPWSTR id = 0;
+                if (SUCCEEDED(dev->GetId(&id))) {
+                    Mark m = mark(scratch());
+                    SET(out[n].id, narrow(scratch(), id));
+                    rewind(m);
+                    CoTaskMemFree(id);
+                    device_name(dev, out[n].name, sizeof(out[n].name));
+                    if (!out[n].name[0]) SET(out[n].name, str("Unnamed mic"));
+                    n++;
+                }
+                dev->Release();
+            }
+        }
+        if (all) all->Release();
+        en->Release();
+    }
+    if (SUCCEEDED(co)) CoUninitialize();
+    return n;
+}
+
 void capture_start(App* app) {
+    publish_mic(app);
     if (app->config.capture.mic) {
         Stream* s = (Stream*)calloc(1, sizeof(Stream));
         CHECK(s, "memory for a stream");

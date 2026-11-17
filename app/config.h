@@ -29,6 +29,10 @@ struct Config {
 
     struct {
         bool mic;
+        // The mic to record: its Windows device id, "" for the Windows default (followed when it
+        // changes). The name is only shown, for when the device is not plugged in.
+        char mic_device[256];
+        char mic_name[128];
         bool apps;
         Names included_apps;
         Names excluded_apps;

@@ -189,6 +189,8 @@ C++ built with MSVC, in a plain data-oriented style:
 
 - Records the mic and every app that plays sound, each as its own stream, with the app's exe, process and window
   title.
+- The mic is the Windows default, followed when it changes, unless one is picked in Settings. A picked mic
+  that is unplugged falls back to the default until it is back. Everything is recorded as 16 kHz mono.
 - Private mode (paused) records nothing and drops the sentence in progress.
 - New apps are recorded until you decide: included (keep recording) or excluded (record nothing).
 - Excluded apps can still count as games.
@@ -370,6 +372,7 @@ lifelog summary now | later | skip
 lifelog summarise 15m | 1h | today
 lifelog transcription auto | always | paused | continue
 lifelog launch APP
+lifelog mics
 lifelog status
 lifelog check-ai
 lifelog voice "lifelog, clip the last hour"
