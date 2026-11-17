@@ -8,7 +8,7 @@ folder with a script in it.
 Status: step 1 (the core) works. Steps 1b to 4 are plans.
 
 To start, copy [commands/example](../commands/example) from this repo into `%APPDATA%\lifelog\commands\`, open
-Settings, and allow it. Then "lifelog, say hi to Sam" shows "Hello, Sam!" at the top of the screen.
+Settings, and allow it. Then "lifelog, say hi to Sam" shows "Hello, Sam!" at the bottom right of the screen.
 
 ## A command is a folder
 
@@ -94,7 +94,7 @@ The script prints one JSON line as its last line of output:
 {"ok": false, "message": "Spotify is not open on any device"}
 ```
 
-- `ok: true` plays the done chime and shows `banner` at the top of the screen.
+- `ok: true` plays the done chime and shows `banner` at the bottom right of the screen.
 - `ok: false` plays the error chime and shows `message` in Settings beside the last command.
 - A script that prints no JSON line counts as `ok` when it exits with code 0. The last line it printed is used
   as the message.

@@ -368,7 +368,7 @@ The window only exists while it is open. Closing it frees its memory; the record
 - In private mode only resume and the media keys are carried out, and nothing about the sentence is kept.
 - Open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's
   do; a chime then says how it went. Its sentence also goes into the transcript as usual.
-- When a command works, a banner shows at the top of the screen with the window in front, for 2.5 s, then fades:
+- When a command works, a banner shows at the bottom right of the screen with the window in front, for 2.5 s, then fades:
   the wake word and what was done ("Jarvis — Alarm set: 4 minutes"). It takes no focus or clicks (`banner.cpp`).
 - `lifelog voice "TEXT"` prints what a sentence would do, without doing it.
 - Custom commands (`commands.cpp`, [docs/custom-commands.md](docs/custom-commands.md)) are matched on all the

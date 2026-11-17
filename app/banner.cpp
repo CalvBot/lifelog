@@ -1,4 +1,4 @@
-// banner.cpp: a small note at the top of the screen when a voice command worked ("Jarvis — Alarm
+// banner.cpp: a small note at the bottom right of the screen (above the taskbar) when a voice command worked ("Jarvis — Alarm
 // set: 4 minutes"). It never takes the focus or a click, so a game keeps both; it shows on the
 // screen with the window in front, for 2.5 s, then fades. It has its own thread and window, made
 // on first use, and draws itself with GDI: a dark rounded box (its corners smoothed by hand, as a
@@ -111,7 +111,7 @@ static void banner_draw(HWND hwnd) {
         }
     }
 
-    POINT at = {mi.rcMonitor.left + (mi.rcMonitor.right - mi.rcMonitor.left - w) / 2, mi.rcMonitor.top + scaled(28)};
+    POINT at = {mi.rcWork.right - w - scaled(24), mi.rcWork.bottom - h - scaled(24)};
     POINT zero = {};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     UpdateLayeredWindow(hwnd, screen, &at, &g_banner_size, g_banner_dc, &zero, 0, &blend, ULW_ALPHA);

@@ -64,6 +64,6 @@ bool voice_set_model(App* app, Str model);
 // Main thread: whether the backup model listens while the transcriber's is not loaded, saved.
 void voice_set_backup(App* app, bool on);
 
-// banner.cpp. Main thread: a note at the top of the screen for 2.5 s, "WHO — TEXT" ("Jarvis — Alarm
+// banner.cpp. Main thread: a note at the bottom right of the screen for 2.5 s, "WHO — TEXT" ("Jarvis — Alarm
 // set: 4 minutes"); it takes no focus or clicks.
 void banner_show(const char* who, const char* text);
