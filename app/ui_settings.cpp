@@ -104,7 +104,7 @@ static void weak(const char* text) {
     ImGui::TextColored(weak_text(), "%s", text);
 }
 
-// A card `width` wide (ui_common's card_begin always takes the whole window's width).
+// A rounded card `width` wide around a section (call settings_card_end after).
 static void settings_card(const char* id, f32 width) {
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16), px(14)));

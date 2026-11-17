@@ -17,7 +17,6 @@
 #define ICON_CHECK "\xee\x81\xb0"          // U+E070
 #define ICON_COPY "\xee\x82\xa2"           // U+E0A2
 #define ICON_PASTE "\xee\x8f\xab"          // U+E3EB
-#define ICON_POWER "\xee\x85\x83"          // U+E143
 #define ICON_REFRESH "\xee\x85\x88"        // U+E148
 #define ICON_SETTINGS "\xee\x85\x97"       // U+E157
 #define ICON_SCROLL_TEXT "\xee\x91\xa3"    // U+E463
@@ -25,7 +24,6 @@
 #define ICON_APP_WINDOW "\xee\x90\xaa"     // U+E42A
 #define ICON_CALENDAR "\xee\x8a\xb8"       // U+E2B8
 #define ICON_FILE "\xee\x83\x84"           // U+E0C4
-#define ICON_LIST "\xee\x84\x8b"           // U+E10B
 #define ICON_IMAGE "\xee\x83\xb9"          // U+E0F9
 #define ICON_VIDEO "\xee\x86\xa4"          // U+E1A4
 #define ICON_CLOCK "\xee\x82\x8b"          // U+E08B
@@ -112,34 +110,6 @@ static bool toggle(const char* id, bool* on) {
     f32 r = h / 2 - px(3), x = *on ? at.x + w - h / 2 : at.x + h / 2;
     dl->AddCircleFilled(ImVec2(x, at.y + h / 2), r, IM_COL32(255, 255, 255, 255));
     return clicked;
-}
-
-// A centred column at most `max` wide (call column_end after).
-static void column_begin(f32 max) {
-    f32 avail = ImGui::GetContentRegionAvail().x;
-    f32 width = avail < max ? avail : max;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - width) / 2);
-    ImGui::BeginGroup();
-    ImGui::PushItemWidth(width * 0.5f);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
-}
-static void column_end() {
-    ImGui::PopTextWrapPos();
-    ImGui::PopItemWidth();
-    ImGui::EndGroup();
-}
-
-// A rounded card around a section (call card_end after).
-static void card_begin(const char* id) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(14), px(14)));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
-}
-static void card_end() {
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar(2);
 }
 
 // ---------------------------------------------------------------------------------------------

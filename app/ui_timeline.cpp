@@ -292,11 +292,6 @@ static TlPreview* tl_preview(App* app, FileItem* f) {
 static void small_begin() { ImGui::PushFont(0, TL_SMALL); }
 static void small_end() { ImGui::PopFont(); }
 
-static ImU32 col_alpha(ImU32 c, f32 alpha) {
-    u32 a = (u32)(((c >> IM_COL32_A_SHIFT) & 0xFF) * alpha);
-    return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
-}
-
 // The next visual line of a text wrapped to `width`: [at, *stop) is drawn; returns where the
 // line after starts. Paragraphs break at '\n'.
 static const char* wrap_line(const char* at, const char* end, f32 width, const char** stop) {
