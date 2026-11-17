@@ -80,22 +80,6 @@ struct Segmenter {
     i32 fail_count;
 };
 
-// `text` as a JSON string, or null when empty.
-static Str json_text(Arena* a, const char* text) {
-    if (!text[0]) return str("null");
-    i64 len = (i64)strlen(text);
-    char* out = PUSH_ARRAY(a, char, len * 6 + 3);
-    i64 n = 0;
-    out[n++] = '"';
-    for (i64 i = 0; i < len; i++) {
-        u8 c = (u8)text[i];
-        if (c == '"' || c == '\\') out[n++] = '\\', out[n++] = (char)c;
-        else if (c < 0x20) n += sprintf_s(out + n, 7, "\\u%04x", c);
-        else out[n++] = (char)c;
-    }
-    out[n++] = '"';
-    return {out, n};
-}
 
 static void seg_write(Segmenter* seg, f64 end_ts) {
     Arena* a = scratch();
@@ -108,10 +92,18 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
         return;
     }
     StreamMeta* meta = &seg->meta;
-    Str pid = meta->pid ? str_fmt(a, "%u", meta->pid) : str("null");
-    Str json = str_fmt(a, "{\"start_ts\":%.6f,\"end_ts\":%.6f,\"sample_rate\":%d,\"source\":\"%s\",\"exe\":%s,\"pid\":%s,\"title\":%s,\"device\":%s}",
-                       seg->start_ts, end_ts, RATE, meta->source == SOURCE_MIC ? "mic" : "app", json_text(a, meta->exe).ptr,
-                       pid.ptr, json_text(a, meta->title).ptr, json_text(a, meta->device).ptr);
+    Buf b = {};
+    buf_fmt(&b, "{\"start_ts\":%.6f,\"end_ts\":%.6f,\"sample_rate\":%d,\"source\":\"%s\",\"exe\":", seg->start_ts, end_ts, RATE,
+            meta->source == SOURCE_MIC ? "mic" : "app");
+    json_quote_or_null(&b, meta->exe);
+    if (meta->pid) buf_fmt(&b, ",\"pid\":%u", meta->pid);
+    else buf_cstr(&b, ",\"pid\":null");
+    buf_cstr(&b, ",\"title\":");
+    json_quote_or_null(&b, meta->title);
+    buf_cstr(&b, ",\"device\":");
+    json_quote_or_null(&b, meta->device);
+    buf_cstr(&b, "}");
+    Str json = buf_take(&b, a);
     wchar_t stem[MAX_PATH], path[MAX_PATH], part[MAX_PATH];
     swprintf(stem, MAX_PATH, L"%s\\%014llu-%s", seg->spool, (u64)(seg->start_ts * 1000.0), wide(a, str(seg->name)));
     swprintf(path, MAX_PATH, L"%s.json", stem);

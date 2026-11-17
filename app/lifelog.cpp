@@ -32,6 +32,7 @@ struct App;
 #include "pool.h"
 
 #include "base.cpp"
+#include "json.cpp"
 #include "events.cpp"
 #include "config.cpp"
 #include "disk.cpp"
@@ -40,7 +41,6 @@ struct App;
 #include "apps.cpp"
 #include "capture.cpp"
 #include "icon.cpp"
-#include "json.cpp"
 #include "llm.cpp"
 #include "setup.cpp"
 #include "worker.cpp"

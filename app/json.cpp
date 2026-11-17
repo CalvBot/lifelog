@@ -303,6 +303,12 @@ void json_quote(Buf* b, Str s) {
     list_push(&b->chars, '"');
 }
 
+// `s` as a JSON string, or null when it is empty.
+void json_quote_or_null(Buf* b, const char* s) {
+    if (s && s[0]) json_quote(b, str(s));
+    else buf_cstr(b, "null");
+}
+
 void json_write(Buf* b, const Json* j) {
     switch (j->type) {
     case JSON_NULL: buf_cstr(b, "null"); break;

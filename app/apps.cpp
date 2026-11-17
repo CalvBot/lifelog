@@ -964,27 +964,6 @@ static void steam(Scan* scan, Arena* a) {
 
 // ---- Epic: one JSON manifest per game
 
-// The string value of `"key": "..."` in a JSON text, unescaped (simple escapes only), or empty.
-static Str json_string(Arena* a, Str text, const char* key) {
-    Str quoted = str_fmt(scratch(), "\"%s\"", key);
-    i64 at = str_find(text, quoted);
-    if (at < 0) return {};
-    i64 i = at + quoted.len;
-    while (i < text.len && (text.ptr[i] == ' ' || text.ptr[i] == '\t' || text.ptr[i] == '\r' || text.ptr[i] == '\n' || text.ptr[i] == ':')) i++;
-    if (i >= text.len || text.ptr[i] != '"') return {};
-    char* s = PUSH_ARRAY(a, char, text.len - i + 1);
-    i64 n = 0;
-    for (i++; i < text.len && text.ptr[i] != '"'; i++) {
-        char c = text.ptr[i];
-        if (c == '\\' && i + 1 < text.len) {
-            c = text.ptr[++i];
-            if (c == 'n') c = '\n';
-            else if (c == 't') c = '\t';
-        }
-        s[n++] = c;
-    }
-    return {s, n};
-}
 
 static void epic(Scan* scan, Arena* a) {
     Str data = env(a, L"ProgramData");
@@ -996,18 +975,19 @@ static void epic(Scan* scan, Arena* a) {
         Mark m = mark(scratch());
         Str text = read_file(a, wide(scratch(), join(scratch(), dir, entries.items[i].name)));
         rewind(m);
-        if (!text.ptr) continue;
+        Json manifest = {};
+        if (!text.ptr || !json_parse(a, text, &manifest, 0, 0)) continue;
         // Only manifests whose AppCategories (if listed) include "games".
-        i64 cat = str_find(text, str("\"AppCategories\""));
-        if (cat >= 0) {
-            Str rest = str_sub(text, cat);
-            i64 end = str_find(rest, str("]"));
-            if (end < 0 || str_find(str_sub(rest, 0, end), str("\"games\"")) < 0) continue;
+        const Json* cats = json_get(&manifest, "AppCategories");
+        if (cats->type == JSON_ARRAY) {
+            bool game = false;
+            for (i32 k = 0; k < json_len(cats) && !game; k++) game = str_eq(json_text(json_at(cats, k)), str("games"));
+            if (!game) continue;
         }
-        Str name = json_string(a, text, "DisplayName"), location = json_string(a, text, "InstallLocation");
+        Str name = json_text(json_get(&manifest, "DisplayName")), location = json_text(json_get(&manifest, "InstallLocation"));
         if (!name.len || !location.len) continue;
-        location = slashes_to_back(location);
-        Str launch = json_string(a, text, "LaunchExecutable");
+        location = slashes_to_back(str_copy(a, location));
+        Str launch = str_copy(a, json_text(json_get(&manifest, "LaunchExecutable")));
         add_game(scan, a, name, location, launch.len ? join(a, location, slashes_to_back(launch)) : Str{});
     }
     list_free(&entries);

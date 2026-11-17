@@ -84,10 +84,6 @@ static void json_names(Buf* b, Names* n) {
 }
 
 // A string, or null when it is empty.
-static void json_text_or_null(Buf* b, const char* s) {
-    if (s && s[0]) json_quote(b, str(s));
-    else buf_cstr(b, "null");
-}
 
 static void json_wide(Buf* b, const wchar_t* w) {
     Mark m = mark(scratch());
@@ -107,7 +103,7 @@ static void status_json(App* app, Buf* b) {
     buf_cstr(b, "{\"excluded_apps\":");
     json_names(b, &c->capture.excluded_apps);
     buf_cstr(b, ",\"game_running\":");
-    json_text_or_null(b, app->apps.game_running);
+    json_quote_or_null(b, app->apps.game_running);
     buf_cstr(b, ",\"games\":");
     json_names(b, &c->processing.games);
     buf_fmt(b, ",\"gpu_3d_percent\":%u,\"gpu_busy_percent\":%u", app->worker.gpu_3d_percent, c->processing.gpu_busy_percent);
@@ -142,13 +138,13 @@ static void status_json(App* app, Buf* b) {
         SET(title, str(s->title));
         ReleaseSRWLockShared(&s->lock);
         buf_cstr(b, "{\"device\":");
-        json_text_or_null(b, mic ? device : 0);
+        json_quote_or_null(b, mic ? device : 0);
         buf_cstr(b, ",\"exe\":");
-        json_text_or_null(b, mic ? 0 : s->exe);
+        json_quote_or_null(b, mic ? 0 : s->exe);
         if (mic) buf_cstr(b, ",\"pid\":null");
         else buf_fmt(b, ",\"pid\":%u", s->pid);
         buf_fmt(b, ",\"source\":\"%s\",\"title\":", mic ? "mic" : "app");
-        json_text_or_null(b, mic ? 0 : title);
+        json_quote_or_null(b, mic ? 0 : title);
         buf_cstr(b, "}");
     }
     buf_cstr(b, "],\"summary\":{\"ask_at\":");
@@ -161,7 +157,7 @@ static void status_json(App* app, Buf* b) {
     buf_cstr(b, ",\"today\":");
     json_quote(b, str(today));
     buf_cstr(b, ",\"today_status\":");
-    json_text_or_null(b, today_status);
+    json_quote_or_null(b, today_status);
     buf_cstr(b, "},\"transcription\":{\"mode\":");
     json_quote(b, str(mode_name(c->processing.mode)));
     buf_cstr(b, ",\"state\":");
