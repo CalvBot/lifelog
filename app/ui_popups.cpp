@@ -300,11 +300,6 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
     return keep;
 }
 
-// "HH:MM", `hours` from now.
-static void hm_from_now(char out[8], f64 hours) {
-    LocalTime t = local_time(now_ts() + hours * 3600);
-    snprintf(out, 8, "%02d:%02d", t.hour, t.minute);
-}
 
 // One frame of the delay box. False when it should close.
 static bool delay_draw(App* app, PopupState* s) {
@@ -325,7 +320,7 @@ static bool delay_draw(App* app, PopupState* s) {
     bool enter = ImGui::InputText("##at", s->at, sizeof(s->at), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsNoBlank);
     for (i32 h = 1; h <= 3; h++) {
         ImGui::SameLine(0, px(4));
-        if (ImGui::Button(tmp("+%d h", h))) hm_from_now(s->at, h);
+        if (ImGui::Button(tmp("+%d h", h))) hm_of(now_ts() + h * 3600.0, s->at);
     }
     ImGui::SameLine(0, px(4));
     if (ImGui::Button("23:30")) SET(s->at, str("23:30"));
@@ -360,7 +355,7 @@ static bool popup_draw(App* app, PopupState* s, f32* next_frame_ms) {
         s->ready = true;
         s->amount = 15;
         s->changed_ts = now - 1;  // the preview at once
-        hm_from_now(s->at, 2);
+        hm_of(now_ts() + 2 * 3600.0, s->at);
         if (g_copy.done) g_copy.done = false;  // from a menu opened before
     }
     if (g_copy.done) {

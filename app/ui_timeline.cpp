@@ -997,7 +997,7 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
             s->calendar_open = false;
         } else {
             i32 y, m, d;
-            CHECK(sscanf_s(s->day, "%d-%d-%d", &y, &m, &d) == 3, "the day shown as YYYY-MM-DD");
+            CHECK(parse_day(s->day, &y, &m, &d), "the day shown as YYYY-MM-DD");
             s->cal_year = y;
             s->cal_month = m;
             s->calendar_open = true;
@@ -1246,7 +1246,7 @@ static void tl_calendar(App* app, TimelineState* s) {
     char today[11];
     today_day(today);
     i32 ty, tm, td;
-    CHECK(sscanf_s(today, "%d-%d-%d", &ty, &tm, &td) == 3, "today as YYYY-MM-DD");
+    CHECK(parse_day(today, &ty, &tm, &td), "today as YYYY-MM-DD");
     const char* picked = 0;
     ImGui::SetNextWindowPos(ImVec2(s->cal_button_max.x - (7 * 36 + 12) * u, s->cal_button_max.y + 4 * u));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
@@ -1506,7 +1506,7 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
             f->play_mode = tl_mode(ImGui::GetIO().KeyShift, ImGui::GetIO().KeyCtrl);
         }
     }
-    const char* clock = clock_text(line->start_ts);
+    const char* clock = hms_text(line->start_ts);
     f32 cw = ImGui::CalcTextSize(clock).x;
     f32 ty = top + pad;
     dl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
@@ -1580,7 +1580,7 @@ static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     f32 top = y + 6 * u;
-    const char* clock = clock_text(file->ts);
+    const char* clock = hms_text(file->ts);
     f32 cw = ImGui::CalcTextSize(clock).x;
     dl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, top + (header - L->lh) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
     ImGui::PushID((int)file->id);

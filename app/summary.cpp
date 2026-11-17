@@ -180,20 +180,8 @@ static Str strip_never(Arena* a, Str text, Str* topics, i32 topic_count) {
 // ---------------------------------------------------------------------------------------------
 // Dates and times
 
-static const char* WEEKDAYS[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
-static const char* MONTHS[] = {"January", "February", "March",     "April",   "May",      "June",
-                               "July",    "August",   "September", "October", "November", "December"};
+// WEEKDAYS, MONTHS, parse_day and hm_of are in base.cpp.
 
-// A day as "YYYY-MM-DD", checked.
-static bool parse_day(const char* day, i32* y, i32* m, i32* d) {
-    if (!day || strlen(day) != 10 || day[4] != '-' || day[7] != '-') return false;
-    for (i32 i = 0; i < 10; i++)
-        if (i != 4 && i != 7 && !isdigit((u8)day[i])) return false;
-    *y = atoi(day);
-    *m = atoi(day + 5);
-    *d = atoi(day + 8);
-    return *m >= 1 && *m <= 12 && *d >= 1 && *d <= 31;
-}
 
 // "HH:MM" (or "H:MM"), checked.
 static bool parse_hhmm(Str s, i32* h, i32* m) {
@@ -228,10 +216,6 @@ static Str short_date(Arena* a, const char* day) {
     return str_fmt(a, "%.3s %d %.3s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
 }
 
-static void clock_text(f64 ts, char out[6]) {
-    LocalTime t = local_time(ts);
-    snprintf(out, 6, "%02d:%02d", t.hour, t.minute);
-}
 
 // When to ask about `day`: ask_at on that day (times before 04:00 fall on the next morning).
 static f64 ask_moment(const char* day, const char* ask_at) {
@@ -249,8 +233,9 @@ static f64 next_at(i32 h, i32 m) {
     return today > now ? today : local_ts(t.year, t.month, t.day + 1, h, m);
 }
 
-// Days from today's local date to `ts`'s.
-static i32 days_from_today(f64 ts) {
+// Calendar days from today's local date to `ts`'s (midnight to midnight; ui_common's days_ago
+// counts journal days, 04:00 to 04:00).
+static i32 calendar_days_from_today(f64 ts) {
     LocalTime a = local_time(now_ts()), b = local_time(ts);
     f64 diff = local_ts(b.year, b.month, b.day, 12, 0) - local_ts(a.year, a.month, a.day, 12, 0);
     return (i32)floor(diff / 86400.0 + 0.5);
@@ -259,7 +244,7 @@ static i32 days_from_today(f64 ts) {
 // "today at 17:00", "tomorrow at 09:00", "on Tue 17 Nov at 09:00".
 static Str when_text(Arena* a, f64 ts) {
     LocalTime t = local_time(ts);
-    i32 days = days_from_today(ts);
+    i32 days = calendar_days_from_today(ts);
     if (days == 0) return str_fmt(a, "today at %02d:%02d", t.hour, t.minute);
     if (days == 1) return str_fmt(a, "tomorrow at %02d:%02d", t.hour, t.minute);
     return str_fmt(a, "on %.3s %d %.3s at %02d:%02d", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1], t.hour, t.minute);
@@ -668,7 +653,7 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
         Str text = str_trim(line->text);
         if (!text.len) continue;
         char at[6];
-        clock_text(line->start_ts, at);
+        hm_of(line->start_ts, at);
         if (is_mic(line)) {
             since_me.count = 0;
             list_push(&out_lines, {line->start_ts, line->end_ts, str_fmt(a, "[%s] me: %.*s", at, (int)text.len, text.ptr)});
@@ -888,7 +873,7 @@ static Slice<Flag> flagged_moments(Arena* a, Slice<SLine> lines) {
             Str who = is_mic(l) ? str("me") : l->name;
             Str text = str_trim(l->text);
             char at[6];
-            clock_text(l->start_ts, at);
+            hm_of(l->start_ts, at);
             buf_fmt(&context, "[%s] %.*s: %.*s\n", at, (int)who.len, who.ptr, (int)text.len, text.ptr);
         }
         list_push(&flags, {line->start_ts, str_copy(a, str_trim(line->text)), buf_take(&context, a)});
@@ -905,7 +890,7 @@ static Str flags_material(Arena* a, Slice<Flag> flags) {
     buf_cstr(&b, "\n\nMoments where you said \"need to remember\" (each MUST be in `remember`):\n");
     for (i32 i = 0; i < flags.count; i++) {
         char at[6];
-        clock_text(flags.items[i].ts, at);
+        hm_of(flags.items[i].ts, at);
         buf_fmt(&b, "\nFlag at %s:\n", at);
         buf_add(&b, flags.items[i].context);
     }
@@ -921,7 +906,7 @@ static Str remember_section(Arena* a, Slice<Flag> flags, const Json* from_model)
     buf_cstr(&b, "\n\n**To remember**\n");
     for (i32 i = 0; i < flags.count; i++) {
         char at[6];
-        clock_text(flags.items[i].ts, at);
+        hm_of(flags.items[i].ts, at);
         const Json* item = 0;
         for (i32 k = 0; k < n && !item; k++)
             if (str_eq(json_text(json_get(json_at(from_model, k), "time")), str(at))) item = json_at(from_model, k);
@@ -1570,8 +1555,8 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
             for (i32 i = 0; i < chunks.count && parts_ok; i++) {
                 Chunk* c = &chunks.items[i];
                 char t0[6], t1[6];
-                clock_text(c->first, t0);
-                clock_text(c->last, t1);
+                hm_of(c->first, t0);
+                hm_of(c->last, t1);
                 if (my_words(c->text) < QUIET_PART_WORDS) {
                     buf_fmt(&material, "\n%s–%s\n- You said almost nothing (only apps playing).\n", t0, t1);
                     continue;
@@ -1766,7 +1751,7 @@ static void ask(App* app, const char* day, f64 mine, f64 apps) {
     t.sticky = true;
     rewind(m);
     char at[6];
-    clock_text(now_ts() + COUNTDOWN_SECS, at);
+    hm_of(now_ts() + COUNTDOWN_SECS, at);
     app->summary.countdown_ts = now_ts() + COUNTDOWN_SECS;
     SET(app->summary.countdown_day, str(day));
     phase_set(app, "starts at %s", at);
@@ -1809,7 +1794,7 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
         if (!parse_hhmm(str(at), &h, &mi)) return str_fmt(a, "time must look like 23:00 (got '%s')", at ? at : "");
         f64 when = next_at(h, mi);
         char text[6];
-        clock_text(when, text);
+        hm_of(when, text);
         app->summary.snooze_ts = when;
         LOG("summary for %s: asking again at %s", day, text);
         phase_set(app, "asking again at %s", text);

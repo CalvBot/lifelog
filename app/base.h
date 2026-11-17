@@ -166,6 +166,12 @@ f64 local_ts(i32 year, i32 month, i32 day, i32 hour, i32 minute);  // local wall
 // A journal day runs 04:00 to 04:00 local time. "YYYY-MM-DD" of the day `ts` falls in.
 void day_of(f64 ts, char out[11]);
 void day_bounds(const char* day, f64* from, f64* to);
+// A day as "YYYY-MM-DD", checked. False if it is not one.
+bool parse_day(const char* day, i32* y, i32* m, i32* d);
+// "14:05", local time.
+void hm_of(f64 ts, char out[6]);
+extern const char* const WEEKDAYS[7];  // "Monday" first, as LocalTime.weekday
+extern const char* const MONTHS[12];
 
 // ---------------------------------------------------------------------------------------------
 // Log: %LOCALAPPDATA%\lifelog\lifelog.log, one line per call, from any thread.

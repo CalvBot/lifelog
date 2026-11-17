@@ -200,9 +200,28 @@ void day_of(f64 ts, char out[11]) {
     snprintf(out, 11, "%04d-%02d-%02d", t.year, t.month, t.day);
 }
 
+const char* const WEEKDAYS[7] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
+const char* const MONTHS[12] = {"January", "February", "March",     "April",   "May",      "June",
+                                "July",    "August",   "September", "October", "November", "December"};
+
+bool parse_day(const char* day, i32* y, i32* m, i32* d) {
+    if (!day || strlen(day) != 10 || day[4] != '-' || day[7] != '-') return false;
+    for (i32 i = 0; i < 10; i++)
+        if (i != 4 && i != 7 && !isdigit((u8)day[i])) return false;
+    *y = atoi(day);
+    *m = atoi(day + 5);
+    *d = atoi(day + 8);
+    return *m >= 1 && *m <= 12 && *d >= 1 && *d <= 31;
+}
+
+void hm_of(f64 ts, char out[6]) {
+    LocalTime t = local_time(ts);
+    snprintf(out, 6, "%02d:%02d", t.hour, t.minute);
+}
+
 void day_bounds(const char* day, f64* from, f64* to) {
     i32 y = 0, m = 0, d = 0;
-    CHECK(sscanf_s(day, "%d-%d-%d", &y, &m, &d) == 3, "a day as YYYY-MM-DD, not \"%s\"", day);
+    CHECK(parse_day(day, &y, &m, &d), "a day as YYYY-MM-DD, not \"%s\"", day);
     *from = local_ts(y, m, d, 4, 0);
     *to = local_ts(y, m, d + 1, 4, 0);
 }

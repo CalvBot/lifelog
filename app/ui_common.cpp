@@ -146,22 +146,21 @@ static void card_end() {
 // Time and sizes
 
 // "14:05:09"
-static const char* clock_text(f64 ts) {
+static const char* hms_text(f64 ts) {
     LocalTime t = local_time(ts);
     return tmp("%02d:%02d:%02d", t.hour, t.minute, t.second);
 }
 
 // "14:05"
 static const char* hm_text(f64 ts) {
-    LocalTime t = local_time(ts);
-    return tmp("%02d:%02d", t.hour, t.minute);
+    char out[6];
+    hm_of(ts, out);
+    return tmp("%s", out);
 }
-
-// WEEKDAYS and MONTHS are in summary.cpp.
 
 static void today_day(char out[11]) { day_of(now_ts(), out); }
 
-// Days from `day` to today (0 for today).
+// Journal days (04:00 to 04:00) from `day` to today, 0 for today.
 static i32 days_ago(const char* day) {
     f64 from, to, tf, tt;
     char today[11];
