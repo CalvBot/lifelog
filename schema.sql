@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS segments (
     text     TEXT NOT NULL,
     recording    INTEGER,     -- the recording it was heard in (NULL for lines from before audio was kept)
     start_sample INTEGER,     -- where it is in that recording, in samples from its start; start_ts and
-    end_sample   INTEGER      -- end_ts are these as unix seconds, kept for searching by time
+    end_sample   INTEGER,     -- end_ts are these as unix seconds, kept for searching by time
+    words        BLOB         -- when each word was said: per word, four little-endian int32s, its text as
+                              -- bytes [from, to) of text, its sound as samples [start, end) from start_sample
 );
 CREATE INDEX IF NOT EXISTS segments_start ON segments (start_ts);
 

@@ -28,6 +28,20 @@ void db_post(Job* job, DbRun* run);
 // number, or 0 when it wants none. `wanted` must outlive the request: a static.
 void db_post_latest(Job* job, DbRun* run, volatile LONG64* wanted, u64 asked);
 
+template <typename T>
+struct Slice {
+    T* items;
+    i32 count;
+};
+
+// A word of a line: its text as bytes [from, to) of the line's, and when it was said.
+struct Word {
+    i32 from;
+    i32 to;
+    f64 start_ts;
+    f64 end_ts;
+};
+
 struct Line {
     i64 id;
     f64 start_ts;
@@ -37,6 +51,7 @@ struct Line {
     Str title;
     Str text;
     bool audio;    // it has a recording (whose file may since have been deleted: capture.keep_audio_days)
+    Slice<Word> words;  // in order; none for lines from before words were kept
 };
 
 struct FileItem {
@@ -47,12 +62,6 @@ struct FileItem {
     i64 size;
     Str path;    // "YYYY-MM-DD/<file>" under data_dir/files, or the full path or URL for a link
     bool link;   // points at the original, no copy kept
-};
-
-template <typename T>
-struct Slice {
-    T* items;
-    i32 count;
 };
 
 // Lines in [from, to), oldest first, at most `limit`.

@@ -71,6 +71,7 @@ bool db_init() {
         if (!has_column(db, "segments", "audio_offset")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio_offset REAL", 0, 0, 0);
         ok = migrate_recordings(db);
     }
+    if (ok && !has_column(db, "segments", "words")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN words BLOB", 0, 0, 0);
     if (ok && !has_column(db, "files", "link")) sqlite3_exec(db, "ALTER TABLE files ADD COLUMN link INTEGER NOT NULL DEFAULT 0", 0, 0, 0);
     if (ok && !has_column(db, "alerts", "item")) sqlite3_exec(db, "ALTER TABLE alerts ADD COLUMN item INTEGER", 0, 0, 0);
     sqlite3_close(db);
@@ -167,7 +168,7 @@ static bool migrate_recordings(sqlite3* db) {
     return ok;
 }
 
-#define LINE_COLUMNS "s.id, s.start_ts, s.end_ts, s.source, s.speaker, s.title, s.text, s.recording IS NOT NULL"
+#define LINE_COLUMNS                                                                                     "s.id, s.start_ts, s.end_ts, s.source, s.speaker, s.title, s.text, s.recording IS NOT NULL, s.words,"     " (SELECT sample_rate FROM recordings WHERE id = s.recording)"
 
 // Runs `st` (already bound) and reads Lines from it; finalizes it.
 static Slice<Line> read_lines(sqlite3_stmt* st, Arena* a, i32 limit) {
@@ -185,6 +186,19 @@ static Slice<Line> read_lines(sqlite3_stmt* st, Arena* a, i32 limit) {
         l.title = col_str(st, 5, a);
         l.text = col_str(st, 6, a);
         l.audio = sqlite3_column_int(st, 7) != 0;
+        // Its words (see schema.sql), with their sound as unix seconds.
+        const i32* q = (const i32*)sqlite3_column_blob(st, 8);
+        i32 n = sqlite3_column_bytes(st, 8) / 16;
+        i32 rate = sqlite3_column_int(st, 9);
+        if (q && n && rate > 0) {
+            Word* w = PUSH_ARRAY(a, Word, n);
+            for (i32 i = 0; i < n; i++) {
+                i32 v[4];
+                memcpy(v, q + i * 4, 16);
+                w[i] = {v[0], v[1], l.start_ts + (f64)v[2] / rate, l.start_ts + (f64)v[3] / rate};
+            }
+            l.words = {w, n};
+        }
         list_push(&lines, l);
     }
     sqlite3_finalize(st);

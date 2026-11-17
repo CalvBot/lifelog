@@ -390,29 +390,35 @@ static i32 found_spans(Str text, Str term, Span** out) {
     return n;
 }
 
-// How a line's text is drawn: `shown` of it (0..1) in `done`, the rest in `rest`. While playing,
-// the word being heard is in the accent colour.
-static i32 progress_spans(Str text, f64 shown, ImU32 done, ImU32 rest, bool playing, Span* spans) {
+// A line that has just arrived, writing itself out: `shown` of it (0..1) is drawn, the rest not.
+static i32 reveal_spans(Str text, f64 shown, Span* spans) {
     i64 total = utf8_count(text);
-    if (total < 1) total = 1;
-    if (shown < 0) shown = 0;
-    if (shown > 1) shown = 1;
-    i64 cut_chars = (i64)floor(shown * total + 0.5);
-    if (cut_chars > total) cut_chars = total;
-    i64 cut = utf8_offset(text, cut_chars);
-    i64 said = cut, word = cut;
-    if (playing && cut < text.len) {
-        // The word being heard: from the cut back to the last space, on to the next one.
-        said = cut;
-        while (said > 0 && text.ptr[said - 1] != ' ') said--;
-        word = cut;
-        while (word < text.len && text.ptr[word] != ' ') word++;
+    shown = shown < 0 ? 0 : shown > 1 ? 1 : shown;
+    i64 cut = utf8_offset(text, (i64)floor(shown * total + 0.5));
+    spans[0] = {cut, ImGui::GetColorU32(ImGuiCol_Text), 0};
+    spans[1] = {text.len, 0, 0};
+    return 2;
+}
+
+// A line being played: what has been said in the text colour, the word being said in the accent
+// colour, the rest dimmed. `text` starts `skip` bytes into the line's own (it is trimmed), which
+// the words count from. A word is being said from its start until the next one's.
+static i32 hearing_spans(Str text, i64 skip, Slice<Word> words, f64 play_ts, Span* spans) {
+    ImU32 said = ImGui::GetColorU32(ImGuiCol_Text), rest = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    i32 at = -1;
+    while (at + 1 < words.count && words.items[at + 1].start_ts <= play_ts) at++;
+    if (at < 0 || (at + 1 == words.count && play_ts >= words.items[at].end_ts)) {
+        spans[0] = {text.len, at < 0 && words.count ? rest : said, 0};  // lines from before words were kept: all of it
+        return 1;
     }
-    i32 n = 0;
-    spans[n++] = {said, done, 0};
-    if (word > said) spans[n++] = {word, accent_u32(), 0};
-    spans[n++] = {text.len, rest, 0};
-    return n;
+    Word* w = &words.items[at];
+    i64 from = w->from - skip, to = w->to - skip;
+    from = from < 0 ? 0 : from > text.len ? text.len : from;
+    to = to < from ? from : to > text.len ? text.len : to;
+    spans[0] = {from, said, 0};
+    spans[1] = {to, accent_u32(), 0};
+    spans[2] = {text.len, rest, 0};
+    return 3;
 }
 
 
@@ -1541,12 +1547,11 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
         reveal = (now_ts() - s->fresh.items[i].at) / secs;
     }
     if (hearing) {
-        f64 shown = (f->play_ts - line->start_ts) / (line->end_ts - line->start_ts > 0.3 ? line->end_ts - line->start_ts : 0.3);
-        i32 n = progress_spans(text, shown, ImGui::GetColorU32(ImGuiCol_Text), ImGui::GetColorU32(ImGuiCol_TextDisabled), true, spans);
+        i32 n = hearing_spans(text, text.ptr - line->text.ptr, line->words, f->play_ts, spans);
         draw_spans(dl, tp, text, L->text_w, spans, n);
     } else if (reveal >= 0 && reveal < 1) {
         f->animating = true;
-        i32 n = progress_spans(text, reveal, ImGui::GetColorU32(ImGuiCol_Text), 0, false, spans);
+        i32 n = reveal_spans(text, reveal, spans);
         draw_spans(dl, tp, text, L->text_w, spans, n);
     } else {
         Span* found;
