@@ -45,7 +45,7 @@ static ImFont* bold_font() {
     return fonts->Fonts.Size > 1 ? fonts->Fonts[1] : 0;
 }
 
-#define ICON_TRASH "\xee\x86\x8e"          // U+E18E
+#define ICON_TRASH "\xee\x86\x8d"          // U+E18D trash-2
 #define ICON_FOLDER "\xee\x83\x9c"         // U+E0DC
 #define ICON_BELL_RING "\xee\x88\xa3"      // U+E223
 #define ICON_LOCATE "\xee\x87\x99"         // U+E1D9
