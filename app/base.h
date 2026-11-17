@@ -192,6 +192,9 @@ const wchar_t* exe_dir();
 // Explorer would. Waits until the shell has handed it over, which a Store app (Notepad) needs from
 // a thread with no message loop. False if it could not.
 bool shell_open(const wchar_t* file, const wchar_t* args);
+// Opens `path` with whatever is registered (a folder in the file manager), or with `in_folder`
+// shows it selected in Explorer. False if the shell could not.
+bool shell_show(const wchar_t* path, bool in_folder);
 
 // The header of a 16-bit mono PCM WAV holding `data_bytes` of samples at `rate`. Every WAV lifelog
 // writes (spool, kept audio, copies, chimes) has exactly this header, so its samples start at

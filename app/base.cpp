@@ -253,6 +253,12 @@ bool shell_open(const wchar_t* file, const wchar_t* args) {
     info.nShow = SW_SHOWNORMAL;
     return ShellExecuteExW(&info) != 0;
 }
+bool shell_show(const wchar_t* path, bool in_folder) {
+    if (!in_folder) return shell_open(path, 0);
+    wchar_t args[MAX_PATH + 16];
+    swprintf(args, COUNT(args), L"/select,\"%ls\"", path);
+    return shell_open(L"explorer.exe", args);
+}
 
 const wchar_t* local_dir() {
     static wchar_t buf[MAX_PATH];

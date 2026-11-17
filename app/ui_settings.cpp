@@ -161,13 +161,7 @@ struct OpenPathJob {
 
 static void open_path_run(Job* job) {
     OpenPathJob* o = (OpenPathJob*)job->data;
-    if (o->select) {
-        wchar_t args[MAX_PATH + 16];
-        swprintf(args, COUNT(args), L"/select,\"%s\"", o->path);
-        o->ok = shell_open(L"explorer.exe", args);
-    } else {
-        o->ok = shell_open(o->path, 0);
-    }
+    o->ok = shell_show(o->path, o->select);
 }
 
 static void open_path_apply(App* app, Job* job) {
@@ -178,7 +172,7 @@ static void open_path_apply(App* app, Job* job) {
     ui_say(app, "Could not open %s", path.ptr);
 }
 
-static void open_path(App*, const wchar_t* path, bool select) {
+static void settings_open_path(App*, const wchar_t* path, bool select) {
     Job* job = job_new(open_path_apply);
     OpenPathJob* o = PUSH(&job->arena, OpenPathJob);
     wcsncpy_s(o->path, path, _TRUNCATE);
@@ -472,7 +466,7 @@ static void folders_view(App* app, SettingsState* s) {
     }
     ImGui::EndDisabled();
     if (act) set_folder(app, s, str(act_folder), act_to);
-    else if (act_folder[0]) open_path(app, wide(scratch(), str(act_folder)), false);
+    else if (act_folder[0]) settings_open_path(app, wide(scratch(), str(act_folder)), false);
 }
 
 static void apps_card(App* app, SettingsState* s, f32 width) {
@@ -689,7 +683,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         break;
     case ACT_REVEAL: {
         Mark m = mark(scratch());
-        open_path(app, wide(scratch(), str(a->path)), true);
+        settings_open_path(app, wide(scratch(), str(a->path)), true);
         rewind(m);
     } break;
     case ACT_NONE: break;
@@ -973,7 +967,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     // Opened from the pool, as the other files are: the shell may not open it from this thread.
     if (ImGui::Button(edit)) {
         const wchar_t* path = summary_prompt_file(app);
-        if (path) open_path(app, path, false);
+        if (path) settings_open_path(app, path, false);
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
@@ -1065,7 +1059,7 @@ static void files_card(App* app, f32 width) {
         if (i) ImGui::SameLine();
         bool has = targets[i] && targets[i][0];
         ImGui::BeginDisabled(!has);
-        if (ImGui::Button(label(icons[i], texts[i]))) open_path(app, targets[i], i > 0);
+        if (ImGui::Button(label(icons[i], texts[i]))) settings_open_path(app, targets[i], i > 0);
         ImGui::EndDisabled();
         if (has && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(i ? "Show %s in its folder" : "%s", narrow(scratch(), targets[i]).ptr);
@@ -1126,7 +1120,7 @@ static void ai_card(App* app, SettingsState* s, f32 width) {
     ImGui::SameLine();
     if (ImGui::Button(open)) {
         Mark m = mark(scratch());
-        open_path(app, wide(scratch(), str(app->config.ai.dir)), false);
+        settings_open_path(app, wide(scratch(), str(app->config.ai.dir)), false);
         rewind(m);
     }
 

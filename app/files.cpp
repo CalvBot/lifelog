@@ -484,14 +484,8 @@ static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error
         snprintf(error, cap, "bad path");
     } else if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(error, cap, "the file is gone from %s", narrow(scratch(), path).ptr);
-    } else if (in_folder) {
-        wchar_t* args = wide(scratch(), str_fmt(scratch(), "/select,\"%s\"", narrow(scratch(), path).ptr));
-        if (!shell_open(L"explorer.exe", args))
-            snprintf(error, cap, "could not show %s", narrow(scratch(), path).ptr);
-    } else {
-        // Whatever is registered: the file's app, or the default file manager for a folder.
-        if (!shell_open(path, 0))
-            snprintf(error, cap, "could not open %s", narrow(scratch(), path).ptr);
+    } else if (!shell_show(path, in_folder)) {
+        snprintf(error, cap, "could not %s %s", in_folder ? "show" : "open", narrow(scratch(), path).ptr);
     }
     rewind(m);
     sqlite3_close(db);
