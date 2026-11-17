@@ -4,6 +4,10 @@ static const i32 VOICE_RATE = 16000;
 static const i32 VOICE_SHORTEST = VOICE_RATE / 4;  // under 250 ms is not a command
 static const i32 VOICE_LONGEST = 12 * VOICE_RATE;  // of a longer sentence, only its last 12 s
 static const f64 VOICE_WAIT_SECS = 6;              // after the name alone
+// A sentence for us that is not a command yet waits this long for the rest ("lifelog, summarise
+// the last, um, twenty minutes" is cut at each pause), and is then heard again joined to it.
+static const f64 VOICE_JOIN_SECS = 1.6;
+static const i32 VOICE_JOIN_MOST = VOICE_RATE * 15;  // joined no further than 15 s
 
 void voice_heard(App* app, const f32* samples, i32 n, f32 gain) {
     Voice* v = &app->voice;
@@ -237,6 +241,7 @@ struct VoiceCommand {
     char shown[128];  // what the banner says when it worked: "Alarm set: 4 minutes"
     CmdMatch custom;  // DO_CUSTOM
     u16 key;          // DO_MEDIA: VK_MEDIA_PLAY_PAUSE, VK_MEDIA_NEXT_TRACK or VK_MEDIA_PREV_TRACK
+    bool unfinished;  // no time or stretch said yet: it may come after a pause
 };
 
 static void command(VoiceCommand* c, const char* method, const char* path, const char* said) {
@@ -304,16 +309,17 @@ static char unit_of(Str w) {
     return 0;
 }
 
-// The stretch said for a summary, as clip_range takes it: "15m", "2h", "today". Default 15m.
-static void clip_range_said(const Words* ws, char* out, i32 cap) {
+// The stretch said for a summary, as clip_range takes it: "15m", "2h", "today". Default 15m, and
+// false, when none was said.
+static bool clip_range_said(const Words* ws, char* out, i32 cap) {
     snprintf(out, cap, "15m");
     if (has(ws, "today") || has(ws, "todays")) {
         snprintf(out, cap, "today");
-        return;
+        return true;
     }
     if (has_pair(ws, "half", "an") || has_pair(ws, "half", "hour")) {
         snprintf(out, cap, "30m");
-        return;
+        return true;
     }
     for (i32 i = 0; i < ws->n; i++) {
         // "15m" and "2h" in one word.
@@ -323,7 +329,7 @@ static void clip_range_said(const Words* ws, char* out, i32 cap) {
             for (i64 k = 0; k < w.len - 1; k++) digits &= isdigit((u8)w.ptr[k]) != 0;
             if (digits) {
                 snprintf(out, cap, "%.*s", (int)w.len, w.ptr);
-                return;
+                return true;
             }
         }
         char unit = unit_of(w);
@@ -342,8 +348,9 @@ static void clip_range_said(const Words* ws, char* out, i32 cap) {
                           str_eq(ws->w[i + 3], str("half"));
         if (and_a_half && unit == 'h') snprintf(out, cap, "%dm", n * 60 + 30);
         else snprintf(out, cap, "%d%c", n, unit);
-        return;
+        return true;
     }
+    return false;
 }
 
 // The app named in `ws` from word `from` on: "spotify", "visual studio code".
@@ -550,6 +557,7 @@ static void parse_builtin(const Words* ws, VoiceCommand* c) {
     }
     if (word_in(first, "remind", "wake") || has(ws, "reminder") || has(ws, "alarm") || has(ws, "timer")) {
         reminder_said(ws, now_ts(), c);
+        c->unfinished = c->due <= 0;
         return;
     }
     if ((has(ws, "check") || has(ws, "test")) && (has(ws, "ai") || has_pair(ws, "a", "i"))) {
@@ -578,7 +586,7 @@ static void parse_builtin(const Words* ws, VoiceCommand* c) {
     // "summarise the last half hour", "sum up the last 10 minutes", "recap".
     if (find_prefix(ws, "summar") >= 0 || has_pair(ws, "sum", "up") || has(ws, "recap")) {
         c->what = DO_SUMMARISE;
-        clip_range_said(ws, c->query, sizeof(c->query));
+        c->unfinished = !clip_range_said(ws, c->query, sizeof(c->query));
         char words[32];
         range_words(c->query, words, sizeof(words));
         snprintf(c->said, sizeof(c->said), "summarise the last %s", words);
@@ -1007,13 +1015,22 @@ static DWORD WINAPI voice_main(void* p) {
     char loaded_model[32] = {};
     whisper_context* ctx = 0;
     f64 armed_until = 0;  // the name was said alone: the next sentence is the command
+    // What was said to us that is not a command yet (malloc), joined to the next sentence until
+    // held_until. `held_said` is what it was heard as, for the "not a command" when nothing comes.
+    VoiceSentence held = {};
+    f64 held_until = 0;
+    char held_said[160] = {};
+    // Or a command with no time or stretch yet ("summarise the last"), done as it is if nothing
+    // more comes.
+    VoiceCommand held_cmd = {};
     f64 tried = 0;
     char failed_dir[MAX_PATH] = {};  // the model would not load from there: not tried again
     char failed_model[32] = {};
     while (!stopping(app)) {
         DWORD wait = 10000;
-        if (armed_until) {
-            f64 left = armed_until - now_ts();
+        f64 until = armed_until && (!held_until || armed_until < held_until) ? armed_until : held_until;
+        if (until) {
+            f64 left = until - now_ts();
             wait = left > 0 ? (DWORD)(left * 1000) + 1 : 0;
         }
         HANDLE waits[2] = {app->stop, v->wake};
@@ -1033,7 +1050,9 @@ static DWORD WINAPI voice_main(void* p) {
         if (!listen) {
             atomic_set(&v->state, VOICE_OFF);
             voice_drop_all(v);
-            armed_until = 0;
+            armed_until = held_until = 0;
+            free(held.samples);
+            held = {};
             continue;
         }
         // Not there yet (set up from Settings, or the folder moved): look again every 10 s.
@@ -1053,6 +1072,21 @@ static DWORD WINAPI voice_main(void* p) {
             voice_drop_all(v);
             continue;
         }
+        if (held_until && now_ts() >= held_until) {
+            held_until = 0;
+            free(held.samples);
+            held = {};
+            if (held_cmd.what != DO_NOTHING) {  // nothing more came: done as it was said
+                voice_do(app, &held_cmd, held_said);
+                held_cmd = {};
+                armed_until = 0;
+            } else if (held_said[0]) {  // nothing more came: it was not a command
+                bool paused = atomic_get(&app->capture.paused) != 0;
+                if (!paused) LOG("voice: \"%s\": not a command", held_said);
+                voice_say(app, CHIME_DIDNT_CATCH, paused ? 0 : held_said, paused ? 0 : "not a command");
+                armed_until = 0;
+            }
+        }
         if (armed_until && now_ts() >= armed_until) {
             armed_until = 0;
             voice_say(app, CHIME_CANCELLED, 0, 0);
@@ -1065,34 +1099,86 @@ static DWORD WINAPI voice_main(void* p) {
             AcquireSRWLockShared(&v->wake_lock);
             SET(wake, str(v->wake_word));
             ReleaseSRWLockShared(&v->wake_lock);
+            // The rest of what was held: heard again as one, with a short gap, so Whisper has the
+            // name and all the words together.
+            bool joined = held.samples && now_ts() < held_until && held.n + s.n <= VOICE_JOIN_MOST;
+            if (joined) {
+                i32 gap = VOICE_RATE * 3 / 10;
+                i32 n = held.n + gap + s.n;
+                f32* all = (f32*)calloc((size_t)n, sizeof(f32));
+                memcpy(all, held.samples, sizeof(f32) * held.n);
+                memcpy(all + held.n + gap, s.samples, sizeof(f32) * s.n);
+                free(s.samples);
+                s.samples = all;
+                s.n = n;
+            }
+            // Too long to join: what was held is done as it was (or was not a command after all).
+            if (held.samples && !joined && held_cmd.what != DO_NOTHING) {
+                voice_do(app, &held_cmd, held_said);
+            } else if (held.samples && !joined && held_said[0]) {
+                bool paused = atomic_get(&app->capture.paused) != 0;
+                if (!paused) LOG("voice: \"%s\": not a command", held_said);
+                voice_say(app, CHIME_DIDNT_CATCH, paused ? 0 : held_said, paused ? 0 : "not a command");
+            }
+            // Only the first part is shown if it never becomes a command: what came after may be
+            // someone talking, not to us.
+            char first[160];
+            SET(first, str(joined && held_said[0] ? held_said : ""));
+            VoiceCommand before = joined ? held_cmd : VoiceCommand{};
+            held_cmd = {};
+            free(held.samples);
+            held = {};
+            held_until = 0;
+            held_said[0] = 0;
             Str text = voice_text(a, ctx, &s, wake);
-            free(s.samples);
-            bool armed = armed_until && now_ts() < armed_until;
+            bool armed = joined || (armed_until && now_ts() < armed_until);
             Understood u;
             voice_understand(text, wake, armed, &u);
+            // Joined, it should still be the command it was; if Whisper now hears it as nothing,
+            // what was said first stands.
+            if (joined && before.what != DO_NOTHING && (u.c.what == DO_NOTHING || !u.for_us)) {
+                u.for_us = true;
+                u.name_only = false;
+                u.c = before;
+                u.c.unfinished = false;
+            }
             if (!u.for_us) {  // not for us: dropped, never logged
+                free(s.samples);
                 rewind(m);
                 continue;
             }
             Str heard = str_trim(text);
             char said[160];
             snprintf(said, sizeof(said), "%.*s", (int)(heard.len < 159 ? heard.len : 159), heard.ptr);
-            if (u.c.what != DO_NOTHING) {
+            if (u.c.what != DO_NOTHING && u.c.unfinished) {
+                // "Summarise the last", then a pause: wait for "twenty minutes".
+                held = s;
+                held_until = now_ts() + VOICE_JOIN_SECS;
+                held_cmd = u.c;
+                SET(held_said, str(first[0] ? first : said));
+                if (armed_until) armed_until = held_until;
+            } else if (u.c.what != DO_NOTHING) {
                 armed_until = 0;
+                free(s.samples);
                 voice_do(app, &u.c, said);
             } else if (u.name_only) {
+                // Kept, so the command is heard after the name.
                 armed_until = now_ts() + VOICE_WAIT_SECS;
+                held = s;
+                held_until = armed_until;
                 voice_say(app, CHIME_LISTENING, 0, 0);
             } else {
-                armed_until = 0;
-                bool paused = atomic_get(&app->capture.paused) != 0;
-                if (!paused) LOG("voice: \"%s\": not a command", said);
-                voice_say(app, CHIME_DIDNT_CATCH, paused ? 0 : said, paused ? 0 : "not a command");
+                // Perhaps the rest comes after a pause: wait for it before saying it was not caught.
+                held = s;
+                held_until = now_ts() + VOICE_JOIN_SECS;
+                SET(held_said, str(first[0] ? first : said));
+                if (armed_until) armed_until = held_until;
             }
             rewind(m);
         }
     }
     if (ctx) p_whisper_free(ctx);
+    free(held.samples);
     voice_drop_all(v);
     CoUninitialize();
     return 0;
