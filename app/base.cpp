@@ -403,15 +403,15 @@ void log_line(const char* level, const char* fmt, ...) {
 }
 
 
-void wav_header(u8 out[WAV_HEADER], u32 rate, u32 data_bytes) {
-    u32 riff = 36 + data_bytes, fmt_len = 16, bytes_per_sec = rate * 2;
-    u16 pcm = 1, mono = 1, align = 2, bits = 16;
+void wav_header(u8 out[WAV_HEADER], u32 rate, u32 data_bytes, u16 channels) {
+    u32 riff = 36 + data_bytes, fmt_len = 16, bytes_per_sec = rate * 2 * channels;
+    u16 pcm = 1, align = (u16)(2 * channels), bits = 16;
     memcpy(out, "RIFF", 4);
     memcpy(out + 4, &riff, 4);
     memcpy(out + 8, "WAVEfmt ", 8);
     memcpy(out + 16, &fmt_len, 4);
     memcpy(out + 20, &pcm, 2);
-    memcpy(out + 22, &mono, 2);
+    memcpy(out + 22, &channels, 2);
     memcpy(out + 24, &rate, 4);
     memcpy(out + 28, &bytes_per_sec, 4);
     memcpy(out + 32, &align, 2);

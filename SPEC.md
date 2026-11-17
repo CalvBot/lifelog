@@ -297,8 +297,9 @@ The window only exists while it is open. Closing it frees its memory; the record
 - **Daily summary:** on/off, what it is doing, ask time, word limit, Edit prompt, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
 - **Chimes:** the sounds voice commands will make (listening, done, clip saved, didn't catch, error, cancelled).
-  Glass (bell-like, heard over a game), Soft (round and short) or Off, a volume, and a button to hear each one.
-  They are made in code (`chime.cpp`), not sound files, and lifelog never records its own sound.
+  Glass (a ringing bell, heard over a game), Soft (a marimba), Synth (detuned saws with a filter sweep) or Off,
+  a volume, and a button to hear each one. They are made in code (`chime.cpp`), not sound files: stereo, with an
+  echo and a little room. lifelog never records its own sound.
 - **Files:** open the recordings folder, the log and the config file.
 - **AI models:** the transcription and summary models on this computer with their sizes; delete one, remove all
   of lifelog's AI, or move the AI folder to another drive.

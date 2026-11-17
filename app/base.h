@@ -205,7 +205,7 @@ bool shell_show(const wchar_t* path, bool in_folder);
 // writes (spool, kept audio, copies, chimes) has exactly this header, so its samples start at
 // WAV_HEADER.
 static const i32 WAV_HEADER = 44;
-void wav_header(u8 out[WAV_HEADER], u32 rate, u32 data_bytes);
+void wav_header(u8 out[WAV_HEADER], u32 rate, u32 data_bytes, u16 channels = 1);
 
 // Whole files.
 Str read_file(Arena* a, const wchar_t* path);   // .ptr is null if it could not be read

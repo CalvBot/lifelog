@@ -13,10 +13,11 @@ enum Mode : i32 {
 const char* mode_name(Mode m);
 bool mode_parse(Str s, Mode* out);
 
-// How the chimes sound (chime.h): two sets, or none.
+// How the chimes sound (chime.h): three sets, or none. Saved by name, so the order may change.
 enum ChimeStyle : i32 {
-    CHIME_GLASS,  // bell-like, brighter: heard over a game
+    CHIME_GLASS,  // a ringing bell, brighter: heard over a game
     CHIME_SOFT,   // round and short, like a marimba
+    CHIME_SYNTH,  // warm detuned synth with a filter sweep
     CHIME_OFF,
 };
 const char* chime_style_name(ChimeStyle s);

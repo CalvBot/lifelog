@@ -896,8 +896,8 @@ static void chimes_card(App* app, SettingsState* s, f32 width) {
     status_right("for voice commands");
 
     row_label("Style");
-    const char* names[] = {"Glass", "Soft", "Off"};
-    i32 style = segments("chimes", names, 3, (i32)c->chimes.style, px(78));
+    const char* names[] = {"Glass", "Soft", "Synth", "Off"};
+    i32 style = segments("chimes", names, COUNT(names), (i32)c->chimes.style, px(70));
     if (style >= 0) {
         SettingsUndo* u = remember(s, UNDO_CHIME_STYLE, "chimes %s", names[style]);
         u->n = (u32)c->chimes.style;
@@ -905,7 +905,7 @@ static void chimes_card(App* app, SettingsState* s, f32 width) {
         chime_play(app, CHIME_DONE);
     }
     ImGui::SameLine();
-    const char* hints[] = {"bell-like, heard over a game", "round and short", "silent"};
+    const char* hints[] = {"a ringing bell, heard over a game", "round and short", "warm, with a filter sweep", "silent"};
     weak(fit(hints[c->chimes.style], ImGui::GetContentRegionAvail().x));
 
     bool off = c->chimes.style == CHIME_OFF;

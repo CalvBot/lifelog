@@ -81,7 +81,7 @@ dir = ""
 cleanup = ""
 
 [chimes]
-# The sounds voice commands make: "glass", "soft" or "off".
+# The sounds voice commands make: "glass", "soft", "synth" or "off".
 style = "glass"
 # 0 to 100.
 volume = 60
@@ -106,6 +106,7 @@ bool mode_parse(Str s, Mode* out) {
 const char* chime_style_name(ChimeStyle s) {
     switch (s) {
         case CHIME_SOFT: return "soft";
+        case CHIME_SYNTH: return "synth";
         case CHIME_OFF: return "off";
         default: return "glass";
     }
@@ -114,6 +115,7 @@ const char* chime_style_name(ChimeStyle s) {
 bool chime_style_parse(Str s, ChimeStyle* out) {
     if (str_eq(s, str("glass"))) *out = CHIME_GLASS;
     else if (str_eq(s, str("soft"))) *out = CHIME_SOFT;
+    else if (str_eq(s, str("synth"))) *out = CHIME_SYNTH;
     else if (str_eq(s, str("off"))) *out = CHIME_OFF;
     else return false;
     return true;
