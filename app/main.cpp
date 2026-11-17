@@ -693,6 +693,8 @@ static i32 run_app() {
         return 1;
     }
     setup_cleanup(&app->config);  // before the AI is loaded from there
+    commands_load(&app->config);
+    LOG("commands: %d custom command(s) in %ls", g_commands.count, commands_dir());
     disk_start();
     app->storage.ready = db_init();
 

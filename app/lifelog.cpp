@@ -8,6 +8,7 @@
 #include <dxgi1_2.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <dpapi.h>
 
 #include "vendor/sqlite/sqlite3.h"
 #include "vendor/imgui/imgui.h"
@@ -28,6 +29,7 @@ struct App;
 #include "clip.h"
 #include "chime.h"
 #include "voice.h"
+#include "commands.h"
 #include "ui.h"
 #include "app.h"
 #include "pool.h"
@@ -60,5 +62,6 @@ struct App;
 #include "api.cpp"
 #include "banner.cpp"
 #include "voice.cpp"
+#include "commands.cpp"
 #include "cli.cpp"
 #include "main.cpp"

@@ -83,6 +83,14 @@ struct SettingsState {
     char default_mic[128];
     bool mic_list_open;
 
+    // Custom commands: the test box, the secret being typed ("id/key" in secret_for), and which
+    // secrets are set, looked at again when the commands are read again.
+    char cmd_try[256];
+    char secret[512];
+    char secret_for[96];
+    bool secret_set_now[CMD_MAX][CMD_SECRETS];
+    u64 cmd_version;
+
     // The AI file to delete once the confirmation says yes.
     SetupPart remove_part;
     char remove_model[128];
@@ -1104,6 +1112,137 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Custom voice commands (commands.h)
+
+static void voice_custom_done(App* app, const CmdMatch* m, bool ok, const char* message, const char* banner);  // voice.cpp
+
+static void command_row(App* app, SettingsState* s, i32 index, const CustomCommand* c) {
+    ImGui::PushID(c->id);
+    bool usable = c->allowed && !c->error[0];
+    bool on = usable && c->enabled;
+    ImGui::BeginDisabled(!usable);
+    if (toggle("##on", &on)) commands_enable(app, c->id, on);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(strong_text(), "%s", c->name);
+    ImGui::SameLine(0, px(10));
+    f32 room = ImGui::GetContentRegionAvail().x;
+    if (c->error[0]) {
+        ImGui::TextColored(ERROR_RED, "%s", fit(c->error, room));
+    } else if (!c->allowed) {
+        if (button(label(ICON_CHECK, "Allow"))) commands_allow(app, c->id);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Runs: %s\nin %s", c->run, narrow(scratch(), c->dir).ptr);
+        ImGui::SameLine(0, px(10));
+        weak(fit(c->changed ? "its files changed: look at them, then allow it again" : "new: look at its files, then allow it", ImGui::GetContentRegionAvail().x));
+    } else if (c->description[0]) {
+        weak(fit(c->description, room));
+    }
+
+    // Its phrases, one line per action.
+    ImGui::Indent(px(44));
+    for (i32 a = 0; a < c->action_count; a++) {
+        char line[512];
+        i32 len = 0;
+        for (i32 p = 0; p < c->phrase_count && len < (i32)sizeof(line); p++)
+            if (c->phrases[p].action == a)
+                len += snprintf(line + len, sizeof(line) - len, "%s\"%s\"", len ? "  ·  " : "", c->phrases[p].say);
+        if (!len) continue;
+        weak(fit(tmp("%s%s%s", line, c->actions[a].description[0] ? "  —  " : "", c->actions[a].description), ImGui::GetContentRegionAvail().x));
+    }
+    // Its secrets: typed here, kept encrypted, never shown again.
+    for (i32 k = 0; k < c->secret_count; k++) {
+        ImGui::AlignTextToFramePadding();
+        weak(c->secrets[k]);
+        ImGui::SameLine(px(44) + px(ROW_LABEL_W));
+        char key[96];
+        snprintf(key, sizeof(key), "%s/%s", c->id, c->secrets[k]);
+        bool mine = strcmp(s->secret_for, key) == 0;
+        static char empty[2];
+        empty[0] = 0;
+        ImGui::SetNextItemWidth(px(260));
+        bool is_set = s->secret_set_now[index][k];
+        bool enter = ImGui::InputTextWithHint(tmp("##secret%d", k), is_set ? "set (type to replace)" : "not set: paste it here", mine ? s->secret : empty,
+                                              mine ? sizeof(s->secret) : sizeof(empty), ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsItemActivated() && !mine) {
+            SET(s->secret_for, str(key));
+            s->secret[0] = 0;
+        }
+        if (enter && mine && s->secret[0]) {
+            bool ok = secret_set(c->id, c->secrets[k], str_trim(str(s->secret)));
+            SecureZeroMemory(s->secret, sizeof(s->secret));
+            s->secret_for[0] = 0;
+            s->secret_set_now[index][k] = ok || is_set;
+            ui_say(app, ok ? "%s's %s saved" : "%s's %s could not be saved (see the log)", c->name, c->secrets[k]);
+        }
+        if (mine && !ImGui::IsItemActive() && !enter) {
+            SecureZeroMemory(s->secret, sizeof(s->secret));  // left without Enter: nothing is kept
+            s->secret_for[0] = 0;
+        }
+        if (is_set) {
+            ImGui::SameLine();
+            if (button(label(ICON_TRASH, "Remove"))) {
+                secret_set(c->id, c->secrets[k], str(""));
+                s->secret_set_now[index][k] = false;
+                ui_say(app, "%s's %s removed", c->name, c->secrets[k]);
+            }
+        }
+    }
+    ImGui::Unindent(px(44));
+    ImGui::PopID();
+}
+
+static void commands_card(App* app, SettingsState* s, f32 width, bool opened) {
+    // Opening Settings reads the folder again, so a command just copied in shows.
+    if (opened) commands_load(&app->config);
+    if (opened || s->cmd_version != g_commands.version) {
+        s->cmd_version = g_commands.version;
+        for (i32 i = 0; i < g_commands.count; i++)
+            for (i32 k = 0; k < g_commands.items[i].secret_count; k++)
+                s->secret_set_now[i][k] = secret_is_set(g_commands.items[i].id, g_commands.items[i].secrets[k]);
+    }
+    settings_card("commands", width);
+    title("Custom commands");
+    status_right(g_commands.count == 1 ? "1 command" : tmp("%d commands", g_commands.count));
+    if (!g_commands.count) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(weak_text(), "Voice commands of your own: each is a folder here with a command.toml and a script, such as "
+                                        "one that plays a song on Spotify. See docs/custom-commands.md in lifelog's repo.");
+        ImGui::PopTextWrapPos();
+    }
+    // The main thread is the only one that changes the list, so it reads it without the lock.
+    for (i32 i = 0; i < g_commands.count; i++) {
+        if (i) ImGui::Dummy(ImVec2(0, px(4)));
+        command_row(app, s, i, &g_commands.items[i]);
+    }
+
+    ImGui::Dummy(ImVec2(0, px(6)));
+    if (button(label(ICON_FOLDER_OPEN, "Open folder"))) settings_open_path(app, commands_dir(), false);
+    ImGui::SameLine();
+    if (button(label(ICON_REFRESH, "Reload"))) {
+        commands_load(&app->config);
+        ui_say(app, "%d custom command(s) read", g_commands.count);
+    }
+
+    row_label("Try a sentence");
+    ImGui::SetNextItemWidth(px(260));
+    bool enter = ImGui::InputTextWithHint("##cmd_try", "play bad guy", s->cmd_try, sizeof(s->cmd_try), ImGuiInputTextFlags_EnterReturnsTrue);
+    CmdMatch m;
+    bool found = s->cmd_try[0] && commands_match_text(str(s->cmd_try), &m);
+    bool paused = atomic_get(&app->capture.paused) != 0;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!found || paused);
+    if (button(label(ICON_PLAY, "Run")) || (enter && found && !paused)) commands_run(app, &m, voice_custom_done);
+    ImGui::EndDisabled();
+    if (paused && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Custom commands do not run in private mode");
+    if (s->cmd_try[0]) {
+        ImGui::SameLine(0, px(10));
+        weak(fit(found ? tmp("%s", m.label) : "matches nothing (the switched-on commands only)", ImGui::GetContentRegionAvail().x));
+    }
+    settings_card_end();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Daily summary
 
 static void summary_card(App* app, SettingsState* s, f32 width) {
@@ -1385,6 +1524,9 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     voice_card(app, s, width);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::SetCursorPosX(x);
+    commands_card(app, s, width, opened);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     files_card(app, width);

@@ -99,6 +99,12 @@ listen = true
 # The word that starts a command.
 wake_word = "lifelog"
 
+[commands]
+# Custom voice commands: folders in %APPDATA%\lifelog\commands (docs/custom-commands.md). Settings
+# fills these: the commands allowed to run (folder:hash of its files) and those switched off.
+allowed = []
+disabled = []
+
 [ui]
 # Speakers hidden in the timeline (and left out of copies and playback).
 hidden = []
@@ -162,10 +168,11 @@ struct Toml {
     i32 line;
     char* error;
     i32 error_cap;
+    const char* file;  // for messages; "config.toml" when null
 };
 
 static bool toml_fail(Toml* t, const char* what) {
-    snprintf(t->error, t->error_cap, "config.toml line %d: %s", t->line, what);
+    snprintf(t->error, t->error_cap, "%s line %d: %s", t->file ? t->file : "config.toml", t->line, what);
     return false;
 }
 
@@ -275,6 +282,33 @@ static bool read_value(Toml* t, Value* v) {
     return true;
 }
 
+// The next key = value, and the [table] it is in (kept in `table` between calls). False on an
+// error (in t->error); `*got` false at the end of the text.
+static bool toml_next(Toml* t, char* table, i32 table_cap, char* key, i32 key_cap, Value* v, bool* got) {
+    *got = false;
+    for (;;) {
+        skip_blank(t);
+        if (!peek(t)) return true;
+        if (peek(t) != '[') break;
+        t->at++;
+        i64 start = t->at;
+        while (peek(t) && peek(t) != ']' && peek(t) != '\n') t->at++;
+        if (peek(t) != ']') return toml_fail(t, "a [table] is not closed");
+        set(table, table_cap, str_trim(str_sub(t->text, start, t->at - start)));
+        t->at++;
+        if (!skip_rest_of_line(t)) return false;
+    }
+    i64 start = t->at;
+    while (peek(t) && peek(t) != '=' && peek(t) != '\n') t->at++;
+    if (peek(t) != '=') return toml_fail(t, "expected key = value");
+    set(key, key_cap, str_trim(str_sub(t->text, start, t->at - start)));
+    t->at++;
+    skip_space(t);
+    if (!read_value(t, v) || !skip_rest_of_line(t)) return false;
+    *got = true;
+    return true;
+}
+
 static void take_string(char* dst, i64 cap, Value* v) {
     if (v->kind == Value::STRING) set(dst, cap, str(v->s));
 }
@@ -344,35 +378,12 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
     Toml t = {text, 0, 1, error, error_cap};
     char table[64] = "";
     bool ok = true;
-    while (ok) {
-        skip_blank(&t);
-        if (!peek(&t)) break;
-        if (peek(&t) == '[') {
-            t.at++;
-            i64 start = t.at;
-            while (peek(&t) && peek(&t) != ']' && peek(&t) != '\n') t.at++;
-            if (peek(&t) != ']') {
-                ok = toml_fail(&t, "a [table] is not closed");
-                break;
-            }
-            SET(table, str_trim(str_sub(text, start, t.at - start)));
-            t.at++;
-            ok = skip_rest_of_line(&t);
-            continue;
-        }
-        i64 start = t.at;
-        while (peek(&t) && peek(&t) != '=' && peek(&t) != '\n') t.at++;
-        if (peek(&t) != '=') {
-            ok = toml_fail(&t, "expected key = value");
-            break;
-        }
+    for (;;) {
         char key[64];
-        SET(key, str_trim(str_sub(text, start, t.at - start)));
-        t.at++;
-        skip_space(&t);
         Value v = {};
-        ok = read_value(&t, &v) && skip_rest_of_line(&t);
-        if (!ok) {
+        bool got = false;
+        ok = toml_next(&t, table, sizeof(table), key, sizeof(key), &v, &got);
+        if (!ok || !got) {
             list_free(&v.array);
             break;
         }
@@ -425,6 +436,9 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("voice"))) {
             if (str_eq(k, str("listen"))) take_bool(&cfg->voice.listen, &v);
             if (str_eq(k, str("wake_word"))) take_string(cfg->voice.wake, sizeof(cfg->voice.wake), &v);
+        } else if (str_eq(tb, str("commands"))) {
+            if (str_eq(k, str("allowed"))) take_names(&cfg->commands.allowed, &v);
+            if (str_eq(k, str("disabled"))) take_names(&cfg->commands.disabled, &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);

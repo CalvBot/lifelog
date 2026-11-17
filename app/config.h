@@ -89,6 +89,11 @@ struct Config {
     } voice;
 
     struct {
+        Names allowed;   // custom commands allowed to run: "folder:hash" (commands.h)
+        Names disabled;  // folders switched off
+    } commands;
+
+    struct {
         Names hidden;        // speakers hidden in the timeline (and left out of copies and playback)
         bool show_dismissed;  // show the lines of excluded apps
     } ui;

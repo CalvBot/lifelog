@@ -209,6 +209,7 @@ enum VoiceDo : i32 {
     DO_CHECK_AI,
     DO_SUMMARISE,  // a few sentences about the last `query` ("30m"), from the summary AI
     DO_REMIND,     // a reminder saying `text` at `due` (0: no time was said)
+    DO_CUSTOM,     // a custom command's script: `custom` (commands.h)
 };
 
 struct VoiceCommand {
@@ -222,6 +223,7 @@ struct VoiceCommand {
     bool private_ok;  // carried out in private mode too
     char said[128];   // what it does, for the log and Settings: "clip 1h"
     char shown[128];  // what the banner says when it worked: "Alarm set: 4 minutes"
+    CmdMatch custom;  // DO_CUSTOM
 };
 
 static void command(VoiceCommand* c, const char* method, const char* path, const char* said) {
@@ -516,8 +518,8 @@ static void reminder_said(const Words* ws, f64 now, VoiceCommand* c) {
     snprintf(c->shown, sizeof(c->shown), "%s set: %s%s%s", kind, when, own_text ? " · " : "", own_text ? c->text : "");
 }
 
-// What the words after the wake name ask for.
-static void parse_command(const Words* ws, VoiceCommand* c) {
+// What the words after the wake name ask for, of the built-in commands.
+static void parse_builtin(const Words* ws, VoiceCommand* c) {
     *c = {};
     if (!ws->n) return;
     Str first = ws->w[0];
@@ -612,6 +614,26 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
     }
 }
 
+static bool custom_said(const Words* raw, bool leading, VoiceCommand* c) {
+    CmdMatch m;
+    if (!commands_match(raw->w, raw->n, leading, &m)) return false;
+    *c = {};
+    c->what = DO_CUSTOM;
+    c->custom = m;
+    SET(c->said, str(m.label));
+    return true;
+}
+
+// What the words after the wake name ask for. `ws` has the polite words dropped; `raw` is all of
+// them, for the custom commands, whose slots may need a "you" ("play You Belong With Me"). A custom
+// phrase that starts the sentence goes before the built-in commands, one later in it after them.
+static void parse_command(const Words* ws, const Words* raw, VoiceCommand* c) {
+    parse_builtin(ws, c);
+    if (c->what == DO_CANCEL || !raw->n) return;
+    if (custom_said(raw, true, c)) return;
+    if (c->what == DO_NOTHING) custom_said(raw, false, c);
+}
+
 // What a sentence is: for us when it starts with the name (after a "hey" or "ok"), or comes
 // within the wait after the name alone (`armed`). The name said in the middle of a sentence ("I
 // was working on lifelog") is someone talking about it, not to it.
@@ -638,10 +660,12 @@ static void voice_understand(Str text, const char* wake, bool armed, Understood*
     }
     if (!wake_n && !armed) return;
     u->for_us = true;
-    Words rest;
-    words_between(&ws, wake_n ? at + wake_n : 0, ws.n, &rest);
+    Words rest, raw = {};
+    i32 from = wake_n ? at + wake_n : 0;
+    words_between(&ws, from, ws.n, &rest);
+    for (i32 i = from; i < ws.n; i++) raw.w[raw.n++] = ws.w[i];
     u->name_only = wake_n && rest.n == 0;
-    parse_command(&rest, &u->c);
+    parse_command(&rest, &raw, &u->c);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -807,6 +831,13 @@ static void voice_summarise_apply(App* app, Event* e) {
     start_thread(app, "voice-summarise", voice_summarise_main);
 }
 
+// A custom command's script ended (on its thread).
+static void voice_custom_done(App* app, const CmdMatch* m, bool ok, const char* message, const char* banner) {
+    const char* result = message[0] ? message : ok ? "done" : "failed";
+    const char* shown = banner[0] ? banner : message;
+    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, m->label, result, ok && shown[0] ? shown : 0);
+}
+
 static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
     Arena* a = scratch();
     Mark m = mark(a);
@@ -853,6 +884,9 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         if (strncmp(result, "started ", 8) == 0) snprintf(shown, sizeof(shown), "Opening %s", result + 8);
         else SET(shown, str(c->shown));
         voice_say(app, ok ? c->chime : CHIME_ERROR, c->said, result, ok && shown[0] ? shown : 0);
+    } else if (c->what == DO_CUSTOM) {
+        LOG("voice: \"%s\": %s", heard, c->said);
+        commands_run(app, &c->custom, voice_custom_done);
     }
     rewind(m);
 }

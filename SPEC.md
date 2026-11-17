@@ -304,6 +304,9 @@ The window only exists while it is open. Closing it frees its memory; the record
   catch, error, cancelled). Glass (a warm bell, like an electric piano), Soft (a low marimba), Synth (a mellow synth) or Off, a volume, and
   a button to hear each one. They are made in code (`chime.cpp`), not sound files: low and warm, around middle C
   with a body an octave below, in stereo with a soft echo and a little room. lifelog never records its own sound.
+- **Custom commands:** each command with a switch, an Allow button when it is new or its files changed, its
+  phrases, a password field per secret, and any error in its `command.toml`; then Open folder, Reload, and a box
+  to try a sentence, which shows what it matches and has a Run button. Opening Settings reads the folder again.
 - **Files:** open the recordings folder, the log and the config file.
 - **AI models:** the transcription and summary models on this computer with their sizes; delete one, remove all
   of lifelog's AI, or move the AI folder to another drive.
@@ -356,6 +359,11 @@ The window only exists while it is open. Closing it frees its memory; the record
 - When a command works, a banner shows at the top of the screen with the window in front, for 2.5 s, then fades:
   the wake word and what was done ("Jarvis — Alarm set: 4 minutes"). It takes no focus or clicks (`banner.cpp`).
 - `lifelog voice "TEXT"` prints what a sentence would do, without doing it.
+- Custom commands (`commands.cpp`, [docs/custom-commands.md](docs/custom-commands.md)) are matched on all the
+  words after the wake word, polite ones included, so a slot can hold "you" ("play You Belong With Me"). A phrase
+  that starts the sentence is tried before the built-in commands; one later in it only when no built-in matched.
+  The script runs on its own thread, one at a time, in a job object that ends it and its children after 20 s.
+  None run in private mode.
 
 ## Copying
 
@@ -378,6 +386,8 @@ lifelog mics
 lifelog status
 lifelog check-ai
 lifelog voice "lifelog, clip the last hour"
+lifelog commands [allow ID | secret ID KEY]
+lifelog command "play bad guy"
 ```
 
 HTTP on 127.0.0.1:47800: `/status`, `/pause`, `/resume`, `/toggle`, `/exclude`, `/include`, `/game`,

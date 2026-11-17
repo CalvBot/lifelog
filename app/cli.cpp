@@ -22,7 +22,10 @@ static const char* CLI_USAGE =
     "  lifelog status          what the running service is doing\n"
     "  lifelog quit            stop the running service\n"
     "  lifelog config          print the config file path\n"
-    "  lifelog voice \"TEXT\"    what a voice command would do with TEXT, without doing it\n";
+    "  lifelog voice \"TEXT\"    what a voice command would do with TEXT, without doing it\n"
+    "  lifelog commands [allow ID]   list the custom voice commands, or allow one to run\n"
+    "  lifelog commands secret ID KEY   save a command's secret, typed or piped in (empty removes it)\n"
+    "  lifelog command \"TEXT\"  run the custom command TEXT matches (TEXT without the wake word)\n";
 
 static i32 run_app();  // main.cpp, after this file in the unity build
 static bool single_instance();  // main.cpp
@@ -170,6 +173,7 @@ static i32 cli_summarise(Str range) {
 // What voice commands would make of a sentence, without doing it.
 static i32 cli_voice(Str text) {
     if (!cli_config(&g_cli.config)) return 1;
+    commands_load(&g_cli.config);
     const char* wake = g_cli.config.voice.wake[0] ? g_cli.config.voice.wake : "lifelog";
     Understood u;
     voice_understand(text, wake, false, &u);
@@ -178,8 +182,72 @@ static i32 cli_voice(Str text) {
     else if (u.name_only) cli_print("the name alone: it chimes and waits 6 s for the command\n");
     else if (c->what == DO_NOTHING) cli_print("not a command\n");
     else if (c->what == DO_API) cli_print("%s: %s %s%s%s\n", c->said, c->method, c->path, c->query[0] ? "?" : "", c->query);
+    else if (c->what == DO_CUSTOM) cli_print("custom command %s\n  slots: %s\n  said: %s\n", c->custom.label, c->custom.slots, c->custom.said);
     else cli_print("%s\n", c->what == DO_CANCEL ? "cancel" : c->said);
     if (c->shown[0]) cli_print("banner when it works: %s\n", c->shown);
+    return 0;
+}
+
+// `lifelog commands [allow ID]`: lists the custom commands, or allows one as its files are now.
+static i32 cli_commands(Str verb, Str id, Str key) {
+    if (!cli_config(&g_cli.config)) return 1;
+    commands_load(&g_cli.config);
+    if (str_eq(verb, str("allow"))) {
+        bool found = false;
+        for (i32 i = 0; i < g_commands.count; i++) found |= str_eq(str(g_commands.items[i].id), id);
+        if (!found) return cli_error("there is no command %.*s (lifelog commands lists them)", (int)id.len, id.ptr);
+        commands_allow(&g_cli, id.ptr);
+        cli_print("allowed %.*s\n", (int)id.len, id.ptr);
+        return 0;
+    }
+    // The value comes on stdin, so it is not left in the shell's history.
+    if (str_eq(verb, str("secret"))) {
+        if (!key.len) return cli_error("lifelog commands secret ID KEY, with the value on stdin (empty removes it)");
+        static char value[4096];
+        DWORD got = 0;
+        ReadFile(GetStdHandle(STD_INPUT_HANDLE), value, sizeof(value) - 1, &got, 0);
+        Str v = str_trim({value, (i64)got});
+        char id_c[64], key_c[64];
+        SET(id_c, id);
+        SET(key_c, key);
+        if (!secret_set(id_c, key_c, v)) return cli_error("it could not be saved");
+        SecureZeroMemory(value, sizeof(value));
+        cli_print("%s %s.%s\n", v.len ? "saved" : "removed", id_c, key_c);
+        return 0;
+    }
+    if (verb.len) return cli_error("lifelog commands [allow ID | secret ID KEY]");
+    cli_print("%ls\n", commands_dir());
+    if (!g_commands.count) cli_print("  (none yet: each command is a folder here with a command.toml)\n");
+    for (i32 i = 0; i < g_commands.count; i++) {
+        const CustomCommand* c = &g_commands.items[i];
+        const char* state = c->error[0] ? "broken" : !c->allowed ? (c->changed ? "changed: allow it again in Settings" : "new: allow it in Settings")
+                            : !c->enabled ? "off" : "on";
+        cli_print("\n%s (%s): %s\n", c->name, c->id, state);
+        if (c->error[0]) cli_print("  %s\n", c->error);
+        for (i32 a = 0; a < c->action_count; a++) {
+            cli_print("  %s%s%s\n", c->actions[a].name, c->actions[a].description[0] ? ": " : "", c->actions[a].description);
+            for (i32 p = 0; p < c->phrase_count; p++)
+                if (c->phrases[p].action == a) cli_print("    \"%s\"\n", c->phrases[p].say);
+        }
+        for (i32 s = 0; s < c->secret_count; s++)
+            cli_print("  secret %s: %s\n", c->secrets[s], secret_is_set(c->id, c->secrets[s]) ? "set" : "not set");
+    }
+    return 0;
+}
+
+// Runs the custom command a sentence (without the wake word) matches, here.
+static i32 cli_command(Str text) {
+    if (!text.len) return cli_error("lifelog command \"play bad guy\"");
+    if (!cli_config(&g_cli.config)) return 1;
+    commands_load(&g_cli.config);
+    CmdMatch m;
+    if (!commands_match_text(text, &m)) return cli_error("no custom command matches that (lifelog commands lists them)");
+    cli_print("%s\n", m.label);
+    char message[256], banner[160];
+    bool ok = commands_run_here(&m, message, sizeof(message), banner, sizeof(banner));
+    if (banner[0]) cli_print("banner: %s\n", banner);
+    if (!ok) return cli_error("%s", message[0] ? message : "it failed");
+    if (message[0]) cli_print("%s\n", message);
     return 0;
 }
 
@@ -238,8 +306,8 @@ static i32 cli_quit() {
 static i32 cli_main(i32 argc, wchar_t** argv) {
     cli_console();
     Arena* a = scratch();
-    Str args[3] = {};
-    for (i32 i = 0; i < 3 && i + 1 < argc; i++) args[i] = narrow(a, argv[i + 1]);
+    Str args[4] = {};
+    for (i32 i = 0; i < 4 && i + 1 < argc; i++) args[i] = narrow(a, argv[i + 1]);
     Str cmd = args[0];
     bool has_arg = argc > 2;
 
@@ -290,6 +358,9 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     if (str_eq(cmd, str("summarise")) || str_eq(cmd, str("summarize"))) return cli_summarise(has_arg ? args[1] : str("15m"));
     if (str_eq(cmd, str("status"))) return cli_call("GET", str("/status"));
     if (str_eq(cmd, str("voice"))) return cli_voice(has_arg ? args[1] : str(""));
+    if (str_eq(cmd, str("commands")))
+        return cli_commands(has_arg ? args[1] : str(""), argc > 3 ? args[2] : str(""), argc > 4 ? args[3] : str(""));
+    if (str_eq(cmd, str("command"))) return cli_command(has_arg ? args[1] : str(""));
     // For developers: shows the voice banner for its 2.5 s, as a command that worked would.
     if (str_eq(cmd, str("banner"))) {
         if (!cli_config(&g_cli.config)) return 1;

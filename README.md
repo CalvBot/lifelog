@@ -53,6 +53,9 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
   one works, a note shows at the top of the screen for a moment ("lifelog — Alarm set: 4 minutes"). In
   private mode only "resume" works. Settings lists them and can change the wake word from "lifelog" to your own;
   the first time, it downloads a small model (0.15 GB) that runs on the processor.
+- **Custom commands:** your own voice commands, each a folder with a small script, such as "lifelog, play Bad Guy"
+  for a Spotify script. Each one runs only after you allow it in Settings. See
+  [docs/custom-commands.md](docs/custom-commands.md) and the template in [commands/example](commands/example).
 
 From a terminal or a Stream Deck:
 
@@ -66,6 +69,8 @@ lifelog launch spotify       # start an installed app or game
 lifelog mics                 # the mics plugged in; pick one in Settings (default: the Windows one)
 lifelog status
 lifelog voice "lifelog, clip the last hour"   # what a voice command would do, without doing it
+lifelog commands             # the custom commands and what to say for each
+lifelog command "play bad guy"                # run the custom command a sentence matches
 ```
 
 The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`, `/clip?range=15m`).

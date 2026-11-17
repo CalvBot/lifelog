@@ -1,0 +1,14 @@
+# An example custom voice command. Copy this folder to %APPDATA%\lifelog\commands\, then allow it in
+# Settings. See docs/custom-commands.md.
+
+name = "Example"
+description = "Says hello, and echoes what you said"
+run = "python hello.py"
+
+[hello]
+say = ["say hello", "say hi to {name}"]
+description = "Say hello to someone"
+
+[echo]
+say = ["repeat after me {text}", "echo {text}"]
+description = "Show the words back on the banner"
