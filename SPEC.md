@@ -297,8 +297,8 @@ The window only exists while it is open. Closing it frees its memory; the record
   the GPU limit and the current load.
 - **Daily summary:** on/off, what it is doing, ask time, word limit, Edit prompt, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
-- **Voice commands:** on/off with their state (a download button when the model is missing), the list of
-  commands, the last one heard and what came of it, and the chimes they make (listening, done, clip saved, didn't
+- **Voice commands:** on/off with their state (a download button when the model is missing), the wake word, a
+  Show all button that opens a table of what to say and what it does, the last one heard and what came of it, and the chimes they make (listening, done, clip saved, didn't
   catch, error, cancelled). Glass (a warm bell, like an electric piano), Soft (a low marimba), Synth (a mellow synth) or Off, a volume, and
   a button to hear each one. They are made in code (`chime.cpp`), not sound files: low and warm, around middle C
   with a body an octave below, in stereo with a soft echo and a little room. lifelog never records its own sound.
@@ -324,6 +324,9 @@ The window only exists while it is open. Closing it frees its memory; the record
 - Say "lifelog" and a command as one sentence ("lifelog, clip the last hour"), or "lifelog" alone: it chimes and
   waits 6 s for the command. A "hey" or "ok" before the name is fine. The name in the middle of a sentence ("I was
   working on lifelog") is ignored.
+- The wake word is "lifelog" unless changed in Settings (`[voice] wake_word`): at least 3 letters or digits, and
+  only letters, digits, spaces, - and '. A word of 6 or more letters also matches when one letter is heard wrong
+  ("jarvus" for "jarvis") or split in two ("life log"). Whisper's prompt names it, which makes it heard more often.
 - The commands are the CLI's: clip (with a spoken range: "the last hour", "fifteen minutes", "half an hour",
   "an hour and a half", "today"; 15 minutes by default), pause / go private, resume / stop private mode, toggle,
   exclude / include APP, APP is (not) a game, transcription auto / always / paused, summary now / later / skip

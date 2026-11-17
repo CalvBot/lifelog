@@ -1,5 +1,6 @@
-// voice.h: voice commands. Say "lifelog" and a command, as one sentence ("lifelog, clip the last
-// hour") or with a pause after the name (it chimes, then listens for six seconds). The commands are
+// voice.h: voice commands. Say the wake word ("lifelog" unless changed in Settings) and a command,
+// as one sentence ("lifelog, clip the last hour") or with a pause after the name (it chimes, then
+// listens for six seconds). The commands are
 // the CLI's: clip, pause, resume, toggle, exclude, include, game, not a game, transcription,
 // summary, check the AI, status, open, quit, restart and config.
 //
@@ -35,6 +36,8 @@ struct Voice {
     HANDLE wake;              // auto-reset: a sentence is waiting, or the settings changed
     volatile LONG listen;     // config.voice.listen, for the capture thread
     volatile LONG state;      // VoiceState, written by the voice thread
+    SRWLOCK wake_lock;        // guards wake_word
+    char wake_word[64];       // config.voice.wake, for the voice thread
     // The main thread's, for Settings: the last command and what came of it.
     char heard[160];
     char result[160];
@@ -46,3 +49,6 @@ void voice_start(App* app);
 void voice_heard(App* app, const f32* samples, i32 n, f32 gain);
 // Main thread: turn listening on or off, and save it.
 void voice_set_listen(App* app, bool on);
+// Main thread: the word that starts a command ("lifelog" when empty), saved. False (with a
+// message) if it is not one: under 3 letters, or anything but letters, digits and spaces.
+bool voice_set_wake(App* app, Str word);

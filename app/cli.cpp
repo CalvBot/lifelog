@@ -145,10 +145,12 @@ static i32 cli_check_ai() {
 
 // What voice commands would make of a sentence, without doing it.
 static i32 cli_voice(Str text) {
+    if (!cli_config(&g_cli.config)) return 1;
+    const char* wake = g_cli.config.voice.wake[0] ? g_cli.config.voice.wake : "lifelog";
     Understood u;
-    voice_understand(text, false, &u);
+    voice_understand(text, wake, false, &u);
     const VoiceCommand* c = &u.c;
-    if (!u.for_us) cli_print("not for lifelog: it does not start with \"lifelog\"\n");
+    if (!u.for_us) cli_print("not for lifelog: it does not start with \"%s\"\n", wake);
     else if (u.name_only) cli_print("the name alone: it chimes and waits 6 s for the command\n");
     else if (c->what == DO_NOTHING) cli_print("not a command\n");
     else if (c->what == DO_API) cli_print("%s: %s %s%s%s\n", c->said, c->method, c->path, c->query[0] ? "?" : "", c->query);

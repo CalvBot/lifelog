@@ -79,7 +79,8 @@ struct Config {
     } chimes;
 
     struct {
-        bool listen;  // voice commands: listen on the mic for "lifelog" (voice.h)
+        bool listen;    // voice commands: listen on the mic for the wake word (voice.h)
+        char wake[64];  // "lifelog"
     } voice;
 
     struct {

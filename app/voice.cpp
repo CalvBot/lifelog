@@ -56,6 +56,34 @@ void voice_set_listen(App* app, bool on) {
     if (app->voice.wake) SetEvent(app->voice.wake);
 }
 
+static void voice_publish_wake(App* app) {
+    Voice* v = &app->voice;
+    AcquireSRWLockExclusive(&v->wake_lock);
+    SET(v->wake_word, str(app->config.voice.wake));
+    ReleaseSRWLockExclusive(&v->wake_lock);
+}
+
+bool voice_set_wake(App* app, Str word) {
+    word = str_trim(word);
+    if (!word.len) word = str("lifelog");
+    i32 letters = 0;
+    bool ok = word.len < (i64)sizeof(app->config.voice.wake);
+    for (i64 i = 0; i < word.len && ok; i++) {
+        u8 c = (u8)word.ptr[i];
+        if (isalnum(c)) letters++;
+        else ok = c == ' ' || c == '-' || c == '\'';
+    }
+    if (!ok || letters < 3) {
+        ui_say(app, "The wake word needs at least 3 letters, and only letters, digits and spaces");
+        return false;
+    }
+    SET(app->config.voice.wake, word);
+    config_save_string("voice", "wake_word", app->config.voice.wake);
+    voice_publish_wake(app);
+    LOG("voice commands: the wake word is \"%s\"", app->config.voice.wake);
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // What was said, as words: lower case, letters and digits ("Lifelog, clip the last 15 minutes." is
 // lifelog clip the last 15 minutes). An apostrophe joins ("today's" is todays).
@@ -112,12 +140,52 @@ static bool has_pair(const Words* ws, const char* a, const char* b) {
     return false;
 }
 
-// How many words the wake name takes at `i` (Whisper writes it a few ways), or 0.
-static i32 wake_at(const Words* ws, i32 i) {
-    Str w = ws->w[i];
-    if (word_in(w, "lifelog", "lifelogs", "lifelock", "lifelocks", "livelog", "lifeblog", "lifeleg", "lifelig")) return 1;
-    if (i + 1 < ws->n && word_in(w, "life", "live", "lie") && word_in(ws->w[i + 1], "log", "logs", "lock", "locks", "blog"))
-        return 2;
+// Letters and digits only, lower case: the wake word as it is matched ("Hey Jarvis" is heyjarvis).
+static void wake_key(const char* word, char out[64]) {
+    i32 n = 0;
+    for (const char* c = word; *c && n < 63; c++)
+        if (isalnum((u8)*c)) out[n++] = (char)tolower((u8)*c);
+    out[n] = 0;
+}
+
+// Whether `a` and `b` differ by at most one letter added, dropped or changed.
+static bool one_off(Str a, Str b) {
+    if (a.len < b.len) {
+        Str t = a;
+        a = b;
+        b = t;
+    }
+    if (a.len - b.len > 1) return false;
+    i64 i = 0;
+    while (i < b.len && a.ptr[i] == b.ptr[i]) i++;
+    if (i == b.len) return true;
+    Str ra = str_sub(a, i + 1), rb = str_sub(b, a.len == b.len ? i + 1 : i);
+    return str_eq(ra, rb);
+}
+
+// How many words the wake word (`key`, from wake_key) takes at `i`, or 0. Whisper may split it
+// ("life log") or get one letter wrong ("lifeleg"), so one to three words are joined and a word of
+// six letters or more may be one off.
+static i32 wake_at(const Words* ws, i32 i, const char* key) {
+    Str k = str(key);
+    if (!k.len) return 0;
+    if (str_eq(k, str("lifelog"))) {  // the ways Whisper writes the default
+        Str w = ws->w[i];
+        if (word_in(w, "lifelogs", "lifelock", "lifelocks", "livelog", "lifeblog")) return 1;
+        if (i + 1 < ws->n && word_in(w, "life", "live", "lie") && word_in(ws->w[i + 1], "log", "logs", "lock", "locks", "blog"))
+            return 2;
+    }
+    char joined[128];
+    i32 len = 0;
+    for (i32 n = 1; n <= 3 && i + n - 1 < ws->n; n++) {
+        Str w = ws->w[i + n - 1];
+        if (len + w.len >= (i64)sizeof(joined)) break;
+        memcpy(joined + len, w.ptr, w.len);
+        len += (i32)w.len;
+        Str got = {joined, len};
+        if (str_eq(got, k) || (k.len >= 6 && one_off(got, k))) return n;
+        if (len > k.len + 1) break;
+    }
     return 0;
 }
 
@@ -424,14 +492,21 @@ struct Understood {
     VoiceCommand c;  // DO_NOTHING when the rest is not a command
 };
 
-static void voice_understand(Str text, bool armed, Understood* u) {
+// `wake`: the wake word as typed in Settings ("lifelog", "Jarvis").
+static void voice_understand(Str text, const char* wake, bool armed, Understood* u) {
     *u = {};
     Arena* a = scratch();
     Words ws;
     words_of(a, text, &ws);
+    char key[64];
+    wake_key(wake, key);
+    // The word itself may start with "hey"; if not, a "hey" or "ok" before it is fine.
     i32 at = 0;
-    while (at < ws.n && word_in(ws.w[at], "hey", "hi", "ok", "okay", "so", "um", "uh", "oh", "yo", "and")) at++;
-    i32 wake_n = at < ws.n ? wake_at(&ws, at) : 0;
+    i32 wake_n = ws.n ? wake_at(&ws, 0, key) : 0;
+    if (!wake_n) {
+        while (at < ws.n && word_in(ws.w[at], "hey", "hi", "ok", "okay", "so", "um", "uh", "oh", "yo", "and")) at++;
+        wake_n = at < ws.n ? wake_at(&ws, at, key) : 0;
+    }
     if (!wake_n && !armed) return;
     u->for_us = true;
     Words rest;
@@ -586,13 +661,13 @@ static whisper_context* voice_open(App* app, const char* ai_dir) {
         atomic_set(&app->voice.state, VOICE_FAILED);
         return 0;
     }
-    LOG("voice commands: listening for \"lifelog\" (base.en loaded in %.1f s)", now_ts() - began);
+    LOG("voice commands: listening (base.en loaded in %.1f s)", now_ts() - began);
     atomic_set(&app->voice.state, VOICE_READY);
     return ctx;
 }
 
 // What was said, or empty if it was not speech.
-static Str voice_text(Arena* a, whisper_context* ctx, const VoiceSentence* s) {
+static Str voice_text(Arena* a, whisper_context* ctx, const VoiceSentence* s, const char* wake) {
     const i32 pad = VOICE_RATE * 3 / 10;
     i32 total = s->n + 2 * pad;
     f32* samples = PUSH_ARRAY(a, f32, total);  // zeroed: the silence around it
@@ -608,9 +683,11 @@ static Str voice_text(Arena* a, whisper_context* ctx, const VoiceSentence* s) {
     wp.print_realtime = false;
     wp.print_timestamps = false;
     wp.print_special = false;
-    // So the name comes out as one word (with no prompt it is often "Lifeleg"); a prompt of just
-    // the name makes it leave a first "Lifelog" out, as if already said.
-    wp.initial_prompt = "Commands for Lifelog, the app.";
+    // So the name comes out as one word (with no prompt "lifelog" is often "Lifeleg"); a prompt of
+    // just the name makes it leave a first "Lifelog" out, as if already said.
+    char prompt[128];
+    snprintf(prompt, sizeof(prompt), "Commands for %s, the app.", wake);
+    wp.initial_prompt = prompt;
     if (p_whisper_full(ctx, wp, samples, total) != 0) return {"", 0};
     Buf b = {};
     i32 n = p_whisper_full_n_segments(ctx);
@@ -673,11 +750,15 @@ static DWORD WINAPI voice_main(void* p) {
         while (voice_take(v, &s)) {
             Arena* a = scratch();
             Mark m = mark(a);
-            Str text = voice_text(a, ctx, &s);
+            char wake[64];
+            AcquireSRWLockShared(&v->wake_lock);
+            SET(wake, str(v->wake_word));
+            ReleaseSRWLockShared(&v->wake_lock);
+            Str text = voice_text(a, ctx, &s, wake);
             free(s.samples);
             bool armed = armed_until && now_ts() < armed_until;
             Understood u;
-            voice_understand(text, armed, &u);
+            voice_understand(text, wake, armed, &u);
             if (!u.for_us) {  // not for us: dropped, never logged
                 rewind(m);
                 continue;
@@ -710,6 +791,7 @@ void voice_start(App* app) {
     Voice* v = &app->voice;
     v->wake = CreateEventW(0, FALSE, FALSE, 0);
     CHECK(v->wake, "the voice thread's event (error %lu)", GetLastError());
+    voice_publish_wake(app);
     atomic_set(&v->listen, app->config.voice.listen);
     atomic_set(&v->state, app->config.voice.listen ? VOICE_LOADING : VOICE_OFF);
     start_thread(app, "voice", voice_main);

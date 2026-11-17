@@ -92,6 +92,8 @@ volume = 60
 # Voice commands: say "lifelog" and a command ("lifelog, clip the last hour"). Heard on this PC
 # with a small model on the processor; what it hears for commands is not kept.
 listen = true
+# The word that starts a command.
+wake_word = "lifelog"
 
 [ui]
 # Speakers hidden in the timeline (and left out of copies and playback).
@@ -311,6 +313,7 @@ static void config_defaults(Config* cfg) {
     SET(cfg->worker.language, str("en"));
     cfg->chimes.volume = 60;
     cfg->voice.listen = true;
+    SET(cfg->voice.wake, str("lifelog"));
 }
 
 static char g_data_dir[MAX_PATH];
@@ -413,6 +416,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("volume"))) take_u32(&cfg->chimes.volume, &v);
         } else if (str_eq(tb, str("voice"))) {
             if (str_eq(k, str("listen"))) take_bool(&cfg->voice.listen, &v);
+            if (str_eq(k, str("wake_word"))) take_string(cfg->voice.wake, sizeof(cfg->voice.wake), &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);

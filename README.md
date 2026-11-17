@@ -49,7 +49,8 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
 - **Settings:** which apps to record, which are games, when to transcribe, the summary time, and voice commands.
 - **Voice commands:** say "lifelog" and a command, such as "lifelog, clip the last hour", "lifelog, pause" or
   "lifelog, Valorant is a game". You can also say "lifelog", wait for the chime, then give the command. They are the
-  CLI's commands. In private mode only "resume" works. Settings lists them; the first time, it downloads a small
+  CLI's commands. In private mode only "resume" works. Settings lists them and can change the wake word from
+  "lifelog" to your own; the first time, it downloads a small
   model (0.15 GB) that runs on the processor.
 
 From a terminal or a Stream Deck:

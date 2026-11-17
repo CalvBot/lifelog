@@ -25,6 +25,7 @@ enum UndoKind : u8 {
     UNDO_CHIME_STYLE,
     UNDO_CHIME_VOLUME,
     UNDO_VOICE,
+    UNDO_WAKE,
 };
 
 // One step back for Ctrl+Z: the value it puts back.
@@ -70,6 +71,9 @@ struct SettingsState {
     bool endpoint_active;
     char model[128];
     bool model_active;
+    char wake[64];        // the voice commands' wake word
+    bool wake_active;
+    bool voice_list;      // the list of voice commands is open
     bool own[SETUP_PARTS];  // "Your own server" was picked, before its address is typed
 
     // The AI file to delete once the confirmation says yes.
@@ -230,6 +234,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_CHIME_STYLE: chime_set_style(app, (ChimeStyle)u.n); break;
     case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
     case UNDO_VOICE: voice_set_listen(app, u.on); break;
+    case UNDO_WAKE: voice_set_wake(app, str(u.text)); break;
     }
     s->stale = true;
     ui_say(app, "Undone: %s", u.label);
@@ -930,18 +935,60 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ERROR_RED, "%s", fit("could not load its model (see the log)", room));
     } else {
-        weak(fit(state == VOICE_READY ? "say \"lifelog\" and a command" : "starting", room));
+        weak(fit(state == VOICE_READY ? "listening" : "starting", room));
     }
 
+    row_label("Wake word");
+    const char* wake = c->voice.wake[0] ? c->voice.wake : "lifelog";
+    if (setting_field("##wake", "lifelog", s->wake, sizeof(s->wake), &s->wake_active, wake, px(160))) {
+        char old[64];
+        SET(old, str(wake));
+        if (voice_set_wake(app, str_trim(str(s->wake)))) {
+            SettingsUndo* u = remember(s, UNDO_WAKE, "wake word \"%s\"", c->voice.wake);
+            SET(u->text, str(old));
+        }
+        s->wake_active = false;
+    }
+    ImGui::SameLine(0, px(12));
+    weak(fit(tmp("then a command: \"%s, clip the last hour\"", wake), ImGui::GetContentRegionAvail().x));
+
     row_label("Commands");
-    ImGui::PushTextWrapPos(0);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-    ImGui::TextUnformatted("clip (the last hour, 15 minutes, today) · pause · resume · toggle · exclude / include APP "
-                           "· APP is (not) a game · transcription auto / always / paused · summary now / later / skip "
-                           "(yesterday) · check the AI · status · open (Settings, the journal) · config · "
-                           "restart · quit. As one sentence, or pause after \"lifelog\" for the chime. In private mode, only resume.");
-    ImGui::PopStyleColor();
-    ImGui::PopTextWrapPos();
+    if (button(s->voice_list ? label(ICON_CHEVRON_UP, "Hide") : label(ICON_CHEVRON_DOWN, "Show all")))
+        s->voice_list = !s->voice_list;
+    if (s->voice_list) {
+        struct { const char* say; const char* does; } cmds[] = {
+            {"clip the last hour", "copy that part of the transcript (or 15 minutes, today)"},
+            {"pause  /  resume", "private mode on or off"},
+            {"toggle", "switch private mode"},
+            {"exclude Spotify  /  include Spotify", "stop or start recording an app"},
+            {"Valorant is (not) a game", "mark an app as a game or not"},
+            {"transcription auto / always / paused", "when transcribing runs"},
+            {"summary now / later / skip", "today's summary (add \"yesterday\")"},
+            {"check the AI", "start the summary AI and test it"},
+            {"status", "show the tray popup"},
+            {"open settings  /  open the journal", "open this window"},
+            {"config", "open config.toml"},
+            {"restart  /  quit", "lifelog itself"},
+            {"never mind", "cancel after the chime"},
+        };
+        ImGui::Indent(px(ROW_LABEL_W));
+        if (ImGui::BeginTable("voice_cmds", 2, ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("say", ImGuiTableColumnFlags_WidthFixed, px(250));
+            ImGui::TableSetupColumn("does", ImGuiTableColumnFlags_WidthStretch);
+            for (i32 i = 0; i < COUNT(cmds); i++) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(cmds[i].say);
+                ImGui::TableNextColumn();
+                ImGui::TextColored(weak_text(), "%s", cmds[i].does);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(weak_text(), "Say it as one sentence, or say \"%s\" and wait for the chime. In private mode only resume and toggle work.", wake);
+        ImGui::PopTextWrapPos();
+        ImGui::Unindent(px(ROW_LABEL_W));
+    }
 
     if (v->heard_ts) {
         row_label("Last");
