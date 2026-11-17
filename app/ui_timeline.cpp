@@ -426,18 +426,6 @@ static i32 progress_spans(Str text, f64 shown, ImU32 done, ImU32 rest, bool play
     return n;
 }
 
-// `text` cut with "…" to fit `width`.
-static Str fit_text(Str text, f32 width) {
-    if (ImGui::CalcTextSize(text.ptr, text.ptr + text.len).x <= width) return text;
-    f32 dots = ImGui::CalcTextSize("…").x;
-    i64 n = text.len;
-    while (n > 0) {
-        n--;
-        while (n > 0 && ((u8)text.ptr[n] & 0xC0) == 0x80) n--;
-        if (ImGui::CalcTextSize(text.ptr, text.ptr + n).x + dots <= width) break;
-    }
-    return str_fmt(scratch(), "%.*s…", (int)n, text.ptr);
-}
 
 // How many words (3+ letters) two texts share, split and lower-cased the way the summary matches
 // a quote to a line (summary.cpp's word_set), so a quote found there is found here too.
@@ -1527,7 +1515,7 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
     if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
     else dl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), str_eq(line->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW);
-    Str name = fit_text(app_name(app, line->speaker), TL_APP_W * u - is - 8 * u);
+    Str name = str(fit_text(app_name(app, line->speaker), TL_APP_W * u - is - 8 * u));
     dl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
 
     // The text: being heard, just arrived (writing itself out), or with the search marked.

@@ -204,6 +204,34 @@ static const char* duration_text(f64 secs) {
     return tmp("%lld h %lld min", m / 60, m % 60);
 }
 
+// `text` cut with "…" to fit `width`, whole UTF-8 characters only. Always a zero-terminated copy
+// in scratch; only the first 400 bytes are measured (more never fits on a line).
+static const char* fit_text(Str text, f32 width) {
+    if (text.len > 400) text.len = 400;
+    const char* full = tmp("%.*s", (int)text.len, text.ptr ? text.ptr : "");
+    if (ImGui::CalcTextSize(full).x <= width) return full;
+    f32 dots = ImGui::CalcTextSize("…").x;
+    i64 n = text.len;
+    while (n > 0) {
+        n--;
+        while (n > 0 && ((u8)full[n] & 0xC0) == 0x80) n--;
+        if (ImGui::CalcTextSize(full, full + n).x + dots <= width) break;
+    }
+    return tmp("%.*s…", (int)n, full);
+}
+static const char* fit(const char* text, f32 width) { return fit_text(str(text), width); }
+
+// Before the `i`th of a row of buttons labelled `text`: on the same line if it fits before `right`
+// (a screen x), else on the next one at `left` (a cursor x). Wrapped like words.
+static void wrap_button(i32 i, const char* text, f32 left, f32 right) {
+    if (i == 0) return;
+    f32 w = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SameLine();
+    if (ImGui::GetCursorScreenPos().x + w > right) {
+        ImGui::NewLine();
+        ImGui::SetCursorPosX(left);
+    }
+}
 // What a finished copy says: "Copied 12 lines", "Copied 40 s of audio", or what went wrong.
 // Into scratch.
 static const char* copy_message(const ClipResult* r, ClipKind kind) {

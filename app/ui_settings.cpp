@@ -148,19 +148,6 @@ static bool pick(const char* text, bool on, ImVec2 size = ImVec2(0, 0)) {
     return clicked;
 }
 
-// `text` cut to fit `width`, with "…" when it was cut. Into scratch.
-static const char* fit(const char* text, f32 width) {
-    if (ImGui::CalcTextSize(text).x <= width) return text;
-    Str s = str(text);
-    f32 dots = ImGui::CalcTextSize("…").x;
-    i64 len = s.len;
-    while (len > 0) {
-        len--;
-        while (len > 0 && (s.ptr[len] & 0xC0) == 0x80) len--;  // whole UTF-8 characters only
-        if (ImGui::CalcTextSize(s.ptr, s.ptr + len).x + dots <= width) break;
-    }
-    return str_fmt(scratch(), "%.*s…", (int)len, s.ptr).ptr;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Opening files: on the pool, since the shell can take a while. Windows lets the new window take
@@ -950,14 +937,7 @@ static void chimes_card(App* app, SettingsState* s, f32 width) {
     f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     for (i32 i = 0; i < CHIME_COUNT; i++) {
         const char* text = label(ICON_PLAY, tmp("%s##chime%d", chime_label((Chime)i), i));
-        f32 w = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
-        if (i > 0) {
-            ImGui::SameLine();
-            if (ImGui::GetCursorScreenPos().x + w > right) {
-                ImGui::NewLine();
-                ImGui::SetCursorPosX(left);
-            }
-        }
+        wrap_button(i, text, left, right);
         if (ImGui::Button(text)) chime_play(app, (Chime)i);
     }
     ImGui::EndDisabled();
@@ -1048,19 +1028,12 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     if (never->count) {
         row_label("Never mention");
         i64 remove = 0;
+        f32 left = ImGui::GetCursorPosX();
         f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
         for (i32 i = 0; i < never->count; i++) {
             NeverTopic* n = &(*never)[i];
             const char* text = tmp("%s  %s##never%lld", n->topic, ICON_X, n->id);
-            f32 w = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
-            // Wrapped like words: on this line if it fits, else the next.
-            if (i > 0) {
-                ImGui::SameLine();
-                if (ImGui::GetCursorScreenPos().x + w > right) {
-                    ImGui::NewLine();
-                    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
-                }
-            }
+            wrap_button(i, text, left, right);
             if (ImGui::Button(text)) remove = n->id;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Allow again");
         }
@@ -1171,15 +1144,7 @@ static void ai_card(App* app, SettingsState* s, f32 width) {
         for (i32 i = 0; i < su->file_count[p]; i++) {
             AiFile* f = &su->files[p][i];
             const char* text = tmp("%s  %s  %s##rm%d_%d", f->name, gb(f->bytes), ICON_TRASH, p, i);
-            f32 w = ImGui::CalcTextSize(text, 0, true).x + st.FramePadding.x * 2;
-            // Wrapped like words: on this line if it fits, else the next.
-            if (i > 0) {
-                ImGui::SameLine();
-                if (ImGui::GetCursorScreenPos().x + w > right) {
-                    ImGui::NewLine();
-                    ImGui::SetCursorPosX(left);
-                }
-            }
+            wrap_button(i, text, left, right);
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(text)) {
                 s->remove_part = (SetupPart)p;

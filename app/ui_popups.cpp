@@ -82,25 +82,11 @@ static void popup_wait(f32* next_frame_ms, f32 ms) {
     if (*next_frame_ms < 0 || *next_frame_ms > ms) *next_frame_ms = ms;
 }
 
-// `text` cut to `width` with an ellipsis. Into scratch.
-static const char* popup_fit_text(Str text, f32 width) {
-    if (text.len > 400) text.len = 400;  // never more than a line's worth to measure
-    const char* full = tmp("%.*s", (int)text.len, text.ptr);
-    if (ImGui::CalcTextSize(full).x <= width) return full;
-    f32 dots = ImGui::CalcTextSize("…").x;
-    i64 n = text.len;
-    while (n > 0) {
-        n--;
-        while (n > 0 && (full[n] & 0xC0) == 0x80) n--;  // never inside a UTF-8 character
-        if (ImGui::CalcTextSize(full, full + n).x + dots <= width) break;
-    }
-    return tmp("%.*s…", (int)n, full);
-}
 
 static void message_label(PopupState* s) {
     const char* text = tmp("%s  %s", s->message_ok ? ICON_CHECK : ICON_X, s->message);
     ImGui::PushStyleColor(ImGuiCol_Text, s->message_ok ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ACCENT);
-    ImGui::TextUnformatted(popup_fit_text(str(text), ImGui::GetContentRegionAvail().x));
+    ImGui::TextUnformatted(fit_text(str(text), ImGui::GetContentRegionAvail().x));
     ImGui::PopStyleColor();
 }
 
@@ -261,7 +247,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
             Line* l = &s->preview.items[i];
             Str name = app_name(app, l->speaker);
             Str text = str_fmt(scratch(), "%s  %.*s: %.*s", hm_text(l->start_ts), (int)name.len, name.ptr, (int)l->text.len, l->text.ptr);
-            ImGui::TextUnformatted(popup_fit_text(text, w));
+            ImGui::TextUnformatted(fit_text(text, w));
         }
     }
     ImGui::EndChild();
