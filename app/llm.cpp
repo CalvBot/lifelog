@@ -93,8 +93,6 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
 // ---------------------------------------------------------------------------------------------
 // The server
 
-static void llm_dir(wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%ls\\llm", local_dir()); }
-
 void llm_close(Llm* llm) {
     if (llm->process) {
         TerminateProcess(llm->process, 0);
@@ -117,10 +115,10 @@ static HANDLE kill_with_lifelog(HANDLE process) {
 }
 
 // Starts the server with `model` (a .gguf name in the llm folder) and waits until it has loaded.
-static bool llm_start(App* app, const char* model, u32 ctx, Llm* llm, char* error, i32 cap) {
+static bool llm_start(App* app, const Config* cfg, const char* model, u32 ctx, Llm* llm, char* error, i32 cap) {
     *llm = {};
     wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
-    llm_dir(dir);
+    llm_dir(cfg, dir);
     swprintf(exe, MAX_PATH, L"%ls\\llama-server.exe", dir);
     Mark m = mark(scratch());
     swprintf(gguf, MAX_PATH, L"%ls\\%ls.gguf", dir, wide(scratch(), str(model)));
@@ -182,7 +180,7 @@ static bool llm_start(App* app, const char* model, u32 ctx, Llm* llm, char* erro
 bool llm_open(App* app, const Config* cfg, u32 ctx, Llm* llm, char* error, i32 cap) {
     Str endpoint = str_trim(str(cfg->summary.endpoint));
     while (endpoint.len && endpoint.ptr[endpoint.len - 1] == '/') endpoint.len--;
-    if (!endpoint.len) return llm_start(app, cfg->summary.model, ctx, llm, error, cap);
+    if (!endpoint.len) return llm_start(app, cfg, cfg->summary.model, ctx, llm, error, cap);
     *llm = {};
     SET(llm->url, endpoint);
     SET(llm->key, str_trim(str(cfg->summary.api_key)));

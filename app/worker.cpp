@@ -185,10 +185,9 @@ static void whisper_log(enum ggml_log_level level, const char* text, void*) {
 
 // Loads whisper.dll and the ggml backends (the best CPU one for this processor, and CUDA) from
 // the setup's folder. Once per run.
-static bool whisper_load(char* error, i32 cap) {
+static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
     if (g_whisper_loaded) return true;
-    wchar_t dir[MAX_PATH], path[MAX_PATH];
-    whisper_bin_dir(dir);
+    wchar_t path[MAX_PATH];
     // whisper.dll's own imports (ggml.dll), and the CUDA libraries ggml-cuda.dll needs, are next
     // to it; ggml loads its backends with a plain LoadLibrary, so the folder goes on the search path.
     SetDllDirectoryW(dir);
@@ -228,14 +227,16 @@ static bool whisper_load(char* error, i32 cap) {
     p_ggml_backend_load_all_from_path(narrow(scratch(), dir).ptr);
     rewind(m);
     g_whisper_loaded = true;
+    whisper_loaded_from(dir);
     return true;
 }
 
 // Loads ggml-<model>.bin onto the GPU. Null (with `error`) if it could not.
-static whisper_context* whisper_open(const char* model, char* error, i32 cap) {
-    if (!whisper_load(error, cap)) return 0;
-    wchar_t dir[MAX_PATH], bin[MAX_PATH];
-    whisper_dir(dir);
+static whisper_context* whisper_open(const Config* cfg, const char* model, char* error, i32 cap) {
+    wchar_t dir[MAX_PATH], bins[MAX_PATH], bin[MAX_PATH];
+    whisper_bin_dir(cfg, bins);
+    if (!whisper_load(bins, error, cap)) return 0;
+    whisper_dir(cfg, dir);
     swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
     whisper_context_params cp = p_whisper_context_default_params();
     cp.use_gpu = true;
@@ -378,7 +379,7 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char
     // Silero voice detection: only speech is transcribed, so music, game noise and silence are
     // skipped (and do not get made-up lines). Timestamps stay on the file's own timeline.
     wchar_t dir[MAX_PATH], vad[MAX_PATH];
-    whisper_dir(dir);
+    whisper_dir(settings(app), dir);
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
     Str vad_path = narrow(a, vad);
     wp.vad = true;
@@ -688,7 +689,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         Target t = {};
         const Config* c = settings(app);
         bool yours = c->worker.endpoint[0] != 0;
-        bool ready = yours || whisper_ready(c->worker.model);
+        bool ready = yours || whisper_ready(c, c->worker.model);
         if (ready == seen.missing || first) {
             if (!ready) WARN("transcription is not set up (Settings, Transcription): audio will queue up untranscribed");
             else if (!first) LOG("transcription is set up");
@@ -753,7 +754,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
         if (load) {
             char error[512];
-            ctx = whisper_open(model, error, sizeof(error));
+            ctx = whisper_open(settings(app), model, error, sizeof(error));
             if (ctx) {
                 SET(ctx_model, str(model));
             } else {

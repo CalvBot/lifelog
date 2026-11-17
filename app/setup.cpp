@@ -2,23 +2,54 @@
 
 // Pinned like scripts\get-llm.ps1; bump both together.
 static const wchar_t* LLAMA_BUILD = L"b11873";
-static const wchar_t* QWEN_URL = L"https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf";
-static const char* QWEN_MODEL = "qwen3-14b";
 static const wchar_t* WHISPER_BUILD = L"b5454";
 static const wchar_t* WHISPER_ZIP = L"whisper-bin-win-cuda-12.4.0-x64.zip";
-static const char* WHISPER_MODEL = "large-v3-turbo";
-static const wchar_t* WHISPER_MODEL_URL = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
 static const char* WHISPER_VAD_MODEL = "ggml-silero-v6.2.0.bin";
 static const wchar_t* WHISPER_VAD_URL = L"https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
 
-// The setup thread takes no lock: what it says, the model it set up and its end are posted to
-// the main thread. a = the part.
+// The models offered in Settings, the default first. Each is a file published where its makers
+// put it; a new one needs only a line here (and a .gguf llama.cpp b11873 can run).
+#define WHISPER_HF L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+static const AiModel WHISPER_MODELS[] = {
+    {"large-v3-turbo", "Whisper large-v3-turbo", "Fast and accurate. The default.", WHISPER_HF L"ggml-large-v3-turbo.bin", 1.62},
+    {"large-v3-turbo-q5_0", "Whisper large-v3-turbo, small", "Nearly as accurate, a third of the size.", WHISPER_HF L"ggml-large-v3-turbo-q5_0.bin", 0.57},
+    {"large-v3", "Whisper large-v3", "The most accurate, about twice as slow.", WHISPER_HF L"ggml-large-v3.bin", 3.10},
+    {"small.en", "Whisper small, English", "English only. For a weak graphics card.", WHISPER_HF L"ggml-small.en.bin", 0.49},
+};
+#undef WHISPER_HF
+static const AiModel SUMMARY_MODELS[] = {
+    {"qwen3-14b", "Qwen3 14B", "The default. Needs a 12 GB graphics card.", L"https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf", 9.00},
+    {"gemma-4-12b", "Gemma 4 12B", "Google's. Needs a 10 GB graphics card.",
+     L"https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf/resolve/main/gemma-4-12b-it-qat-q4_0.gguf", 6.98},
+    {"qwen3-8b", "Qwen3 8B", "Needs an 8 GB graphics card.", L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf", 5.03},
+    {"qwen3-4b", "Qwen3 4B", "Needs a 6 GB graphics card. Plainer.", L"https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf", 2.50},
+    {"qwen3.8-27b", "Qwen3.8 27B", "The best. Needs a 24 GB graphics card.",
+     L"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf", 16.6},
+};
+
+i32 ai_models(SetupPart part, const AiModel** out) {
+    *out = part == SETUP_TRANSCRIBER ? WHISPER_MODELS : SUMMARY_MODELS;
+    return part == SETUP_TRANSCRIBER ? (i32)COUNT(WHISPER_MODELS) : (i32)COUNT(SUMMARY_MODELS);
+}
+
+const AiModel* ai_model(SetupPart part, const char* name) {
+    const AiModel* models;
+    i32 n = ai_models(part, &models);
+    for (i32 i = 0; i < n; i++)
+        if (strcmp(models[i].name, name) == 0) return &models[i];
+    return 0;
+}
+
+// The setup threads take no lock: what they say, the model they set up and their end are posted
+// to the main thread. a = the part, or SETUP_PARTS for the move.
+static SetupState* setup_state(App* app, i64 a) { return a == SETUP_PARTS ? &app->setup.move : &app->setup.part[a]; }
+
 static void setup_say_apply(App* app, Event* e) {
-    SET(app->setup.part[e->a].text, str(e->text));
+    SET(setup_state(app, e->a)->text, str(e->text));
     wake_window(app);
 }
 
-static void setup_say(App* app, SetupPart part, const char* fmt, ...) {
+static void setup_say(App* app, i32 part, const char* fmt, ...) {
     char text[256];
     va_list args;
     va_start(args, fmt);
@@ -27,57 +58,83 @@ static void setup_say(App* app, SetupPart part, const char* fmt, ...) {
     event_post(app, setup_say_apply, part, 0, text);
 }
 
-// a = the part; text = the model, now downloaded, to use.
+// a = the part; text = the model, now downloaded, to use instead of your own server.
 static void setup_model_apply(App* app, Event* e) {
-    bool whisper = e->a == SETUP_TRANSCRIBER;
-    char* model = whisper ? app->config.worker.model : app->config.summary.model;
-    if (strcmp(model, e->text) == 0) return;
-    snprintf(model, whisper ? sizeof(app->config.worker.model) : sizeof(app->config.summary.model), "%s", e->text);
-    config_save_string(whisper ? "worker" : "summary", "model", e->text);
+    if (e->a == SETUP_TRANSCRIBER) worker_set_endpoint(app, str(""), str(e->text));
+    else summary_set_endpoint(app, str(""), str(e->text));
 }
 
 // a = the part, b = whether it worked; text = why not.
 static void setup_done_apply(App* app, Event* e) {
-    SetupState* s = &app->setup.part[e->a];
+    SetupState* s = setup_state(app, e->a);
     s->running = false;
     s->failed = !e->b;
     SET(s->text, str(e->b ? "" : e->text));
+    s->model[0] = 0;
+    app->setup.scanned_ts = 0;  // look again
     worker_wake(app);
     wake_window(app);
 }
 
-static void setup_dir(const wchar_t* name, wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%ls\\%ls", local_dir(), name); }
-
-void whisper_dir(wchar_t out[MAX_PATH]) { setup_dir(L"whisper", out); }
-
-void whisper_bin_dir(wchar_t out[MAX_PATH]) { swprintf(out, MAX_PATH, L"%ls\\whisper\\%ls", local_dir(), WHISPER_BUILD); }
-
-bool whisper_ready(const char* model) {
-    wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
-    whisper_dir(dir);
-    whisper_bin_dir(bins);
-    swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
-    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
-    swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
-    return GetFileAttributesW(dll) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(bin) != INVALID_FILE_ATTRIBUTES &&
-           GetFileAttributesW(vad) != INVALID_FILE_ATTRIBUTES;
+static void ai_sub(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) {
+    Mark m = mark(scratch());
+    swprintf(out, MAX_PATH, L"%ls\\%ls", wide(scratch(), str(cfg->ai.dir)), name);
+    rewind(m);
 }
 
-bool summary_ai_ready(const char* model) {
-    wchar_t exe[MAX_PATH], gguf[MAX_PATH];
-    swprintf(exe, MAX_PATH, L"%ls\\llm\\llama-server.exe", local_dir());
-    swprintf(gguf, MAX_PATH, L"%ls\\llm\\%hs.gguf", local_dir(), model);
-    return GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(gguf) != INVALID_FILE_ATTRIBUTES;
+void whisper_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"whisper", out); }
+
+void whisper_bin_dir(const Config* cfg, wchar_t out[MAX_PATH]) {
+    wchar_t dir[MAX_PATH];
+    whisper_dir(cfg, dir);
+    swprintf(out, MAX_PATH, L"%ls\\%ls", dir, WHISPER_BUILD);
 }
+
+void llm_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"llm", out); }
 
 static bool exists(const wchar_t* path) { return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES; }
+
+// Where `part`'s `model` is kept.
+static void model_path(const Config* cfg, SetupPart part, const char* model, wchar_t out[MAX_PATH]) {
+    wchar_t dir[MAX_PATH];
+    if (part == SETUP_TRANSCRIBER) {
+        whisper_dir(cfg, dir);
+        swprintf(out, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, model);
+    } else {
+        llm_dir(cfg, dir);
+        swprintf(out, MAX_PATH, L"%ls\\%hs.gguf", dir, model);
+    }
+}
+
+bool whisper_ready(const Config* cfg, const char* model) {
+    wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
+    whisper_dir(cfg, dir);
+    whisper_bin_dir(cfg, bins);
+    swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
+    model_path(cfg, SETUP_TRANSCRIBER, model, bin);
+    swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
+    return exists(dll) && exists(bin) && exists(vad);
+}
+
+bool summary_ai_ready(const Config* cfg, const char* model) {
+    wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
+    llm_dir(cfg, dir);
+    swprintf(exe, MAX_PATH, L"%ls\\llama-server.exe", dir);
+    model_path(cfg, SETUP_SUMMARY_AI, model, gguf);
+    return exists(exe) && exists(gguf);
+}
+
+// The whisper.cpp build the worker loaded: its libraries stay open until lifelog closes, so that
+// folder cannot be deleted or moved. Set once, by the worker.
+static wchar_t g_whisper_from[MAX_PATH];
+void whisper_loaded_from(const wchar_t* dir) { wcsncpy_s(g_whisper_from, dir, _TRUNCATE); }
 
 // ---------------------------------------------------------------------------------------------
 // Downloading
 
 // `url` to `path` (through path.part, so a cut-off download is never taken for a whole one),
 // following redirects, with "<what>: x of y GB" as it goes.
-static bool download(App* app, SetupPart part, const char* what, const wchar_t* url, const wchar_t* path, char* error, i32 cap) {
+static bool download(App* app, i32 part, const char* what, const wchar_t* url, const wchar_t* path, char* error, i32 cap) {
     URL_COMPONENTS parts = {sizeof(parts)};
     wchar_t host[256] = {}, upath[4096] = {};
     parts.lpszHostName = host;
@@ -248,12 +305,24 @@ static void remove_tree(const wchar_t* dir) {
 // ---------------------------------------------------------------------------------------------
 // The parts
 
-static bool setup_transcriber(App* app, char* error, i32 cap) {
+// What a download thread needs, worked out on the main thread from its config.
+struct SetupJob {
+    App* app;
+    SetupPart part;
+    char model[128];
+    wchar_t url[512];          // the model's
+    wchar_t dir[MAX_PATH];     // whisper or llm
+    wchar_t bins[MAX_PATH];    // whisper's build folder
+    wchar_t target[MAX_PATH];  // the model file
+};
+
+static bool setup_transcriber(SetupJob* job, char* error, i32 cap) {
+    App* app = job->app;
     // Each build gets its own folder: a running lifelog has the one it loaded open, so a new
     // build goes beside it and is used from the next start.
-    wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH];
-    whisper_dir(dir);
-    whisper_bin_dir(bins);
+    wchar_t* dir = job->dir;
+    wchar_t* bins = job->bins;
+    wchar_t dll[MAX_PATH];
     CreateDirectoryW(dir, 0);
     swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
     if (!exists(dll)) {
@@ -278,18 +347,17 @@ static bool setup_transcriber(App* app, char* error, i32 cap) {
             return false;
         }
     }
-    wchar_t bin[MAX_PATH], vad[MAX_PATH];
-    swprintf(bin, MAX_PATH, L"%ls\\ggml-%hs.bin", dir, WHISPER_MODEL);
+    wchar_t vad[MAX_PATH];
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
-    if (!exists(bin) && !download(app, SETUP_TRANSCRIBER, "the model", WHISPER_MODEL_URL, bin, error, cap)) return false;
+    if (!exists(job->target) && !download(app, SETUP_TRANSCRIBER, "the model", job->url, job->target, error, cap)) return false;
     if (!exists(vad) && !download(app, SETUP_TRANSCRIBER, "the voice detection model", WHISPER_VAD_URL, vad, error, cap)) return false;
-    event_post(app, setup_model_apply, SETUP_TRANSCRIBER, 0, WHISPER_MODEL);
     return true;
 }
 
-static bool setup_summary_ai(App* app, char* error, i32 cap) {
-    wchar_t dir[MAX_PATH], exe[MAX_PATH], stamp[MAX_PATH];
-    setup_dir(L"llm", dir);
+static bool setup_summary_ai(SetupJob* job, char* error, i32 cap) {
+    App* app = job->app;
+    wchar_t* dir = job->dir;
+    wchar_t exe[MAX_PATH], stamp[MAX_PATH];
     CreateDirectoryW(dir, 0);
     swprintf(exe, MAX_PATH, L"%ls\\llama-server.exe", dir);
     swprintf(stamp, MAX_PATH, L"%ls\\build.txt", dir);
@@ -316,44 +384,460 @@ static bool setup_summary_ai(App* app, char* error, i32 cap) {
         }
         write_file(stamp, narrow(scratch(), LLAMA_BUILD));
     }
-    wchar_t gguf[MAX_PATH];
-    swprintf(gguf, MAX_PATH, L"%ls\\%hs.gguf", dir, QWEN_MODEL);
-    if (!exists(gguf) && !download(app, SETUP_SUMMARY_AI, "the model", QWEN_URL, gguf, error, cap)) return false;
-    event_post(app, setup_model_apply, SETUP_SUMMARY_AI, 0, QWEN_MODEL);
+    if (!exists(job->target) && !download(app, SETUP_SUMMARY_AI, "the model", job->url, job->target, error, cap)) return false;
     return true;
 }
 
-struct SetupJob {
-    App* app;
-    SetupPart part;
-};
-
 static DWORD WINAPI setup_thread(void* p) {
-    SetupJob job = *(SetupJob*)p;
-    free(p);
-    App* app = job.app;
-    const char* name = job.part == SETUP_TRANSCRIBER ? "transcriber" : "summary AI";
-    LOG("setting up the %s", name);
+    SetupJob* job = (SetupJob*)p;
+    App* app = job->app;
+    const char* name = job->part == SETUP_TRANSCRIBER ? "transcriber" : "summary AI";
+    LOG("setting up the %s with %s", name, job->model);
     char error[512] = "";
-    bool ok = job.part == SETUP_TRANSCRIBER ? setup_transcriber(app, error, sizeof(error)) : setup_summary_ai(app, error, sizeof(error));
-    if (ok) LOG("the %s is set up", name);
-    else WARN("setting up the %s failed: %s", name, error);
+    bool ok = job->part == SETUP_TRANSCRIBER ? setup_transcriber(job, error, sizeof(error)) : setup_summary_ai(job, error, sizeof(error));
+    if (ok) {
+        LOG("the %s is set up", name);
+        event_post(app, setup_model_apply, job->part, 0, job->model);
+    } else {
+        WARN("setting up the %s failed: %s", name, error);
+    }
     // Must arrive, or the part would show "setting up" until the program restarts.
-    while (!event_post(app, setup_done_apply, job.part, ok, error))
+    while (!event_post(app, setup_done_apply, job->part, ok, error))
         if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
+    free(job);
     return 0;
 }
 
-void setup_start(App* app, SetupPart part) {
+static bool setup_busy(App* app) {
+    for (i32 i = 0; i < SETUP_PARTS; i++)
+        if (app->setup.part[i].running) return true;
+    return app->setup.move.running;
+}
+
+// ---------------------------------------------------------------------------------------------
+// What to delete at the next start: config's ai.cleanup, folders separated by '|'.
+
+static void cleanup_add(App* app, const wchar_t* dir) {
+    char* list = app->config.ai.cleanup;
+    Mark m = mark(scratch());
+    Str d = narrow(scratch(), dir);
+    i64 len = (i64)strlen(list);
+    if (len + d.len + 2 < (i64)sizeof(app->config.ai.cleanup))
+        snprintf(list + len, sizeof(app->config.ai.cleanup) - len, "%s%s", len ? "|" : "", d.ptr);
+    config_save_string("ai", "cleanup", list);
+    LOG("%s is in use: it is deleted when lifelog starts again", d.ptr);
+    rewind(m);
+}
+
+// a = 0; text = a folder to delete at the next start.
+static void cleanup_add_apply(App* app, Event* e) {
+    Mark m = mark(scratch());
+    cleanup_add(app, wide(scratch(), str(e->text)));
+    rewind(m);
+}
+
+static bool starts_with_path(Str s, Str dir) {
+    return s.len >= dir.len && _strnicmp(s.ptr, dir.ptr, (size_t)dir.len) == 0 && (s.len == dir.len || s.ptr[dir.len] == '\\');
+}
+
+// Takes the folders under `dir` off the list: they are wanted again (set up again, or moved back).
+static void cleanup_keep(App* app, Str dir) {
+    char* list = app->config.ai.cleanup;
+    if (!list[0]) return;
+    char kept[sizeof(app->config.ai.cleanup)] = "";
+    i64 at = 0;
+    Str rest = str(list);
+    while (rest.len) {
+        i64 bar = 0;
+        while (bar < rest.len && rest.ptr[bar] != '|') bar++;
+        Str one = str_sub(rest, 0, bar);
+        if (one.len && !starts_with_path(one, dir))
+            at += snprintf(kept + at, sizeof(kept) - (size_t)at, "%s%.*s", at ? "|" : "", (int)one.len, one.ptr);
+        rest = bar < rest.len ? str_sub(rest, bar + 1, rest.len - bar - 1) : Str{};
+    }
+    if (strcmp(kept, list) == 0) return;
+    snprintf(list, sizeof(app->config.ai.cleanup), "%s", kept);
+    config_save_string("ai", "cleanup", list);
+}
+
+// Only ever an AI folder lifelog made: ...\whisper, ...\llm or a build folder under whisper.
+static bool ai_tree(Str path) {
+    i64 slash = path.len;
+    while (slash > 0 && path.ptr[slash - 1] != '\\') slash--;
+    Str last = str_sub(path, slash, path.len - slash);
+    if (str_eq_nocase(last, str("whisper")) || str_eq_nocase(last, str("llm"))) return true;
+    Str parent = slash > 1 ? str_sub(path, 0, slash - 1) : Str{};
+    i64 p = parent.len;
+    while (p > 0 && parent.ptr[p - 1] != '\\') p--;
+    return last.len && str_eq_nocase(str_sub(parent, p, parent.len - p), str("whisper"));
+}
+
+void setup_cleanup(Config* cfg) {
+    if (!cfg->ai.cleanup[0]) return;
+    Mark m = mark(scratch());
+    Str rest = str(cfg->ai.cleanup);
+    while (rest.len) {
+        i64 bar = 0;
+        while (bar < rest.len && rest.ptr[bar] != '|') bar++;
+        Str one = str_sub(rest, 0, bar);
+        if (one.len && ai_tree(one)) {
+            LOG("deleting %.*s, left from before", (int)one.len, one.ptr);
+            wchar_t* dir = wide(scratch(), one);
+            remove_tree(dir);
+            // A whisper folder emptied of its last build goes too.
+            wchar_t parent[MAX_PATH];
+            wcsncpy_s(parent, dir, _TRUNCATE);
+            wchar_t* slash = wcsrchr(parent, L'\\');
+            if (slash) {
+                *slash = 0;
+                RemoveDirectoryW(parent);
+            }
+        }
+        rest = bar < rest.len ? str_sub(rest, bar + 1, rest.len - bar - 1) : Str{};
+    }
+    rewind(m);
+    cfg->ai.cleanup[0] = 0;
+    config_save_string("ai", "cleanup", "");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Removing
+
+// Deletes `dir` and all in it, but for the whisper.cpp build in use (`keep`, may be empty), which
+// is put in `kept`. False if something else would not go.
+static bool remove_ai_dir(const wchar_t* dir, wchar_t kept[MAX_PATH]) {
+    kept[0] = 0;
+    if (!exists(dir)) return true;
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%ls\\*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    bool ok = true;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+            wchar_t path[MAX_PATH];
+            swprintf(path, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+            if (g_whisper_from[0] && _wcsicmp(path, g_whisper_from) == 0) {
+                wcsncpy_s(kept, MAX_PATH, path, _TRUNCATE);
+                continue;
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) remove_tree(path);
+            else DeleteFileW(path);
+            if (exists(path)) ok = false;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir);  // fails while something is kept: fine
+    return ok;
+}
+
+bool setup_remove(App* app, SetupPart part, const char* model) {
+    if (setup_busy(app)) {
+        ui_say(app, "Wait for the download or the move to finish first");
+        return false;
+    }
+    if (part == SETUP_SUMMARY_AI && app->summary.writing) {
+        ui_say(app, "The summary AI is writing: try again when it is done");
+        return false;
+    }
+    wchar_t path[MAX_PATH];
+    model_path(&app->config, part, model, path);
+    app->setup.scanned_ts = 0;
+    if (!DeleteFileW(path) && GetLastError() != ERROR_FILE_NOT_FOUND) {
+        WARN("could not delete the model %s (error %lu)", model, GetLastError());
+        ui_say(app, "Could not delete %s: it may be in use. Try again in a minute.", model);
+        return false;
+    }
+    LOG("removed the %s model %s", part == SETUP_TRANSCRIBER ? "transcription" : "summary", model);
+    ui_say(app, "Removed %s", model);
+    worker_wake(app);
+    return true;
+}
+
+void setup_remove_all(App* app) {
+    if (setup_busy(app)) {
+        ui_say(app, "Wait for the download or the move to finish first");
+        return;
+    }
+    if (app->summary.writing) {
+        ui_say(app, "The summary AI is writing: try again when it is done");
+        return;
+    }
+    wchar_t whisper[MAX_PATH], llm[MAX_PATH], kept[MAX_PATH], none[MAX_PATH];
+    whisper_dir(&app->config, whisper);
+    llm_dir(&app->config, llm);
+    bool ok = remove_ai_dir(whisper, kept);
+    ok = remove_ai_dir(llm, none) && ok;
+    if (kept[0]) cleanup_add(app, kept);
+    app->setup.scanned_ts = 0;
+    worker_wake(app);
+    LOG("removed lifelog's AI from %s", app->config.ai.dir);
+    if (!ok) ui_say(app, "Some of the AI files are in use: see %s", app->config.ai.dir);
+    else if (kept[0]) ui_say(app, "Removed. whisper.cpp itself is in use, and goes when lifelog restarts.");
+    else ui_say(app, "Removed lifelog's AI");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Moving the AI folder
+
+struct MoveJob {
+    App* app;
+    wchar_t from[MAX_PATH];  // the old AI folder
+    wchar_t to[MAX_PATH];
+    char to_utf8[MAX_PATH];
+    f64 total, done, said;
+};
+
+static f64 tree_bytes(const wchar_t* dir) {
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%ls\\*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    f64 sum = 0;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            wchar_t sub[MAX_PATH];
+            swprintf(sub, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+            sum += tree_bytes(sub);
+        } else {
+            sum += (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return sum;
+}
+
+static DWORD CALLBACK move_progress(LARGE_INTEGER, LARGE_INTEGER copied, LARGE_INTEGER, LARGE_INTEGER, DWORD, DWORD, HANDLE, HANDLE, void* p) {
+    MoveJob* j = (MoveJob*)p;
+    if (stopping(j->app)) return PROGRESS_CANCEL;
+    f64 now = j->done + (f64)copied.QuadPart;
+    if (now - j->said >= 100e6) {
+        j->said = now;
+        setup_say(j->app, SETUP_PARTS, "Moving: %.1f of %.1f GB", now / 1e9, j->total / 1e9);
+    }
+    return PROGRESS_CONTINUE;
+}
+
+// Copies `from` into `to`, folders and all; a file already there at the same size is taken as
+// copied. Not .part files (cut-off downloads).
+static bool copy_tree(MoveJob* j, const wchar_t* from, const wchar_t* to, char* error, i32 cap) {
+    CreateDirectoryW(to, 0);
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%ls\\*", from);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    bool ok = true;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        wchar_t src[MAX_PATH], dst[MAX_PATH];
+        swprintf(src, MAX_PATH, L"%ls\\%ls", from, fd.cFileName);
+        swprintf(dst, MAX_PATH, L"%ls\\%ls", to, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ok = copy_tree(j, src, dst, error, cap);
+            continue;
+        }
+        size_t n = wcslen(fd.cFileName);
+        if (n > 5 && _wcsicmp(fd.cFileName + n - 5, L".part") == 0) continue;
+        f64 size = (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
+        WIN32_FILE_ATTRIBUTE_DATA have;
+        if (GetFileAttributesExW(dst, GetFileExInfoStandard, &have) && (f64)(((u64)have.nFileSizeHigh << 32) | have.nFileSizeLow) == size) {
+            j->done += size;
+            continue;
+        }
+        wchar_t part[MAX_PATH];
+        swprintf(part, MAX_PATH, L"%ls.part", dst);
+        BOOL cancel = FALSE;
+        if (!CopyFileExW(src, part, move_progress, j, &cancel, 0) || !MoveFileExW(part, dst, MOVEFILE_REPLACE_EXISTING)) {
+            DWORD err = GetLastError();
+            DeleteFileW(part);
+            if (stopping(j->app)) snprintf(error, cap, "lifelog was closed");
+            else snprintf(error, cap, "could not copy %ls (error %lu; is the disk full?)", fd.cFileName, err);
+            ok = false;
+        }
+        j->done += size;
+    } while (ok && FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+// text = the new AI folder, all copied there.
+static void move_apply(App* app, Event* e) {
+    SET(app->config.ai.dir, str(e->text));
+    config_save_string("ai", "dir", app->config.ai.dir);
+    cleanup_keep(app, str(app->config.ai.dir));
+    LOG("the AI files are now in %s", app->config.ai.dir);
+}
+
+static DWORD WINAPI move_thread(void* p) {
+    MoveJob* j = (MoveJob*)p;
+    App* app = j->app;
+    char error[512] = "";
+    const wchar_t* subs[2] = {L"whisper", L"llm"};
+    wchar_t from[2][MAX_PATH], to[2][MAX_PATH];
+    for (i32 i = 0; i < 2; i++) {
+        swprintf(from[i], MAX_PATH, L"%ls\\%ls", j->from, subs[i]);
+        swprintf(to[i], MAX_PATH, L"%ls\\%ls", j->to, subs[i]);
+        j->total += tree_bytes(from[i]);
+    }
+    LOG("moving the AI files (%.1f GB) to %s", j->total / 1e9, j->to_utf8);
+    bool ok = SHCreateDirectoryExW(0, j->to, 0) == ERROR_SUCCESS || exists(j->to);
+    if (!ok) snprintf(error, sizeof(error), "could not make the folder %s (error %lu)", j->to_utf8, GetLastError());
+    ULARGE_INTEGER free_bytes = {};
+    if (ok && GetDiskFreeSpaceExW(j->to, &free_bytes, 0, 0) && (f64)free_bytes.QuadPart < j->total - tree_bytes(to[0]) - tree_bytes(to[1])) {
+        snprintf(error, sizeof(error), "%s has %.1f GB free; the AI files need %.1f GB", j->to_utf8, (f64)free_bytes.QuadPart / 1e9, j->total / 1e9);
+        ok = false;
+    }
+    bool moved[2] = {};
+    for (i32 i = 0; ok && i < 2; i++) {
+        if (!exists(from[i])) continue;
+        // On the same drive a folder moves at once, unless something in it is open.
+        if (!exists(to[i]) && MoveFileExW(from[i], to[i], 0)) {
+            moved[i] = true;
+            j->done += tree_bytes(to[i]);
+            continue;
+        }
+        ok = copy_tree(j, from[i], to[i], error, sizeof(error));
+    }
+    if (ok) {
+        while (!event_post(app, move_apply, 0, 0, j->to_utf8))
+            if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
+        // Old files go once nothing reads the old folder any more.
+        for (i32 i = 0; i < 100 && !str_eq(str(settings(app)->ai.dir), str(j->to_utf8)); i++) Sleep(50);
+        for (i32 i = 0; i < 2; i++) {
+            if (moved[i]) continue;
+            wchar_t kept[MAX_PATH];
+            Mark m = mark(scratch());
+            if (!remove_ai_dir(from[i], kept)) WARN("could not delete all of %s", narrow(scratch(), from[i]).ptr);
+            if (kept[0]) event_post(app, cleanup_add_apply, 0, 0, narrow(scratch(), kept).ptr);
+            rewind(m);
+        }
+        LOG("moved the AI files");
+    } else {
+        WARN("moving the AI files failed: %s", error);
+    }
+    while (!event_post(app, setup_done_apply, SETUP_PARTS, ok, error))
+        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
+    free(j);
+    return 0;
+}
+
+void setup_move(App* app, Str dir) {
+    dir = str_trim(dir);
+    while (dir.len > 3 && (dir.ptr[dir.len - 1] == '\\' || dir.ptr[dir.len - 1] == '/')) dir.len--;
+    if (!dir.len || str_eq_nocase(dir, str(app->config.ai.dir))) return;
+    if (setup_busy(app)) {
+        ui_say(app, "Wait for the download to finish first");
+        return;
+    }
+    if (app->summary.writing) {
+        ui_say(app, "The summary AI is writing: try again when it is done");
+        return;
+    }
+    // Not into the folders being moved.
+    Mark m = mark(scratch());
+    Str old = str(app->config.ai.dir);
+    if (starts_with_path(dir, str_fmt(scratch(), "%s\\whisper", old.ptr)) || starts_with_path(dir, str_fmt(scratch(), "%s\\llm", old.ptr))) {
+        ui_say(app, "Pick a folder outside the one the AI files are in now");
+        rewind(m);
+        return;
+    }
+    rewind(m);
+    MoveJob* j = (MoveJob*)calloc(1, sizeof(MoveJob));
+    CHECK(j, "memory for a move");
+    j->app = app;
+    m = mark(scratch());
+    wcsncpy_s(j->from, wide(scratch(), old), _TRUNCATE);
+    wcsncpy_s(j->to, wide(scratch(), dir), _TRUNCATE);
+    rewind(m);
+    set(j->to_utf8, sizeof(j->to_utf8), dir);
+    SetupState* s = &app->setup.move;
+    s->running = true;
+    s->failed = false;
+    SET(s->text, str("Moving"));
+    HANDLE t = CreateThread(0, 0, move_thread, j, 0, 0);
+    CHECK(t, "the move thread to start (error %lu)", GetLastError());
+    CloseHandle(t);
+}
+
+// ---------------------------------------------------------------------------------------------
+// What is there
+
+static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_t* pattern, const char* prefix, const char* suffix) {
+    Setup* s = &app->setup;
+    s->file_count[part] = 0;
+    f64 all = tree_bytes(dir), models = 0;
+    wchar_t find[MAX_PATH];
+    swprintf(find, MAX_PATH, L"%ls\\%ls", dir, pattern);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(find, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            Mark m = mark(scratch());
+            Str name = narrow(scratch(), fd.cFileName);
+            Str pre = str(prefix), suf = str(suffix);
+            if (name.len > pre.len + suf.len && str_eq(str_sub(name, name.len - suf.len, suf.len), suf) &&
+                !str_eq(name, str(WHISPER_VAD_MODEL)) && s->file_count[part] < (i32)COUNT(s->files[part])) {
+                AiFile* f = &s->files[part][s->file_count[part]++];
+                SET(f->name, str_sub(name, pre.len, name.len - pre.len - suf.len));
+                f->bytes = (f64)(((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
+                models += f->bytes;
+            }
+            rewind(m);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    s->engine_bytes[part] = all - models;
+    s->total_bytes += all;
+}
+
+void ai_scan(App* app) {
+    wchar_t whisper[MAX_PATH], llm[MAX_PATH];
+    whisper_dir(&app->config, whisper);
+    llm_dir(&app->config, llm);
+    app->setup.total_bytes = 0;
+    scan_part(app, SETUP_TRANSCRIBER, whisper, L"ggml-*.bin", "ggml-", ".bin");
+    scan_part(app, SETUP_SUMMARY_AI, llm, L"*.gguf", "", ".gguf");
+    app->setup.scanned_ts = now_ts();
+}
+
+// ---------------------------------------------------------------------------------------------
+
+void setup_start(App* app, SetupPart part, const char* model) {
     SetupState* s = &app->setup.part[part];
-    if (s->running) return;
+    if (setup_busy(app)) return;
+    const AiModel* known = ai_model(part, model);
+    if (!known) {
+        const AiModel* models;
+        ai_models(part, &models);
+        known = &models[0];
+    }
     s->running = true;
     s->failed = false;
     SET(s->text, str("Starting"));
+    SET(s->model, str(known->name));
+    // Set up again here: what was left to delete at the next start is wanted after all.
+    cleanup_keep(app, str(app->config.ai.dir));
     SetupJob* job = (SetupJob*)calloc(1, sizeof(SetupJob));
     CHECK(job, "memory for a setup job");
     job->app = app;
     job->part = part;
+    SET(job->model, str(known->name));
+    wcsncpy_s(job->url, known->url, _TRUNCATE);
+    if (part == SETUP_TRANSCRIBER) {
+        whisper_dir(&app->config, job->dir);
+        whisper_bin_dir(&app->config, job->bins);
+    } else {
+        llm_dir(&app->config, job->dir);
+    }
+    model_path(&app->config, part, known->name, job->target);
+    Mark m = mark(scratch());
+    SHCreateDirectoryExW(0, wide(scratch(), str(app->config.ai.dir)), 0);
+    rewind(m);
     HANDLE t = CreateThread(0, 0, setup_thread, job, 0, 0);
     CHECK(t, "the setup thread to start (error %lu)", GetLastError());
     CloseHandle(t);

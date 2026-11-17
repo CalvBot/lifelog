@@ -620,6 +620,7 @@ static i32 run_app() {
         rewind(m);
         return 1;
     }
+    setup_cleanup(&app->config);  // before the AI is loaded from there
     settings_publish(app);  // before any thread reads settings()
     disk_start();
     app->storage.ready = db_init(&app->config);

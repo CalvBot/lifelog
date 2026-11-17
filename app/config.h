@@ -59,6 +59,11 @@ struct Config {
     } worker;
 
     struct {
+        char dir[MAX_PATH];     // where whisper\ and llm\ are (setup.h); %LOCALAPPDATA%\lifelog by default
+        char cleanup[2048];     // folders to delete at the next start, separated by '|' (setup_cleanup)
+    } ai;
+
+    struct {
         Names hidden;        // speakers hidden in the timeline (and left out of copies and playback)
         bool show_dismissed;  // show the lines of excluded apps
     } ui;

@@ -9,22 +9,24 @@ Nothing leaves the PC. Design and roadmap: [PLAN.md](PLAN.md).
 - `app/`: `lifelog.exe`, in C++ with [Dear ImGui](https://github.com/ocornut/imgui): the recorder (WASAPI mic
   and per-app loopback), the window, the tray icon, the local API and the CLI. Recording runs on background
   threads and the window on the main thread.
-- Transcription: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Whisper large-v3-turbo, loaded into
+- Transcription: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Whisper (large-v3-turbo by default), loaded into
   the app, which writes the lines into SQLite (`schema.sql`). It steps aside while a game is running and catches up
   after.
-- Daily summary: a [llama.cpp](https://github.com/ggml-org/llama.cpp) server with Qwen3 14B, only running while it
-  writes. To use an AI you already run (Ollama, LM Studio, any OpenAI-compatible endpoint), set `endpoint` and
-  `model` under `[summary]` in the settings; then the install skips the 10 GB download.
+- Daily summary: a [llama.cpp](https://github.com/ggml-org/llama.cpp) server with Qwen3 14B by default, only running
+  while it writes. Or an AI you already run (Ollama, LM Studio, any OpenAI-compatible endpoint).
 
 ## Setup
 
 Install `lifelog-<version>.msi`. It installs for your account only (no admin prompt) into
 `%LOCALAPPDATA%\Programs\lifelog`, adds a Start menu entry, and starts lifelog in the tray now and at login.
 
-The installer holds no AI. In **Settings**, press **Set up** under Transcription to download the transcriber
-(whisper.cpp's CUDA build and Whisper large-v3-turbo, about 2.3 GB), and under
-Daily summary to download [llama.cpp](https://github.com/ggml-org/llama.cpp) and Qwen3 14B (about 10 GB). Each
-comes from where it is published, into `%LOCALAPPDATA%\lifelog`. You can use your own instead:
+The installer holds no AI. In **Settings**, pick a **Model** under Transcription and under Daily summary, and it
+downloads from where it is published: whisper.cpp's CUDA build with a Whisper model (large-v3-turbo, 1.6 GB, by
+default; smaller and larger ones are listed), and [llama.cpp](https://github.com/ggml-org/llama.cpp) with a model
+for your graphics card (Qwen3 14B, 9 GB, by default; Qwen3 4B and 8B, Gemma 4 12B and Qwen3.8 27B are listed too).
+They go into `%LOCALAPPDATA%\lifelog` unless you pick another folder under **AI models**, which moves them. A
+`.gguf` you put in its `llm` folder (or a `ggml-*.bin` in `whisper`) shows in the list too. Or pick **Your own
+server** instead:
 
 - **Transcriber:** any OpenAI-compatible transcription server (`POST <endpoint>/audio/transcriptions`, such as
   faster-whisper-server or a cloud API) and the model name it knows.
@@ -32,7 +34,8 @@ comes from where it is published, into `%LOCALAPPDATA%\lifelog`. You can use you
 
 Recordings and the database go to `%LOCALAPPDATA%\lifelog\data` unless `data_dir` says otherwise. Settings live in
 `%APPDATA%\lifelog\config.toml`, and the log in `%LOCALAPPDATA%\lifelog\lifelog.log`. Uninstalling keeps your data,
-settings and the downloaded AI; delete those two folders to remove them too.
+settings and the downloaded AI. To take the AI off, delete a model (its trash button) or use **Remove all** under **AI models**
+in Settings before uninstalling; delete the two folders above to remove the rest.
 
 To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Studio 2022), and
 `scripts\build-msi.ps1` builds the release exe and `dist\lifelog-<version>.msi` (needs WiX Toolset 3).

@@ -53,7 +53,7 @@ not_games = []
 enabled = true
 ask_at = "21:00"
 max_words = 250
-# The model file (<model>.gguf in %LOCALAPPDATA%\lifelog\llm). Its server runs only while a summary is written.
+# The model file (<model>.gguf in the AI folder's llm). Its server runs only while a summary is written.
 model = "qwen3-14b"
 # Or use an AI you already run: any OpenAI-compatible endpoint, e.g. "http://127.0.0.1:11434/v1" for
 # Ollama. Then `model` is the name that endpoint knows it by. A server on another machine gets the
@@ -62,7 +62,7 @@ endpoint = ""
 api_key = ""
 
 [worker]
-# Transcription. The model file (ggml-<model>.bin in %LOCALAPPDATA%\lifelog\whisper), run by
+# Transcription. The model file (ggml-<model>.bin in the AI folder's whisper), run by
 # lifelog's own whisper.cpp server while the graphics card is free.
 model = "large-v3-turbo"
 # The language spoken, or "" to detect it for each clip.
@@ -72,6 +72,13 @@ language = "en"
 # server on another machine gets your recordings.
 endpoint = ""
 api_key = ""
+
+[ai]
+# The folder lifelog's own AI is downloaded into (its whisper and llm folders). Empty:
+# %LOCALAPPDATA%\lifelog. Change it from Settings, which moves the files.
+dir = ""
+# Left to delete when lifelog next starts (set by lifelog).
+cleanup = ""
 )toml";
 
 const char* mode_name(Mode m) {
@@ -349,6 +356,9 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("language"))) take_string(cfg->worker.language, sizeof(cfg->worker.language), &v);
             if (str_eq(k, str("endpoint"))) take_string(cfg->worker.endpoint, sizeof(cfg->worker.endpoint), &v);
             if (str_eq(k, str("api_key"))) take_string(cfg->worker.api_key, sizeof(cfg->worker.api_key), &v);
+        } else if (str_eq(tb, str("ai"))) {
+            if (str_eq(k, str("dir"))) take_string(cfg->ai.dir, sizeof(cfg->ai.dir), &v);
+            if (str_eq(k, str("cleanup"))) take_string(cfg->ai.cleanup, sizeof(cfg->ai.cleanup), &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);
@@ -356,6 +366,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         list_free(&v.array);
     }
     if (!cfg->data_dir[0]) SET(cfg->data_dir, str_fmt(a, "%s\\data", narrow(a, local_dir()).ptr));
+    if (!cfg->ai.dir[0]) SET(cfg->ai.dir, narrow(a, local_dir()));
     rewind(m);
     return ok;
 }

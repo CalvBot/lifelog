@@ -344,7 +344,7 @@ static bool api_handle(App* app, ApiCall* c) {
             answer_error(r, 400, "part must be transcriber or summary");
             return true;
         }
-        setup_start(app, transcriber ? SETUP_TRANSCRIBER : SETUP_SUMMARY_AI);
+        setup_start(app, transcriber ? SETUP_TRANSCRIBER : SETUP_SUMMARY_AI, transcriber ? app->config.worker.model : app->config.summary.model);
         status_json(app, &r->body);
         wake_window(app);
         return true;
