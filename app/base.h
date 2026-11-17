@@ -48,8 +48,8 @@ typedef double f64;
     } while (0)
 
 // ---------------------------------------------------------------------------------------------
-// Arena: memory handed out in order and freed all at once. A zeroed Arena reserves its address
-// space on first use; pages are committed as they are reached.
+// Arena: memory handed out in order and freed all at once. A zeroed Arena takes a released one
+// on first use, or reserves new address space; pages are committed as they are reached.
 
 struct Arena {
     u8* base;
@@ -60,7 +60,7 @@ struct Arena {
 
 void* arena_push(Arena* a, u64 size, u64 align = 8);   // zeroed
 void arena_reset(Arena* a);                             // keeps the pages for next time
-void arena_release(Arena* a);                           // gives them back
+void arena_release(Arena* a);                           // back to the spares, for the next arena
 #define PUSH(arena, T) ((T*)arena_push((arena), sizeof(T), alignof(T)))
 #define PUSH_ARRAY(arena, T, n) ((T*)arena_push((arena), sizeof(T) * (u64)(n), alignof(T)))
 

@@ -26,8 +26,19 @@ static HANDLE log_file = INVALID_HANDLE_VALUE;
 
 static const u64 ARENA_RESERVE = GB(4);
 static const u64 ARENA_COMMIT = MB(1);
+// Released arenas wait here, with up to ARENA_KEEP of their pages still committed, and the next
+// arena to start takes one: a job or a write costs no system call unless it outgrows a megabyte.
+static const u64 ARENA_KEEP = MB(1);
+static SRWLOCK g_spare_lock = SRWLOCK_INIT;
+static Arena g_spare[32];
+static i32 g_spare_count;
 
 void* arena_push(Arena* a, u64 size, u64 align) {
+    if (!a->base) {
+        AcquireSRWLockExclusive(&g_spare_lock);
+        if (g_spare_count) *a = g_spare[--g_spare_count];
+        ReleaseSRWLockExclusive(&g_spare_lock);
+    }
     if (!a->base) {
         a->base = (u8*)VirtualAlloc(nullptr, ARENA_RESERVE, MEM_RESERVE, PAGE_NOACCESS);
         CHECK(a->base, "%llu bytes of address space for an arena", ARENA_RESERVE);
@@ -42,20 +53,44 @@ void* arena_push(Arena* a, u64 size, u64 align) {
         a->committed += grow;
     }
     a->used = end;
-    // Pages reused after a reset still hold the old bytes.
+    // Pages reused after a reset (or from a spare) still hold the old bytes.
     memset(a->base + at, 0, size);
     return a->base + at;
 }
 
 void arena_reset(Arena* a) { a->used = 0; }
 
-void arena_release(Arena* a) {
-    if (a->base) VirtualFree(a->base, 0, MEM_RELEASE);
+// `wait` false: give up rather than wait for the lock (at thread exit, where its holder may be gone).
+static void arena_give_back(Arena* a, bool wait) {
+    if (!a->base) return;
+    if (a->committed > ARENA_KEEP) {
+        VirtualFree(a->base + ARENA_KEEP, a->committed - ARENA_KEEP, MEM_DECOMMIT);
+        a->committed = ARENA_KEEP;
+    }
+    a->used = 0;
+    bool kept = false;
+    if (wait) AcquireSRWLockExclusive(&g_spare_lock);
+    if (wait || TryAcquireSRWLockExclusive(&g_spare_lock)) {
+        if (g_spare_count < COUNT(g_spare)) {
+            g_spare[g_spare_count++] = *a;
+            kept = true;
+        }
+        ReleaseSRWLockExclusive(&g_spare_lock);
+    }
+    if (!kept) VirtualFree(a->base, 0, MEM_RELEASE);
     *a = {};
 }
 
+void arena_release(Arena* a) { arena_give_back(a, true); }
+
+// A thread's scratch arena goes back when the thread ends (capture streams, the player and the
+// setup threads come and go).
+static void WINAPI scratch_done(void* p) { arena_give_back((Arena*)p, false); }
+
 Arena* scratch() {
     static thread_local Arena arena;
+    static DWORD fls = FlsAlloc(scratch_done);
+    if (!arena.base && fls != FLS_OUT_OF_INDEXES) FlsSetValue(fls, &arena);
     return &arena;
 }
 
