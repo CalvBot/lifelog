@@ -311,15 +311,99 @@ static const char* wrap_line(const char* at, const char* end, f32 width, const c
     return e;
 }
 
-static i32 wrap_count(Str text, f32 width) {
-    const char* at = text.ptr;
-    const char* end = text.ptr + text.len;
-    i32 n = 0;
-    while (at < end) {
-        const char* stop;
-        at = wrap_line(at, end, width, &stop);
-        n++;
+// A text laid out in the current font and size at one width: where its visual lines break and
+// where each character goes, worked out once and then used to measure and to draw it.
+struct TextLayout {
+    i32 lines;
+    i32* from;  // per visual line: bytes [from, stop) are drawn, `width` wide
+    i32* stop;
+    f32* width;
+    f32* x;     // per byte: where it is drawn from the start of its line (a character's bytes share it)
+};
+
+struct LayoutSlot {
+    u64 key;  // a hash of the text, width, font and size; 0 when free
+    i64 len;
+    TextLayout layout;
+};
+
+// Every text laid out so far, until half the slots are taken: then they are all let go and laid
+// out again as they are next drawn (after a resize, say, when none of the old ones fit).
+#define LAYOUT_SLOTS 16384
+static struct {
+    LayoutSlot slots[LAYOUT_SLOTS];
+    i32 used;
+    Arena arena;
+} g_layouts;
+
+static u64 hash_bytes(u64 h, const void* p, i64 n) {
+    const u8* b = (const u8*)p;
+    for (i64 i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
+    return h;
+}
+
+// `text` laid out at `width`. Only good until the next call: a call may let all of them go.
+static TextLayout* text_layout(Str text, f32 width) {
+    ImFont* font = ImGui::GetFont();
+    f32 size = ImGui::GetFontSize();
+    u64 key = hash_bytes(0xcbf29ce484222325ull, text.ptr, text.len);
+    key = hash_bytes(key, &width, sizeof(width));
+    key = hash_bytes(key, &font, sizeof(font));
+    key = hash_bytes(key, &size, sizeof(size));
+    key |= 1;
+    u32 mask = LAYOUT_SLOTS - 1, i = (u32)key & mask;
+    for (; g_layouts.slots[i].key; i = (i + 1) & mask)
+        if (g_layouts.slots[i].key == key && g_layouts.slots[i].len == text.len) return &g_layouts.slots[i].layout;
+    if (g_layouts.used >= LAYOUT_SLOTS / 2) {
+        memset(g_layouts.slots, 0, sizeof(g_layouts.slots));
+        g_layouts.used = 0;
+        arena_reset(&g_layouts.arena);
+        for (i = (u32)key & mask; g_layouts.slots[i].key; i = (i + 1) & mask) {}
     }
+    LayoutSlot* slot = &g_layouts.slots[i];
+    g_layouts.used++;
+    slot->key = key;
+    slot->len = text.len;
+    TextLayout* l = &slot->layout;
+
+    Arena* a = &g_layouts.arena;
+    const char* base = text.ptr;
+    const char* end = base + text.len;
+    Mark m = mark(scratch());
+    i32* from = PUSH_ARRAY(scratch(), i32, text.len + 1);
+    i32* stop = PUSH_ARRAY(scratch(), i32, text.len + 1);
+    i32 n = 0;
+    for (const char* at = base; at < end; n++) {
+        const char* s;
+        const char* next = wrap_line(at, end, width, &s);
+        from[n] = (i32)(at - base);
+        stop[n] = (i32)(s - base);
+        at = next;
+    }
+    l->lines = n;
+    l->from = PUSH_ARRAY(a, i32, n + 1);
+    l->stop = PUSH_ARRAY(a, i32, n + 1);
+    l->width = PUSH_ARRAY(a, f32, n + 1);
+    l->x = PUSH_ARRAY(a, f32, text.len + 1);
+    memcpy(l->from, from, sizeof(i32) * n);
+    memcpy(l->stop, stop, sizeof(i32) * n);
+    rewind(m);
+    for (i32 k = 0; k < n; k++) {
+        f32 x = 0;
+        for (i32 b = l->from[k]; b < l->stop[k];) {
+            i32 e = b + 1;
+            while (e < l->stop[k] && ((u8)base[e] & 0xC0) == 0x80) e++;
+            for (i32 j = b; j < e; j++) l->x[j] = x;
+            x += font->CalcTextSizeA(size, FLT_MAX, 0, base + b, base + e).x;
+            b = e;
+        }
+        l->width[k] = x;
+    }
+    return l;
+}
+
+static i32 wrap_count(Str text, f32 width) {
+    i32 n = text_layout(text, width)->lines;
     return n > 0 ? n : 1;
 }
 
@@ -335,33 +419,25 @@ static f32 draw_spans(ImDrawList* dl, ImVec2 pos, Str text, f32 width, Span* spa
     ImFont* font = ImGui::GetFont();
     f32 size = ImGui::GetFontSize();
     f32 lh = ImGui::GetTextLineHeight();
-    const char* base = text.ptr;
-    const char* end = text.ptr + text.len;
-    const char* at = base;
+    TextLayout* l = text_layout(text, width);
     f32 y = pos.y;
-    i32 lines = 0;
-    while (at < end) {
-        const char* stop;
-        const char* next = wrap_line(at, end, width, &stop);
-        i64 ls = at - base, le = stop - base;
+    for (i32 k = 0; k < l->lines; k++, y += lh) {
+        i64 ls = l->from[k], le = l->stop[k];
         i64 from = 0;
         for (i32 i = 0; i < count; i++) {
             i64 a = from > ls ? from : ls;
             i64 b = spans[i].to < le ? spans[i].to : le;
             from = spans[i].to;
             if (a >= b) continue;
-            f32 x = pos.x + font->CalcTextSizeA(size, FLT_MAX, 0, at, base + a).x;
+            f32 x = pos.x + l->x[a];
             if (spans[i].bg) {
-                f32 w = font->CalcTextSizeA(size, FLT_MAX, 0, base + a, base + b).x;
-                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + lh), spans[i].bg, 2);
+                f32 to = pos.x + (b == le ? l->width[k] : l->x[b]);
+                dl->AddRectFilled(ImVec2(x, y), ImVec2(to, y + lh), spans[i].bg, 2);
             }
-            if (spans[i].col >> IM_COL32_A_SHIFT) dl->AddText(font, size, ImVec2(x, y), spans[i].col, base + a, base + b);
+            if (spans[i].col >> IM_COL32_A_SHIFT) dl->AddText(font, size, ImVec2(x, y), spans[i].col, text.ptr + a, text.ptr + b);
         }
-        y += lh;
-        lines++;
-        at = next;
     }
-    return (lines > 0 ? lines : 1) * lh;
+    return (l->lines > 0 ? l->lines : 1) * lh;
 }
 
 static f32 draw_wrapped(ImDrawList* dl, ImVec2 pos, Str text, f32 width, ImU32 col) {
