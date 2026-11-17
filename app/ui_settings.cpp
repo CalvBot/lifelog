@@ -905,7 +905,7 @@ static void chimes_card(App* app, SettingsState* s, f32 width) {
         chime_play(app, CHIME_DONE);
     }
     ImGui::SameLine();
-    const char* hints[] = {"a ringing bell, heard over a game", "round and short", "warm, with a filter sweep", "silent"};
+    const char* hints[] = {"a warm bell, like an electric piano", "a low marimba", "a mellow synth", "silent"};
     weak(fit(hints[c->chimes.style], ImGui::GetContentRegionAvail().x));
 
     bool off = c->chimes.style == CHIME_OFF;

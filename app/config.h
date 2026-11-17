@@ -15,9 +15,9 @@ bool mode_parse(Str s, Mode* out);
 
 // How the chimes sound (chime.h): three sets, or none. Saved by name, so the order may change.
 enum ChimeStyle : i32 {
-    CHIME_GLASS,  // a ringing bell, brighter: heard over a game
-    CHIME_SOFT,   // round and short, like a marimba
-    CHIME_SYNTH,  // warm detuned synth with a filter sweep
+    CHIME_GLASS,  // a warm bell, like an electric piano
+    CHIME_SOFT,   // a low marimba
+    CHIME_SYNTH,  // a mellow synth: detuned saws, a filter, a sine below
     CHIME_OFF,
 };
 const char* chime_style_name(ChimeStyle s);

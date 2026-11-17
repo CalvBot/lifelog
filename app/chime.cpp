@@ -1,5 +1,5 @@
 // chime.cpp: the chimes (chime.h). Each is a few notes on a small synthesised instrument, placed
-// across left and right, with a ping-pong echo and a little room. It is made into a 48 kHz stereo
+// across left and right, kept low and warm, with a soft echo and a little room. It is made into a 48 kHz stereo
 // WAV in memory and handed to PlaySound, which plays it on the default output without blocking.
 // lifelog never records its own process, so a chime does not end up in the recordings.
 
@@ -21,25 +21,25 @@ struct ChimeShape {
     i32 count;
 };
 
-// A4 440, B♭4 466, D5 587, G5 784, B5 988, C6 1047, D6 1175, E6 1319, G6 1568, C7 2093, E7 2637
+// Low and warm, around middle C: A3 220, B♭3 233, C4 262, D4 294, E4 330, G4 392, B4 494, C5 523, E5 659
 static const ChimeShape CHIME_SHAPES[CHIME_COUNT] = {
     // Listening: a quick rising arpeggio, left to right: go ahead.
-    {{{784, 0, 0.5f, 0.8f, -0.35f}, {988, 0.055f, 0.5f, 0.8f, 0}, {1175, 0.11f, 0.7f, 1, 0.35f}}, 3},
+    {{{294, 0, 0.6f, 0.8f, -0.3f}, {392, 0.07f, 0.6f, 0.8f, 0}, {494, 0.14f, 0.8f, 0.9f, 0.3f}}, 3},
     // Done: a major chord strummed into bloom, an octave on top.
-    {{{1047, 0, 0.9f, 0.8f, -0.3f}, {1319, 0.03f, 0.9f, 0.7f, 0.05f}, {1568, 0.06f, 1.0f, 0.7f, 0.35f}, {2093, 0.14f, 0.9f, 0.35f, 0}}, 4},
-    // Clip saved: a sparkling run up two octaves, sweeping across.
-    {{{1047, 0, 0.4f, 0.8f, -0.6f},
-      {1319, 0.05f, 0.4f, 0.75f, -0.3f},
-      {1568, 0.10f, 0.4f, 0.75f, 0},
-      {2093, 0.15f, 0.5f, 0.7f, 0.3f},
-      {2637, 0.20f, 0.8f, 0.55f, 0.6f}},
+    {{{262, 0, 1.0f, 0.8f, -0.3f}, {330, 0.035f, 1.0f, 0.7f, 0.05f}, {392, 0.07f, 1.1f, 0.7f, 0.3f}, {523, 0.15f, 1.0f, 0.35f, 0}}, 4},
+    // Clip saved: a run up two octaves, sweeping across.
+    {{{262, 0, 0.45f, 0.8f, -0.5f},
+      {330, 0.06f, 0.45f, 0.75f, -0.25f},
+      {392, 0.12f, 0.45f, 0.75f, 0},
+      {523, 0.18f, 0.55f, 0.7f, 0.25f},
+      {659, 0.24f, 0.9f, 0.55f, 0.5f}},
      5},
     // Didn't catch: down and back up a little, like "hm?".
-    {{{1319, 0, 0.35f, 0.9f, 0.2f}, {1047, 0.11f, 0.35f, 0.8f, -0.2f}, {1175, 0.22f, 0.6f, 0.85f, 0.1f}}, 3},
+    {{{330, 0, 0.4f, 0.9f, 0.2f}, {262, 0.13f, 0.4f, 0.8f, -0.2f}, {294, 0.26f, 0.7f, 0.85f, 0.1f}}, 3},
     // Error: two low knocks, each a rub of two notes a semitone apart.
-    {{{466, 0, 0.3f, 1, -0.2f}, {440, 0, 0.3f, 0.9f, 0.2f}, {466, 0.16f, 0.45f, 1, -0.2f}, {440, 0.16f, 0.45f, 0.9f, 0.2f}}, 4},
+    {{{233, 0, 0.35f, 1, -0.2f}, {220, 0, 0.35f, 0.9f, 0.2f}, {233, 0.18f, 0.5f, 1, -0.2f}, {220, 0.18f, 0.5f, 0.9f, 0.2f}}, 4},
     // Cancelled: a soft fall of a fourth.
-    {{{784, 0, 0.45f, 0.7f, 0.25f}, {587, 0.12f, 0.7f, 0.6f, -0.25f}}, 2},
+    {{{392, 0, 0.5f, 0.7f, 0.2f}, {294, 0.14f, 0.8f, 0.6f, -0.2f}}, 2},
 };
 
 const char* chime_label(Chime c) {
@@ -51,32 +51,31 @@ const char* chime_label(Chime c) {
 // Instruments: one note into one channel. `detune` nudges the pitch (1 is none), a little
 // differently left and right, which makes the note wide and shimmering.
 
-// A bell: FM with an inharmonic ratio, plus two glassy partials that fade fast.
+// An electric-piano bell: gentle FM at a whole-number ratio (so it stays in tune with itself), the
+// brightness fading in the first moments, and a soft body an octave below.
 static void glass_note(f32* out, i32 frames, f32 freq, f32 detune, f32 level) {
     f32 f = freq * detune;
     for (i32 i = 0; i < frames; i++) {
         f32 t = (f32)i / CHIME_RATE;
-        f32 index = 2.4f * expf(-t * 10);
-        f32 bell = sinf(TAU * f * t + index * sinf(TAU * f * 3.5f * t));
-        f32 v = expf(-t * 3.2f) * (0.8f * bell + 0.22f * expf(-t * 12) * sinf(TAU * f * 2.76f * t) +
-                                   0.1f * expf(-t * 20) * sinf(TAU * f * 5.4f * t));
-        f32 attack = t < 0.002f ? t / 0.002f : 1;
+        f32 index = 1.1f * expf(-t * 6);
+        f32 tone = sinf(TAU * f * t + index * sinf(TAU * f * t));
+        f32 v = expf(-t * 2.6f) * tone + 0.45f * expf(-t * 3) * sinf(TAU * f * 0.5f * t);
+        f32 attack = t < 0.005f ? t / 0.005f : 1;
         out[i] += v * attack * level;
     }
 }
 
-// A marimba: the bar's own overtones (about 4x and 9.2x), a soft octave below, and the knock of
-// the mallet (a few ms of noise).
+// A low marimba: the bar's main overtone (about 4x) kept short, a round octave below, and the soft
+// knock of a felt mallet.
 static void soft_note(f32* out, i32 frames, f32 freq, f32 detune, f32 level, u32 seed) {
     f32 f = freq * detune;
     for (i32 i = 0; i < frames; i++) {
         f32 t = (f32)i / CHIME_RATE;
         seed = seed * 1664525 + 1013904223;
         f32 noise = (f32)(seed >> 8) / (f32)(1 << 24) * 2 - 1;
-        f32 v = expf(-t * 7) * sinf(TAU * f * t) + 0.28f * expf(-t * 28) * sinf(TAU * f * 3.93f * t) +
-                0.08f * expf(-t * 45) * sinf(TAU * f * 9.2f * t) + 0.18f * expf(-t * 9) * sinf(TAU * f * 0.5f * t) +
-                0.15f * expf(-t * 900) * noise;
-        f32 attack = t < 0.0015f ? t / 0.0015f : 1;
+        f32 v = expf(-t * 5) * sinf(TAU * f * t) + 0.12f * expf(-t * 30) * sinf(TAU * f * 3.93f * t) +
+                0.5f * expf(-t * 5.5f) * sinf(TAU * f * 0.5f * t) + 0.04f * expf(-t * 600) * noise;
+        f32 attack = t < 0.004f ? t / 0.004f : 1;
         out[i] += v * attack * level;
     }
 }
@@ -94,7 +93,8 @@ static f32 saw(f32 phase, f32 step) {
     return v;
 }
 
-// A synth pluck: two saws a few cents apart through a low-pass filter that sweeps down from bright.
+// A synth pluck: two saws a few cents apart through a low-pass filter that opens a little and closes
+// again, over a sine an octave below.
 static void synth_note(f32* out, i32 frames, f32 freq, f32 detune, f32 level) {
     f32 f1 = freq * detune * 0.997f, f2 = freq * detune * 1.003f;
     f32 p1 = 0, p2 = 0.37f, low = 0, band = 0;
@@ -107,14 +107,15 @@ static void synth_note(f32* out, i32 frames, f32 freq, f32 detune, f32 level) {
         if (p1 >= 1) p1 -= 1;
         if (p2 >= 1) p2 -= 1;
         // A state-variable filter; its cutoff starts high and falls towards the note.
-        f32 cutoff = freq * (1.5f + 7 * expf(-t * 9));
-        if (cutoff > 9000) cutoff = 9000;
+        f32 cutoff = freq * (1.2f + 2.5f * expf(-t * 7));
+        if (cutoff > 2500) cutoff = 2500;
         f32 k = 2 * sinf(3.1415927f * cutoff / CHIME_RATE);
         low += k * band;
         f32 high = in - low - 0.7f * band;
         band += k * high;
-        f32 attack = t < 0.006f ? t / 0.006f : 1;
-        out[i] += low * attack * expf(-t * 4.5f) * level * 0.6f;
+        f32 attack = t < 0.008f ? t / 0.008f : 1;
+        f32 sub = 0.5f * sinf(TAU * freq * 0.5f * t);
+        out[i] += (low * 0.6f + sub) * attack * expf(-t * 4) * level;
     }
 }
 
@@ -141,7 +142,7 @@ static f32 room_step(ChimeRoom* r, i32 ch, f32 x) {
         f32* buf = r->comb[ch][c];
         i32* at = &r->comb_at[ch][c];
         f32 y = buf[*at];
-        r->comb_store[ch][c] = y * 0.75f + r->comb_store[ch][c] * 0.25f;  // damping: highs die first
+        r->comb_store[ch][c] = y * 0.55f + r->comb_store[ch][c] * 0.45f;  // damping: highs die first
         buf[*at] = x + r->comb_store[ch][c] * 0.78f;
         if (++*at >= len) *at = 0;
         out += y;
@@ -218,17 +219,23 @@ static void chime_play_as(Chime c, ChimeStyle style, u32 volume) {
     i32 delay = (i32)(0.13f * CHIME_RATE);
     for (i32 i = delay; i < count; i++) {
         f32 mono = 0.5f * (g_chime_dry[0][i - delay] + g_chime_dry[1][i - delay]);
-        g_chime_echo[0][i] = 0.5f * mono + 0.42f * g_chime_echo[1][i - delay];
-        g_chime_echo[1][i] = 0.42f * g_chime_echo[0][i - delay];
+        g_chime_echo[0][i] = 0.5f * mono + 0.3f * g_chime_echo[1][i - delay];
+        g_chime_echo[1][i] = 0.3f * g_chime_echo[0][i - delay];
     }
 
-    // Mix the dry notes, the echo and the room, then find the loudest point.
+    // Mix the dry notes, the echo and the room; take the top off (two gentle low-pass steps at
+    // about 3 kHz) so nothing is shrill; then find the loudest point.
     f32 peak = 0;
+    f32 lp[2][2] = {};
+    f32 k = 1 - expf(-TAU * 3000.0f / CHIME_RATE);
     for (i32 i = 0; i < count; i++) {
         for (i32 ch = 0; ch < 2; ch++) {
             f32 dry = g_chime_dry[ch][i], echo = g_chime_echo[ch][i];
             f32 room = room_step(&g_chime_room, ch, (dry + echo) * 0.03f);
-            f32 x = dry + 0.25f * echo + 0.4f * room;
+            f32 x = dry + 0.15f * echo + 0.3f * room;
+            lp[ch][0] += k * (x - lp[ch][0]);
+            lp[ch][1] += k * (lp[ch][0] - lp[ch][1]);
+            x = lp[ch][1];
             g_chime_dry[ch][i] = x;
             if (fabsf(x) > peak) peak = fabsf(x);
         }
