@@ -470,7 +470,7 @@ static whisper_context* whisper_open(const char* ai_dir, const char* model, char
     // follow it), which needs the model's own list of those heads and does not run with flash
     // attention. About a fifth slower.
     cp.flash_attn = false;
-    cp.dtw_token_timestamps = true;
+    cp.dtw_token_timestamps = true;  // see speech_only for the silence this needs around the speech
     cp.dtw_aheads_preset = whisper_heads(model);
     f64 began = now_ts();
     Mark m = mark(scratch());
@@ -749,6 +749,11 @@ static i64 speech_start(Slice<Speech> pieces, i64 cs) {
 // The speech in `samples`, one piece after another with a tenth of a second of silence between,
 // the way whisper.cpp's own voice detection does it (each piece but the last runs a tenth of a
 // second on, so its last word is not cut). False if the detector could not be run.
+//
+// Half a second of silence goes before the first piece and after the last. whisper.cpp's word
+// timing (DTW) asserts, ending the process, when it is handed under 0.14 s of audio: a line that
+// ends that soon after the start of a window (a lone "Bye." with nothing before it did), or the
+// last sliver of audio after a window.
 static bool speech_only(Arena* a, const char* vad_path, bool mic, Slice<f32> samples, Slice<f32>* heard, Slice<Speech>* pieces) {
     *heard = {};
     *pieces = {};
@@ -764,8 +769,9 @@ static bool speech_only(Arena* a, const char* vad_path, bool mic, Slice<f32> sam
     i32 n = p_whisper_vad_segments_n_segments(found);
     const i64 overlap = WHISPER_SAMPLE_RATE / 10, silence = WHISPER_SAMPLE_RATE / 10;
     Speech* p = PUSH_ARRAY(a, Speech, n + 1);
+    const i64 margin = WHISPER_SAMPLE_RATE / 2;
     i32 count = 0;
-    i64 at = 0;
+    i64 at = margin;
     for (i32 i = 0; i < n; i++) {
         // In hundredths of a second.
         i64 from = (i64)(p_whisper_vad_segments_get_segment_t0(found, i) / 100.0 * WHISPER_SAMPLE_RATE);
@@ -780,9 +786,10 @@ static bool speech_only(Arena* a, const char* vad_path, bool mic, Slice<f32> sam
         at += to - from;
     }
     p_whisper_vad_free_segments(found);
-    f32* out = PUSH_ARRAY(a, f32, at + 1);  // zeroed
+    i64 total = at + margin;
+    f32* out = PUSH_ARRAY(a, f32, total);  // zeroed
     for (i32 i = 0; i < count; i++) memcpy(out + p[i].at, samples.items + p[i].from, sizeof(f32) * p[i].len);
-    *heard = {out, (i32)at};
+    *heard = {out, (i32)total};
     *pieces = {p, count};
     return true;
 }
@@ -959,6 +966,9 @@ static Sent transcribe_there(Arena* a, Target* t, Str wav, Transcript* out, char
     return SENT_OK;
 }
 
+// In the spool folder while our whisper.cpp has a clip: that clip's file name.
+static const wchar_t* WORKING_FILE = L"transcribing.txt";
+
 // Moves the clip and its .json to spool\failed, to be looked at by hand.
 static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* meta) {
     wchar_t dir[MAX_PATH], to[MAX_PATH];
@@ -970,6 +980,28 @@ static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* m
         swprintf(to, MAX_PATH, L"%ls\\%ls", dir, slash ? slash + 1 : files[i]);
         MoveFileExW(files[i], to, MOVEFILE_REPLACE_EXISTING);
     }
+}
+
+// At start: a clip whisper.cpp was still on when lifelog last ended went with it (a crash, or the
+// power), so it is set aside rather than tried again.
+static void crash_check(const wchar_t* spool) {
+    wchar_t working[MAX_PATH], wav[MAX_PATH], meta[MAX_PATH];
+    swprintf(working, MAX_PATH, L"%ls\\%ls", spool, WORKING_FILE);
+    Mark m = mark(scratch());
+    Str got = read_file(scratch(), working);
+    if (got.ptr && got.len >= 2 && got.len / 2 < MAX_PATH - 8) {
+        wchar_t name[MAX_PATH] = {};
+        memcpy(name, got.ptr, (size_t)(got.len / 2) * sizeof(wchar_t));
+        swprintf(wav, MAX_PATH, L"%ls\\%ls", spool, name);
+        if (GetFileAttributesW(wav) != INVALID_FILE_ATTRIBUTES && !wcschr(name, L'\\')) {
+            wcscpy_s(meta, MAX_PATH, wav);
+            wcscpy_s(meta + wcslen(meta) - 4, 6, L".json");
+            set_aside(spool, wav, meta);
+            WARN("%ls: lifelog ended while transcribing it; set aside in spool\\failed", name);
+        }
+    }
+    rewind(m);
+    DeleteFileW(working);
 }
 
 
@@ -1024,8 +1056,15 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const W
     }
     Transcript heard = {};
     bool mic = str_eq(json_text(json_get(&meta, "source")), str("mic"));
+    // whisper.cpp ends the process on an assert it hits, so the clip it was on is written down
+    // first: if lifelog starts and finds it there, that clip is set aside (crash_check) instead
+    // of being tried, and crashing it, again.
+    wchar_t working[MAX_PATH];
+    swprintf(working, MAX_PATH, L"%ls\\%ls", spool, WORKING_FILE);
+    if (ctx) write_file(working, {(const char*)name, (i64)(wcslen(name) * sizeof(wchar_t))});
     Sent sent = ctx ? transcribe_here(app, a, ctx, o, mic, wav, &heard, error, sizeof(error))
                     : transcribe_there(a, t, wav, &heard, error, sizeof(error));
+    if (ctx) DeleteFileW(working);
     if (sent == SENT_RETRY || sent == SENT_ABORTED) {
         if (sent == SENT_RETRY && !stopping(app)) WARN("%s: %s; trying again later", label.ptr, error);
         rewind(m);
@@ -1177,6 +1216,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
     App* app = (App*)p;
     wchar_t spool[MAX_PATH];
     spool_dir(spool);
+    crash_check(spool);
     sqlite3* db = 0;
     whisper_context* ctx = 0;  // our model, while it may use the GPU
     char ctx_model[128] = "";
