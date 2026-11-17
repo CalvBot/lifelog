@@ -98,10 +98,17 @@ static f64 pieces_time(List<Piece>* pieces, i64 played) {
 static bool player_stopped(Player* pl) { return pl->stop || stopping(pl->app); }
 
 // The thread's work: returns when it is done, told to stop, or failed (with `error`).
-// The main thread: where playback is now. `a` is the Player (only compared), `b` the moment.
+// Where playback is now. `player` is only compared: it may have ended since.
+struct PlayerAt {
+    Player* player;
+    f64 ts;
+};
+
+// The main thread.
 static void player_at_apply(App* app, Event* e) {
-    if ((Player*)e->a != app->clips.player) return;
-    memcpy(&app->clips.play_ts, &e->b, sizeof(f64));
+    PlayerAt at = latest_take<PlayerAt>(e);
+    if (at.player != app->clips.player) return;
+    app->clips.play_ts = at.ts;
     wake_window(app);
 }
 
@@ -222,10 +229,7 @@ static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
         f64 now = now_ts();
         if (now - told >= 0.05) {
             told = now;
-            f64 ts = pieces_time(&pieces, played);
-            i64 bits;
-            memcpy(&bits, &ts, sizeof(bits));
-            event_post(app, player_at_apply, (i64)pl, bits, 0);
+            latest_send(app, &app->clips.play_at, player_at_apply, PlayerAt{pl, pieces_time(&pieces, played)});
         }
         WaitForSingleObject(app->stop, 15);
     }

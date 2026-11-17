@@ -81,6 +81,8 @@ struct Summary {
     char countdown_day[11];
     f64 last_game_ts;           // a game was running or the GPU was busy then
     Notify notify;
+    Latest phase_next;          // the summary threads' newest phase, for the main thread (events.h)
+    Latest tick;                // the clock's newest reading (summary_tick)
 };
 
 void summary_start(App* app);

@@ -12,7 +12,7 @@ struct HeardDays {
     bool loading;
     bool loaded;
     char today[11];  // the day it was counted on
-    Arena arena;
+    Job* job;              // holds `days`
     Slice<DayCount> days;  // oldest first
 };
 static HeardDays g_heard;
@@ -27,8 +27,8 @@ static void heard_run(sqlite3* db, Job* job) {
 
 static void heard_apply(App* app, Job* job) {
     HeardJob* h = (HeardJob*)job->data;
-    arena_release(&g_heard.arena);
-    g_heard.arena = job_take_arena(job);
+    job_drop(g_heard.job);
+    g_heard.job = job_hold(job);
     g_heard.days = h->days;
     g_heard.loading = false;
     g_heard.loaded = true;
@@ -46,7 +46,7 @@ struct JournalState {
     i32 month;           // the month the calendar shows, as year * 12 + month - 1; 0 follows the day
 
     // The shown day's summary, read again when the day or Summary.version changes.
-    Arena arena;
+    Job* job;            // holds `summary`
     bool loaded;
     char loaded_day[11];
     u64 version;
@@ -78,8 +78,8 @@ static void journal_apply(App* app, Job* job) {
     JournalState* s = g_journal;
     JournalJob* j = (JournalJob*)job->data;
     if (!s || j->asked != s->asked) return;
-    arena_release(&s->arena);
-    s->arena = job_take_arena(job);
+    job_drop(s->job);
+    s->job = job_hold(job);
     s->summary = j->summary;
     wake_window(app);
 }
@@ -95,7 +95,8 @@ static void journal_show_day(JournalState* s, const char* day) {
 
 static void journal_free(JournalState* s) {
     if (g_journal == s) g_journal = 0;
-    arena_release(&s->arena);
+    job_drop(s->job);
+    s->job = 0;
     // Count again next time the window opens: lines will have come in.
     if (!g_heard.loading) g_heard.loaded = false;
 }

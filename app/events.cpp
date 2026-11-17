@@ -1,6 +1,7 @@
 // events.cpp: see events.h.
 
-bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text) {
+bool event_post(App* app, EventApply* apply, const void* record, u32 size) {
+    CHECK(size <= (u32)EVENT_BYTES, "an event record of at most %d bytes, not %u", EVENT_BYTES, size);
     EventQueue* q = &app->events;
     AcquireSRWLockExclusive(&q->lock);
     bool full = q->tail - q->head >= (u32)COUNT(q->items);
@@ -9,11 +10,9 @@ bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text) {
         q->dropped++;
     } else {
         Event* e = &q->items[q->tail % COUNT(q->items)];
-        *e = {};
         e->apply = apply;
-        e->a = a;
-        e->b = b;
-        if (text) SET(e->text, str(text));
+        e->size = size;
+        if (size) memcpy(e->data, record, size);
         q->tail++;
     }
     HWND w = q->window;
@@ -23,11 +22,20 @@ bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text) {
     return !full;
 }
 
+bool event_post_wait(App* app, EventApply* apply, const void* record, u32 size) {
+    while (!event_post(app, apply, record, size))
+        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) return false;
+    return true;
+}
+
 static bool event_take(EventQueue* q, Event* out, u32* dropped) {
     AcquireSRWLockExclusive(&q->lock);
     bool have = q->head != q->tail;
     if (have) {
-        *out = q->items[q->head % COUNT(q->items)];
+        Event* e = &q->items[q->head % COUNT(q->items)];
+        out->apply = e->apply;
+        out->size = e->size;
+        if (e->size) memcpy(out->data, e->data, e->size);
         q->head++;
     }
     *dropped = q->dropped;
@@ -36,42 +44,73 @@ static bool event_take(EventQueue* q, Event* out, u32* dropped) {
     return have;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Latest
+
+void latest_post(App* app, Latest* slot, EventApply* apply, const void* record, u32 size) {
+    CHECK(size <= (u32)EVENT_BYTES, "a status record of at most %d bytes, not %u", EVENT_BYTES, size);
+    AcquireSRWLockExclusive(&slot->lock);
+    slot->size = size;
+    memcpy(slot->data, record, size);
+    bool post = !slot->waiting;
+    slot->waiting = true;
+    ReleaseSRWLockExclusive(&slot->lock);
+    if (post && !event_send(app, apply, slot)) {
+        // The ring was full: the next post tries again.
+        AcquireSRWLockExclusive(&slot->lock);
+        slot->waiting = false;
+        ReleaseSRWLockExclusive(&slot->lock);
+    }
+}
+
+void latest_take(Event* e, void* out, u32 size) {
+    Latest* slot = *event_record<Latest*>(e);
+    AcquireSRWLockExclusive(&slot->lock);
+    CHECK(slot->size == size, "a status record of %u bytes, not %u", slot->size, size);
+    memcpy(out, slot->data, size);
+    slot->waiting = false;
+    ReleaseSRWLockExclusive(&slot->lock);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Jobs
+
 Job* job_new(JobApply* apply) {
     Arena a = {};
     Job* job = PUSH(&a, Job);
     job->arena = a;  // from here on the arena is job->arena
     job->apply = apply;
+    job->refs = 1;
     return job;
 }
 
-Arena job_take_arena(Job* job) {
-    Arena a = job->arena;
-    job->arena = {};
-    return a;
+Job* job_hold(Job* job) {
+    if (job) InterlockedIncrement(&job->refs);
+    return job;
 }
 
-void job_free(Job* job) {
+void job_drop(Job* job) {
+    if (!job) return;
+    LONG left = InterlockedDecrement(&job->refs);
+    CHECK(left >= 0, "a job dropped once more than it was held");
+    if (left) return;
+    if (job->cleanup) job->cleanup(job);
     Arena a = job->arena;  // the job is inside it
     arena_release(&a);
 }
 
 static void job_apply(App* app, Event* e) {
-    Job* job = (Job*)e->a;
-    job->apply(app, job);
-    job_free(job);
+    Job* job = *event_record<Job*>(e);
+    if (job->apply) job->apply(app, job);
+    job_drop(job);
 }
 
 void job_post(App* app, Job* job) {
-    if (!event_post(app, job_apply, (i64)job, 0, 0)) job_free(job);
+    if (!event_send(app, job_apply, job)) job_drop(job);
 }
 
 void job_post_wait(App* app, Job* job) {
-    while (!event_post(app, job_apply, (i64)job, 0, 0)) {
-        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) {
-            job_free(job);
-            return;
-        }
-    }
+    if (!event_send_wait(app, job_apply, job)) job_drop(job);
 }
 
 void events_apply(App* app) {

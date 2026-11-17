@@ -274,7 +274,7 @@ static DWORD WINAPI db_thread_main(void*) {
             DbTask* next = t->next;
             Job* job = t->job;  // t is in the job's arena
             if (stopping(app)) {
-                job_free(job);
+                job_drop(job);
             } else {
                 if (!db && !tried && app->storage.ready) {
                     db = db_open(app);
@@ -291,7 +291,7 @@ static DWORD WINAPI db_thread_main(void*) {
     AcquireSRWLockExclusive(&g_dbt.lock);
     for (DbTask* t = g_dbt.head; t;) {
         DbTask* next = t->next;
-        job_free(t->job);
+        job_drop(t->job);
         t = next;
     }
     g_dbt.head = g_dbt.tail = 0;

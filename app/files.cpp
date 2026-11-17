@@ -419,7 +419,7 @@ i32 files_paste(App* app, char* error, i32 cap) {
     job->app = app;
     job->ts = now_ts();
     if (!paste_read_clipboard(job, error, cap)) {
-        job_free(j);
+        job_drop(j);
         return -1;
     }
     i32 n = job->kind == PASTE_FILES ? job->count : 1;

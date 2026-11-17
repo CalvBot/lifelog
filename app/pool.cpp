@@ -62,7 +62,7 @@ void pool_stop() {
     AcquireSRWLockExclusive(&g_pool.lock);
     for (PoolTask* t = g_pool.head; t;) {
         PoolTask* next = t->next;
-        job_free(t->job);
+        job_drop(t->job);
         t = next;
     }
     g_pool.head = g_pool.tail = 0;

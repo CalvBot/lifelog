@@ -38,6 +38,7 @@ struct AiFile {
 struct Setup {
     SetupState part[SETUP_PARTS];
     SetupState move;  // moving the AI folder
+    Latest said[SETUP_PARTS + 1];  // each part's (and the move's) newest progress (events.h)
 
     // What is in the AI folder, looked at again by ai_scan (Settings, every few seconds and after
     // a download, a removal or a move). The main thread's.

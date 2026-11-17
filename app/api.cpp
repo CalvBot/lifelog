@@ -411,7 +411,7 @@ static bool api_handle(App* app, ApiCall* c) {
 }
 
 static void api_apply(App* app, Event* e) {
-    ApiCall* c = (ApiCall*)e->a;
+    ApiCall* c = *event_record<ApiCall*>(e);
     Mark m = mark(scratch());
     if (api_handle(app, c)) api_finish(c);
     rewind(m);
@@ -419,8 +419,9 @@ static void api_apply(App* app, Event* e) {
 
 // The main thread: an answer has gone out that asked to quit or restart.
 static void api_after_apply(App* app, Event* e) {
-    LOG("API: %s", e->a == AFTER_QUIT ? "quit" : "restart");
-    if (e->a == AFTER_QUIT) app_quit(app);
+    After after = *event_record<After>(e);
+    LOG("API: %s", after == AFTER_QUIT ? "quit" : "restart");
+    if (after == AFTER_QUIT) app_quit(app);
     else app_restart(app);
 }
 
@@ -434,7 +435,7 @@ static void api_ask(App* app, Str method, Str path, Str query, Answer* out) {
     c->method = str_copy(&c->arena, method);
     c->path = str_copy(&c->arena, path);
     c->query = str_copy(&c->arena, query);
-    if (!event_post(app, api_apply, (i64)c, 0, 0)) {
+    if (!event_send(app, api_apply, c)) {
         c->refs = 1;
         api_release(c);
         answer_error(out, 503, "lifelog is busy, try again");
@@ -602,7 +603,7 @@ static DWORD WINAPI api_main(void* param) {
         After after = api_serve_one(app, c, port);
         shutdown(c, SD_SEND);
         closesocket(c);
-        if (after != AFTER_NOTHING) event_post(app, api_after_apply, after, 0, 0);
+        if (after != AFTER_NOTHING) event_send(app, api_after_apply, after);
     }
     closesocket(s);
     return 0;

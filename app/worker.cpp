@@ -604,7 +604,8 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
 // thread when that changes. It sleeps until worker_wake (a new WAV, a game, the GPU, the summary,
 // a setting) or a timer it needs (a retry, the countdown after a game) says to look again.
 
-// What the window shows of it, as the supervisor last posted it.
+// What the window shows of it: the supervisor's status record, posted through Worker.seen when
+// it changes, so only the newest waits for the main thread.
 struct WorkerSeen {
     char state[256];
     i32 queued;
@@ -612,24 +613,21 @@ struct WorkerSeen {
     bool running, missing, waiting, game;
 };
 
-static const u64 SEEN_RUNNING = 1ull << 32, SEEN_MISSING = 1ull << 33, SEEN_WAITING = 1ull << 34, SEEN_GAME = 1ull << 35;
-
-// The main thread: a = the queue count and the flags above, b = queued milliseconds of audio.
+// The main thread.
 static void worker_seen_apply(App* app, Event* e) {
     Worker* w = &app->worker;
-    u64 f = (u64)e->a;
-    w->queued = (i32)(f & 0xffffffffu);
-    w->queued_secs = (f64)e->b / 1000.0;
-    w->running = (f & SEEN_RUNNING) != 0;
-    w->missing = (f & SEEN_MISSING) != 0;
-    bool waiting = (f & SEEN_WAITING) != 0;
-    if (!waiting) w->waiting_since = 0;
+    WorkerSeen seen = latest_take<WorkerSeen>(e);
+    w->queued = seen.queued;
+    w->queued_secs = seen.queued_secs;
+    w->running = seen.running;
+    w->missing = seen.missing;
+    if (!seen.waiting) w->waiting_since = 0;
     else if (!w->waiting_since) w->waiting_since = now_ts();
     Str game = strip_exe(str(app->apps.game_running));
-    if ((f & SEEN_GAME) && game.len) {
+    if (seen.game && game.len) {
         snprintf(w->state, sizeof(w->state), "waiting for %.*s to close", (int)game.len, game.ptr);
     } else {
-        SET(w->state, str(e->text));
+        SET(w->state, str(seen.state));
     }
     wake_window(app);
 }
@@ -644,9 +642,7 @@ static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
     atomic_set(&app->worker.live_running, now->running);
     if (memcmp(now, last, sizeof(WorkerSeen)) == 0) return;
     *last = *now;
-    u64 f = (u64)(u32)now->queued | (now->running ? SEEN_RUNNING : 0) | (now->missing ? SEEN_MISSING : 0) |
-            (now->waiting ? SEEN_WAITING : 0) | (now->game ? SEEN_GAME : 0);
-    event_post(app, worker_seen_apply, (i64)f, (i64)(now->queued_secs * 1000.0), now->state);
+    latest_send(app, &app->worker.seen, worker_seen_apply, *now);
 }
 
 static DWORD WINAPI supervisor_thread(void* p) {
@@ -777,7 +773,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             }
             scan_spool(spool, &seen.queued, &seen.queued_secs, 0);
             LOG("%ls: %d lines in %.1fs (%d queued)", name, lines, now_ts() - began, seen.queued);
-            if (lines > 0) event_post(app, worker_lines_apply, 0, 0, 0);
+            if (lines > 0) event_send(app, worker_lines_apply);
             continue;
         }
         // Woken by worker_wake; the minute is only a safety net.

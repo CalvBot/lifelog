@@ -336,14 +336,14 @@ static LRESULT CALLBACK notify_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         memcpy(link, data->lpData, data->cbData);
         link[data->cbData] = 0;
         LOG("link: %s", link);
-        return event_post(app, notify_link_apply, 0, 0, link);
+        return event_post(app, notify_link_apply, link, data->cbData + 1);
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 // The main thread: a link from a toast's button or a second copy of the program.
 static void notify_link_apply(App* app, Event* e) {
-    notify_open_link(app, str(e->text));
+    notify_open_link(app, str((const char*)e->data));
 }
 
 static DWORD WINAPI notify_main(void* param) {

@@ -279,19 +279,24 @@ static void phase_set(App* app, const char* fmt, ...) {
     wake_window(app);
 }
 
+struct SummaryPhase {
+    char text[sizeof(Summary::phase)];
+};
+
 static void phase_apply(App* app, Event* e) {
-    SET(app->summary.phase, str(e->text));
+    SummaryPhase p = latest_take<SummaryPhase>(e);
+    SET(app->summary.phase, str(p.text));
     wake_window(app);
 }
 
 // From the summary threads: posted to the main thread (events.h).
 static void phase_post(App* app, const char* fmt, ...) {
-    char text[sizeof(app->summary.phase)];
+    SummaryPhase p;
     va_list args;
     va_start(args, fmt);
-    vsnprintf(text, sizeof(text), fmt, args);
+    vsnprintf(p.text, sizeof(p.text), fmt, args);
     va_end(args);
-    event_post(app, phase_apply, 0, 0, text);
+    latest_send(app, &app->summary.phase_next, phase_apply, p);
 }
 
 static void version_apply(App* app, Event*) {
@@ -1105,7 +1110,7 @@ static void alerts_show_due(App* app, sqlite3* db) {
     bool any = due.count > 0;
     list_free(&due);
     rewind(m);
-    if (any) event_post(app, version_apply, 0, 0, 0);
+    if (any) event_send(app, version_apply);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1798,16 +1803,22 @@ Str summary_act(App* app, Arena* a, const char* action, const char* day_in, cons
 }
 
 // What the summary thread read this round, for the main thread's clock (summary_tick).
-static const i64 TICK_GAMING = 1, TICK_TALKED = 2, TICK_STATUS_SHIFT = 2;  // status + 1 in bits 2-3
+struct SummaryTick {
+    char day[11];
+    bool gaming;   // a game runs or the GPU is busy
+    bool talked;   // `mine` and `apps` were read
+    i32 status;    // the day's summary status; -1 when it did not look
+    f64 mine;      // seconds of my talk today
+    f64 apps;      // and of the apps'
+};
 
-// The main thread: asks once it is time and starts the summary when the countdown
-// ends. a = the flags above, b = seconds of my talk << 32 | seconds of the apps', text = the day.
+// The main thread: asks once it is time and starts the summary when the countdown ends.
 static void summary_tick(App* app, Event* e) {
-    const char* day = e->text;
-    bool gaming = (e->a & TICK_GAMING) != 0;
-    bool talked = (e->a & TICK_TALKED) != 0;
-    i32 status = (i32)((e->a >> TICK_STATUS_SHIFT) & 3) - 1;  // -1 when it did not look
-    f64 mine = (f64)(u32)((u64)e->b >> 32), apps = (f64)(u32)((u64)e->b & 0xffffffffu);
+    SummaryTick t = latest_take<SummaryTick>(e);
+    const char* day = t.day;
+    bool gaming = t.gaming, talked = t.talked;
+    i32 status = t.status;
+    f64 mine = t.mine, apps = t.apps;
     Summary* s = &app->summary;
     if (gaming) s->last_game_ts = now_ts();
     // Counting down to a summary: a game starting puts it off; otherwise it starts on time.
@@ -1852,23 +1863,17 @@ static DWORD WINAPI summary_main(void* param) {
             if (db) sqlite3_close(db);
             break;
         }
-        char day[11];
-        day_of(now_ts(), day);
+        SummaryTick t = {};
+        day_of(now_ts(), t.day);
         const Config* c = settings(app);
-        i64 flags = 0, secs = 0;
-        if (atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy)) flags |= TICK_GAMING;
-        i32 status = -1;
+        t.gaming = atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy);
+        t.status = -1;
         // Only once it is time to ask: whether today is done, and how much was said.
-        if (db && c->summary.enabled && now_ts() >= ask_moment(day, c->summary.ask_at)) {
-            status = status_of(db, day);
-            f64 mine = 0, apps = 0;
-            if (status == 0 && talk_secs(db, day, &mine, &apps)) {
-                flags |= TICK_TALKED;
-                secs = (i64)(((u64)(u32)mine << 32) | (u64)(u32)apps);
-            }
+        if (db && c->summary.enabled && now_ts() >= ask_moment(t.day, c->summary.ask_at)) {
+            t.status = status_of(db, t.day);
+            if (t.status == 0) t.talked = talk_secs(db, t.day, &t.mine, &t.apps);
         }
-        flags |= (i64)(status + 1) << TICK_STATUS_SHIFT;
-        event_post(app, summary_tick, flags, secs, day);
+        latest_send(app, &app->summary.tick, summary_tick, t);
         if (db) sqlite3_close(db);
     }
     return 0;

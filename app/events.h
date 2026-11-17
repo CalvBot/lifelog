@@ -1,28 +1,45 @@
 // events.h: how other threads hand things to the main thread, which owns App.
 //
-// A thread that has a result posts it: a small Event goes into a fixed ring behind a tiny lock,
-// and the tray window gets a message so the main thread wakes, even with the window closed. The
-// main thread takes the events in its message loop and applies them to App.
+// A thread that has a result posts it: an Event, holding the result as a named record (a struct of
+// the poster's choosing), goes into a fixed ring behind a tiny lock, and the tray window gets a
+// message so the main thread wakes, even with the window closed. The main thread takes the events
+// in its message loop and applies them to App. A slot is free again as soon as its event is taken.
+//
+// A status that only matters as it is now (what the worker is doing, how far a download is) goes
+// through a Latest instead: each post replaces the record waiting there, and only one event is in
+// the ring for it at a time, so a fast poster can never fill the ring with stale updates.
 //
 // A bigger result (a list, a page of text) comes as a Job: a block in its own arena, filled by
-// the thread that made it, applied by the main thread, then freed whole.
+// the thread that made it, applied by the main thread. Each reader holds a reference (the poster,
+// the queue it waits in, a window that keeps the results), and the arena goes back to be reused
+// (base.h) when the last one lets go. A job that owns something outside its arena (a handle, a
+// file) names a cleanup, run then, whether it was applied, dropped or its thread gave up.
 //
-// Hot flags read by many threads (private mode, the GPU load) are atomics, and the settings a
-// thread needs come from settings(): a copy of App.config that the thread may keep reading.
+// Hot flags read by many threads (private mode, the GPU load) are atomics. The settings a thread
+// needs are its own copy, handed to it by the main thread when one changes (worker.h, summary.h).
 
 #pragma once
 
 static const UINT WM_APP_EVENT = WM_APP + 0x50;  // to the tray window: events are waiting
+
+// The biggest record an event carries.
+static const i32 EVENT_BYTES = 528;
 
 // An event names the function that applies it, so each module keeps its own.
 struct Event;
 typedef void EventApply(App* app, Event* e);
 struct Event {
     EventApply* apply;  // run on the main thread
-    i64 a;
-    i64 b;
-    char text[512];
+    u64 size;
+    alignas(8) u8 data[EVENT_BYTES];
 };
+
+// The record an event carries, as the type it was posted as.
+template <typename T>
+T* event_record(Event* e) {
+    static_assert(sizeof(T) <= EVENT_BYTES, "an event record must fit EVENT_BYTES");
+    return (T*)e->data;
+}
 
 struct EventQueue {
     SRWLOCK lock;   // guards the ring only; never held while anything else is taken
@@ -33,28 +50,73 @@ struct EventQueue {
     HWND window;    // woken with WM_APP_EVENT
 };
 
-struct Job;
-typedef void JobApply(App* app, Job* job);
-struct Job {
-    Arena arena;    // the job itself lives in it, with everything it points to
-    JobApply* apply;
-    void* data;
+// Any thread. False if the ring was full (the event is dropped and counted).
+bool event_post(App* app, EventApply* apply, const void* record, u32 size);
+// For an event the main thread must get (it ends a state, such as "setting up"): while the ring
+// is full, waits and tries again. False only if the program stops first.
+bool event_post_wait(App* app, EventApply* apply, const void* record, u32 size);
+
+template <typename T>
+bool event_send(App* app, EventApply* apply, const T& record) {
+    static_assert(sizeof(T) <= EVENT_BYTES, "an event record must fit EVENT_BYTES");
+    return event_post(app, apply, &record, sizeof(T));
+}
+template <typename T>
+bool event_send_wait(App* app, EventApply* apply, const T& record) {
+    static_assert(sizeof(T) <= EVENT_BYTES, "an event record must fit EVENT_BYTES");
+    return event_post_wait(app, apply, &record, sizeof(T));
+}
+inline bool event_send(App* app, EventApply* apply) { return event_post(app, apply, 0, 0); }
+
+// A status record that replaces the one before it. Zeroed is ready.
+struct Latest {
+    SRWLOCK lock;
+    u32 waiting;    // its event is in the ring and has not been applied
+    u32 size;
+    alignas(8) u8 data[EVENT_BYTES];
 };
 
-// Any thread. False if the ring was full (the event is dropped and counted).
-bool event_post(App* app, EventApply* apply, i64 a, i64 b, const char* text);
+// Any thread: `record` replaces what waits in `slot`; if nothing was waiting, `apply` is posted,
+// and when it runs it takes the newest record with latest_take.
+void latest_post(App* app, Latest* slot, EventApply* apply, const void* record, u32 size);
+template <typename T>
+void latest_send(App* app, Latest* slot, EventApply* apply, const T& record) {
+    static_assert(sizeof(T) <= EVENT_BYTES, "a status record must fit EVENT_BYTES");
+    latest_post(app, slot, apply, &record, sizeof(T));
+}
+// In the apply, on the main thread: copies out the newest record. The event's record is the slot.
+void latest_take(Event* e, void* out, u32 size);
+template <typename T>
+T latest_take(Event* e) {
+    T out;
+    latest_take(e, &out, sizeof(T));
+    return out;
+}
 
-// A new job in its own arena. Fill job->data from job->arena, then post it; once posted it is
-// the main thread's.
+struct Job;
+typedef void JobApply(App* app, Job* job);
+typedef void JobCleanup(Job* job);
+struct Job {
+    Arena arena;          // the job itself lives in it, with everything it points to
+    JobApply* apply;
+    void* data;
+    JobCleanup* cleanup;  // gives back what the job owns outside its arena; may be null
+    volatile LONG refs;
+};
+
+// A new job in its own (reused) arena, with one reference: the caller's. Fill job->data from
+// job->arena, then post it, which hands that reference on.
 Job* job_new(JobApply* apply);
+// Another reader: it must call job_drop when done. Any thread.
+Job* job_hold(Job* job);
+// This reader is done; the last one runs the cleanup and gives the arena back. Any thread.
+void job_drop(Job* job);
+// To the main thread, which runs job->apply and then drops the reference posted with it. An apply
+// that keeps the results holds the job (job_hold) and drops it when it lets them go.
 void job_post(App* app, Job* job);
-// For a job the main thread must get (it ends a state, such as "writing"): while the queue is
-// full, waits and tries again, until the program stops.
+// For a job the main thread must get: while the queue is full, waits and tries again, until the
+// program stops.
 void job_post_wait(App* app, Job* job);
-void job_free(Job* job);
-// For an apply that keeps the results: hands over the job's arena (the job itself is in it, and
-// stays readable until the arena is reset), so job_free afterwards frees nothing.
-Arena job_take_arena(Job* job);
 
 // The main thread: applies every waiting event.
 void events_apply(App* app);
@@ -67,9 +129,7 @@ inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
 // thread). Each change makes a new copy; old ones are kept until exit, so a thread may hold on
 // to the one it has. Any thread, no lock.
 const Config* settings(App* app);
-// The main thread: a setting changed (config_save_value calls it, so every setter does). The copy
-// is made when the main thread finishes what it is doing, so changes made together land together.
+// The main thread: a setting changed (config_save_value calls it, so every setter does).
 void settings_changed();
 // The main thread: makes the new copy if a setting changed since the last one, and says so.
-// main.cpp calls it once it has finished a frame or a round of events; it costs nothing otherwise.
 bool settings_publish(App* app);

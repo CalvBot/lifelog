@@ -61,6 +61,7 @@ struct Clips {
     PlayMode play_mode;
     f64 play_ts;          // the moment being heard (unix seconds); 0 until the audio starts
     void* player;         // the playback thread's own
+    Latest play_at;       // the playback thread's updates to play_ts (events.h)
 };
 
 // Starts playing from `line_id` (stops what was playing). `hidden` are speakers left out (copied).

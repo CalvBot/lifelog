@@ -37,7 +37,7 @@ struct PopupState {
     f64 changed_ts;  // when the amount last changed; the preview follows 200 ms later
     bool preview_loaded;
     u64 preview_asked;  // the request on the way (g_preview_seq); older results are dropped
-    Arena arena;     // the preview's lines
+    Job* preview_job;  // holds the preview's lines
     Slice<Line> preview;
     // The delay box.
     char at[8];      // "HH:MM"
@@ -65,8 +65,8 @@ static void preview_apply(App* app, Job* job) {
     PopupState* s = app->ui.popup_state;
     PreviewJob* p = (PreviewJob*)job->data;
     if (!s || p->asked != s->preview_asked) return;
-    arena_release(&s->arena);
-    s->arena = job_take_arena(job);
+    job_drop(s->preview_job);
+    s->preview_job = job_hold(job);
     s->preview = p->lines;
     s->preview_loaded = true;
     wake_window(app);
@@ -378,5 +378,6 @@ static bool popup_draw(App* app, PopupState* s, f32* next_frame_ms) {
 }
 
 static void popup_free(PopupState* s) {
-    arena_release(&s->arena);
+    job_drop(s->preview_job);
+    s->preview_job = 0;
 }

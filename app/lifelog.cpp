@@ -18,6 +18,7 @@ struct App;
 
 #include "disk.h"
 #include "config.h"
+#include "events.h"
 #include "apps.h"
 #include "capture.h"
 #include "worker.h"
@@ -27,7 +28,6 @@ struct App;
 #include "clip.h"
 #include "chime.h"
 #include "ui.h"
-#include "events.h"
 #include "app.h"
 #include "pool.h"
 

@@ -383,7 +383,7 @@ static void paths_load(App* app) {
     Str* text = PUSH(&job->arena, Str);
     *text = read_file(&job->arena, file);
     if (!text->ptr) {
-        job_free(job);
+        job_drop(job);
         return;
     }
     job->data = text;

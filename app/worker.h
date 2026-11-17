@@ -31,6 +31,7 @@ struct Worker {
     f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model
     HANDLE wake;          // auto-reset: something the supervisor waits on changed (worker_wake)
+    Latest seen;          // the supervisor's newest status, for the main thread (events.h)
 };
 
 void worker_start(App* app);

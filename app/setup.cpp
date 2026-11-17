@@ -41,35 +41,56 @@ const AiModel* ai_model(SetupPart part, const char* name) {
 }
 
 // The setup threads take no lock: what they say, the model they set up and their end are posted
-// to the main thread. a = the part, or SETUP_PARTS for the move.
-static SetupState* setup_state(App* app, i64 a) { return a == SETUP_PARTS ? &app->setup.move : &app->setup.part[a]; }
+// to the main thread as these records. `part` is SETUP_PARTS for the move.
+static SetupState* setup_state(App* app, i32 part) { return part == SETUP_PARTS ? &app->setup.move : &app->setup.part[part]; }
+
+// Progress: only the newest matters, so each part has its own Latest.
+struct SetupSaid {
+    i32 part;
+    char text[sizeof(SetupState::text)];
+};
+
+// The model a part now has downloaded, to use instead of your own server.
+struct SetupModel {
+    SetupPart part;
+    char model[sizeof(SetupState::model)];
+};
+
+// The end of a download or the move.
+struct SetupDone {
+    i32 part;
+    bool ok;
+    char error[512];  // why not
+};
 
 static void setup_say_apply(App* app, Event* e) {
-    SET(setup_state(app, e->a)->text, str(e->text));
+    SetupSaid said = latest_take<SetupSaid>(e);
+    SET(setup_state(app, said.part)->text, str(said.text));
     wake_window(app);
 }
 
 static void setup_say(App* app, i32 part, const char* fmt, ...) {
-    char text[256];
+    SetupSaid said;
+    said.part = part;
     va_list args;
     va_start(args, fmt);
-    vsnprintf(text, sizeof(text), fmt, args);
+    vsnprintf(said.text, sizeof(said.text), fmt, args);
     va_end(args);
-    event_post(app, setup_say_apply, part, 0, text);
+    latest_send(app, &app->setup.said[part], setup_say_apply, said);
 }
 
-// a = the part; text = the model, now downloaded, to use instead of your own server.
 static void setup_model_apply(App* app, Event* e) {
-    if (e->a == SETUP_TRANSCRIBER) worker_set_endpoint(app, str(""), str(e->text));
-    else summary_set_endpoint(app, str(""), str(e->text));
+    SetupModel* m = event_record<SetupModel>(e);
+    if (m->part == SETUP_TRANSCRIBER) worker_set_endpoint(app, str(""), str(m->model));
+    else summary_set_endpoint(app, str(""), str(m->model));
 }
 
-// a = the part, b = whether it worked; text = why not.
 static void setup_done_apply(App* app, Event* e) {
-    SetupState* s = setup_state(app, e->a);
+    SetupDone* d = event_record<SetupDone>(e);
+    SetupState* s = setup_state(app, d->part);
     s->running = false;
-    s->failed = !e->b;
-    SET(s->text, str(e->b ? "" : e->text));
+    s->failed = !d->ok;
+    SET(s->text, str(d->ok ? "" : d->error));
     s->model[0] = 0;
     app->setup.scanned_ts = 0;  // look again
     worker_wake(app);
@@ -308,7 +329,8 @@ static void remove_tree(const wchar_t* dir) {
 // ---------------------------------------------------------------------------------------------
 // The parts
 
-// What a download thread needs, worked out on the main thread from its config.
+// What a download thread needs, worked out on the main thread from its config. It is the data of
+// a Job (events.h) the thread holds, and drops when it ends.
 struct SetupJob {
     App* app;
     SetupPart part;
@@ -392,22 +414,26 @@ static bool setup_summary_ai(SetupJob* job, char* error, i32 cap) {
 }
 
 static DWORD WINAPI setup_thread(void* p) {
-    SetupJob* job = (SetupJob*)p;
+    Job* holder = (Job*)p;
+    SetupJob* job = (SetupJob*)holder->data;
     App* app = job->app;
     const char* name = job->part == SETUP_TRANSCRIBER ? "transcriber" : "summary AI";
     LOG("setting up the %s with %s", name, job->model);
-    char error[512] = "";
-    bool ok = job->part == SETUP_TRANSCRIBER ? setup_transcriber(job, error, sizeof(error)) : setup_summary_ai(job, error, sizeof(error));
-    if (ok) {
+    SetupDone done = {};
+    done.part = job->part;
+    done.ok = job->part == SETUP_TRANSCRIBER ? setup_transcriber(job, done.error, sizeof(done.error))
+                                             : setup_summary_ai(job, done.error, sizeof(done.error));
+    if (done.ok) {
         LOG("the %s is set up", name);
-        event_post(app, setup_model_apply, job->part, 0, job->model);
+        SetupModel m = {job->part};
+        SET(m.model, str(job->model));
+        event_send_wait(app, setup_model_apply, m);
     } else {
-        WARN("setting up the %s failed: %s", name, error);
+        WARN("setting up the %s failed: %s", name, done.error);
     }
     // Must arrive, or the part would show "setting up" until the program restarts.
-    while (!event_post(app, setup_done_apply, job->part, ok, error))
-        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
-    free(job);
+    event_send_wait(app, setup_done_apply, done);
+    job_drop(holder);
     return 0;
 }
 
@@ -432,10 +458,14 @@ static void cleanup_add(App* app, const wchar_t* dir) {
     rewind(m);
 }
 
-// a = 0; text = a folder to delete at the next start.
+// A folder to delete at the next start.
+struct CleanupDir {
+    char path[MAX_PATH * 2];  // UTF-8
+};
+
 static void cleanup_add_apply(App* app, Event* e) {
     Mark m = mark(scratch());
-    cleanup_add(app, wide(scratch(), str(e->text)));
+    cleanup_add(app, wide(scratch(), str(event_record<CleanupDir>(e)->path)));
     rewind(m);
 }
 
@@ -584,6 +614,8 @@ void setup_remove_all(App* app) {
 // ---------------------------------------------------------------------------------------------
 // Moving the AI folder
 
+// The move's data, in a Job (events.h) held by the move thread and, once the copy is done, by
+// the queue that takes move_apply to the main thread. The last to let go closes `applied`.
 struct MoveJob {
     App* app;
     wchar_t from[MAX_PATH];  // the old AI folder
@@ -592,6 +624,11 @@ struct MoveJob {
     f64 total, done, said;
     HANDLE applied;  // set by the main thread once the settings point at `to`
 };
+
+static void move_cleanup(Job* job) {
+    MoveJob* j = (MoveJob*)job->data;
+    if (j->applied) CloseHandle(j->applied);
+}
 
 static f64 tree_bytes(const wchar_t* dir) {
     wchar_t pattern[MAX_PATH];
@@ -668,21 +705,25 @@ static bool copy_tree(MoveJob* j, const wchar_t* from, const wchar_t* to, char* 
     return ok;
 }
 
-// a = the MoveJob; text = the new AI folder, all copied there. Publishes the settings at once, so
-// every thread reads the new folder from here on, then lets the move thread clear the old one.
-static void move_apply(App* app, Event* e) {
-    SET(app->config.ai.dir, str(e->text));
+// The new AI folder has everything. Publishes the settings at once, so every thread reads the new
+// folder from here on, then lets the move thread clear the old one.
+static void move_apply(App* app, Job* job) {
+    MoveJob* j = (MoveJob*)job->data;
+    SET(app->config.ai.dir, str(j->to_utf8));
     config_save_string("ai", "dir", app->config.ai.dir);
     cleanup_keep(app, str(app->config.ai.dir));
     LOG("the AI files are now in %s", app->config.ai.dir);
     if (settings_publish(app)) worker_wake(app);
-    SetEvent(((MoveJob*)e->a)->applied);
+    SetEvent(j->applied);
 }
 
 static DWORD WINAPI move_thread(void* p) {
-    MoveJob* j = (MoveJob*)p;
+    Job* job = (Job*)p;
+    MoveJob* j = (MoveJob*)job->data;
     App* app = j->app;
-    char error[512] = "";
+    SetupDone done = {};
+    done.part = SETUP_PARTS;
+    char* error = done.error;
     const wchar_t* subs[2] = {L"whisper", L"llm"};
     wchar_t from[2][MAX_PATH], to[2][MAX_PATH];
     for (i32 i = 0; i < 2; i++) {
@@ -692,13 +733,13 @@ static DWORD WINAPI move_thread(void* p) {
     }
     LOG("moving the AI files (%.1f GB) to %s", j->total / 1e9, j->to_utf8);
     bool ok = SHCreateDirectoryExW(0, j->to, 0) == ERROR_SUCCESS || exists(j->to);
-    if (!ok) snprintf(error, sizeof(error), "could not make the folder %s (error %lu)", j->to_utf8, GetLastError());
+    if (!ok) snprintf(error, sizeof(done.error), "could not make the folder %s (error %lu)", j->to_utf8, GetLastError());
     ULARGE_INTEGER free_bytes = {};
     if (ok && GetDiskFreeSpaceExW(j->to, &free_bytes, 0, 0) && (f64)free_bytes.QuadPart < j->total - tree_bytes(to[0]) - tree_bytes(to[1])) {
-        snprintf(error, sizeof(error), "%s has %.1f GB free; the AI files need %.1f GB", j->to_utf8, (f64)free_bytes.QuadPart / 1e9, j->total / 1e9);
+        snprintf(error, sizeof(done.error), "%s has %.1f GB free; the AI files need %.1f GB", j->to_utf8, (f64)free_bytes.QuadPart / 1e9, j->total / 1e9);
         ok = false;
     }
-    bool moved[2] = {}, posted = false, applied = false;
+    bool moved[2] = {}, applied = false;
     for (i32 i = 0; ok && i < 2; i++) {
         if (!exists(from[i])) continue;
         // On the same drive a folder moves at once, unless something in it is open.
@@ -707,35 +748,35 @@ static DWORD WINAPI move_thread(void* p) {
             j->done += tree_bytes(to[i]);
             continue;
         }
-        ok = copy_tree(j, from[i], to[i], error, sizeof(error));
+        ok = copy_tree(j, from[i], to[i], error, sizeof(done.error));
     }
     if (ok) {
-        while (!(posted = event_post(app, move_apply, (i64)j, 0, j->to_utf8)))
-            if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
+        job->apply = move_apply;
+        job_post_wait(app, job_hold(job));
         // Old files go once the settings point at the new folder; if lifelog closes first, they
         // stay (the settings may still name them).
         HANDLE waits[2] = {j->applied, app->stop};
-        applied = posted && WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0;
+        applied = WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0;
         if (!applied) moved[0] = moved[1] = true;
         for (i32 i = 0; i < 2; i++) {
             if (moved[i]) continue;
             wchar_t kept[MAX_PATH];
             Mark m = mark(scratch());
             if (!remove_ai_dir(from[i], kept)) WARN("could not delete all of %s", narrow(scratch(), from[i]).ptr);
-            if (kept[0]) event_post(app, cleanup_add_apply, 0, 0, narrow(scratch(), kept).ptr);
+            if (kept[0]) {
+                CleanupDir c;
+                SET(c.path, narrow(scratch(), kept));
+                event_send_wait(app, cleanup_add_apply, c);
+            }
             rewind(m);
         }
         LOG("moved the AI files");
     } else {
         WARN("moving the AI files failed: %s", error);
     }
-    while (!event_post(app, setup_done_apply, SETUP_PARTS, ok, error))
-        if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
-    // A posted move_apply that has not run yet still points at the job: lifelog is closing, so
-    // leave it be.
-    if (posted && !applied) return 0;
-    CloseHandle(j->applied);
-    free(j);
+    done.ok = ok;
+    event_send_wait(app, setup_done_apply, done);
+    job_drop(job);  // a move_apply still waiting keeps it until it has run
     return 0;
 }
 
@@ -760,8 +801,10 @@ void setup_move(App* app, Str dir) {
         return;
     }
     rewind(m);
-    MoveJob* j = (MoveJob*)calloc(1, sizeof(MoveJob));
-    CHECK(j, "memory for a move");
+    Job* job = job_new(0);
+    MoveJob* j = PUSH(&job->arena, MoveJob);
+    job->data = j;
+    job->cleanup = move_cleanup;
     j->app = app;
     j->applied = CreateEventW(0, TRUE, FALSE, 0);
     CHECK(j->applied, "an event for the move (error %lu)", GetLastError());
@@ -774,7 +817,7 @@ void setup_move(App* app, Str dir) {
     s->running = true;
     s->failed = false;
     SET(s->text, str("Moving"));
-    HANDLE t = CreateThread(0, 0, move_thread, j, 0, 0);
+    HANDLE t = CreateThread(0, 0, move_thread, job, 0, 0);
     CHECK(t, "the move thread to start (error %lu)", GetLastError());
     CloseHandle(t);
 }
@@ -836,8 +879,9 @@ void setup_start(App* app, SetupPart part, const char* model) {
     SET(s->model, str(known->name));
     // Set up again here: what was left to delete at the next start is wanted after all.
     cleanup_keep(app, str(app->config.ai.dir));
-    SetupJob* job = (SetupJob*)calloc(1, sizeof(SetupJob));
-    CHECK(job, "memory for a setup job");
+    Job* holder = job_new(0);
+    SetupJob* job = PUSH(&holder->arena, SetupJob);
+    holder->data = job;
     job->app = app;
     job->part = part;
     SET(job->model, str(known->name));
@@ -852,7 +896,7 @@ void setup_start(App* app, SetupPart part, const char* model) {
     Mark m = mark(scratch());
     SHCreateDirectoryExW(0, wide(scratch(), str(app->config.ai.dir)), 0);
     rewind(m);
-    HANDLE t = CreateThread(0, 0, setup_thread, job, 0, 0);
+    HANDLE t = CreateThread(0, 0, setup_thread, holder, 0, 0);
     CHECK(t, "the setup thread to start (error %lu)", GetLastError());
     CloseHandle(t);
 }

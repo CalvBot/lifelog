@@ -48,7 +48,7 @@ struct TlFresh {
 };
 
 struct TimelineState {
-    Arena arena;           // the shown day's lines, files and chips
+    Job* day_job;          // holds the shown day's lines, files and chips
     char day[11];          // the day on screen
     char loaded_day[11];   // the day `lines` are of
     u64 lines_version;     // App.worker.lines_version when they were loaded
@@ -79,7 +79,7 @@ struct TimelineState {
 
     char search[256];
     f64 search_due;        // when to run the search typed (0: nothing waiting)
-    Arena search_arena;
+    Job* search_job;       // holds `results`
     Slice<Line> results;   // every match the filter lets through, newest first
     i32 find_at;           // the match on screen, 1-based (0: none yet)
     bool find_pending;     // Enter was pressed before the matches arrived
@@ -89,13 +89,13 @@ struct TimelineState {
 
     bool calendar_open;
     i32 cal_year, cal_month;
-    Arena days_arena;
+    Job* days_job;         // holds `days`
     Slice<DayCount> days;
     ImVec2 cal_button_min, cal_button_max;
     ImVec2 cal_min, cal_max;
 
     bool show_focus;       // the Show list just opened: its search box takes the keys
-    Arena apps_arena;
+    Job* apps_job;         // holds `apps`
     Slice<SpeakerCount> apps;
     char apps_filter[64];
 };
@@ -277,7 +277,7 @@ static TlPreview* tl_preview(App* app, FileItem* f) {
     j->file_id = f->id;
     j->image = str_eq(f->kind, str("image"));
     if (!file_full_path(&app->config, f, j->path)) {
-        job_free(job);
+        job_drop(job);
         p->done = true;  // nothing to show
         return p;
     }
@@ -497,8 +497,8 @@ static void tl_day_apply(App* app, Job* job) {
     s->day_got = d->asked;
     bool same = s->loaded && strcmp(s->loaded_day, d->day) == 0;
     i64 old_max = s->max_id;
-    arena_release(&s->arena);
-    s->arena = job_take_arena(job);
+    job_drop(s->day_job);
+    s->day_job = job_hold(job);
     s->lines = d->lines;
     s->files = d->files;
     s->chips = {};
@@ -518,7 +518,7 @@ static void tl_day_apply(App* app, Job* job) {
 
     // The apps heard on the page, most lines first.
     List<TlChip> chips = {};
-    s->line_chip = PUSH_ARRAY(&s->arena, i32, s->lines.count);
+    s->line_chip = PUSH_ARRAY(&job->arena, i32, s->lines.count);
     for (i32 i = 0; i < s->lines.count; i++) {
         Str sp = s->lines.items[i].speaker;
         i32 c = 0;
@@ -528,7 +528,7 @@ static void tl_day_apply(App* app, Job* job) {
         s->line_chip[i] = c;
     }
     // Sorting moves the chips; the lines keep pointing at them by name.
-    TlChip* sorted = PUSH_ARRAY(&s->arena, TlChip, chips.count);
+    TlChip* sorted = PUSH_ARRAY(&job->arena, TlChip, chips.count);
     if (chips.count) memcpy(sorted, chips.items, sizeof(TlChip) * chips.count);
     qsort(sorted, (size_t)chips.count, sizeof(TlChip), tl_chip_order);
     i32* moved = PUSH_ARRAY(scratch(), i32, chips.count);
@@ -596,8 +596,8 @@ static void tl_search_apply(App* app, Job* job) {
     TimelineState* s = g_tl;
     TlListJob* d = (TlListJob*)job->data;
     if (!s || d->asked != s->search_asked) return;
-    arena_release(&s->search_arena);
-    s->search_arena = job_take_arena(job);
+    job_drop(s->search_job);
+    s->search_job = job_hold(job);
     Slice<Line> all = d->lines;
     // Only what the Show filter lets through, so every match can be shown.
     i32 n = 0;
@@ -620,8 +620,8 @@ static void tl_days_apply(App* app, Job* job) {
     TimelineState* s = g_tl;
     TlListJob* d = (TlListJob*)job->data;
     if (!s || d->asked != s->days_asked) return;
-    arena_release(&s->days_arena);
-    s->days_arena = job_take_arena(job);
+    job_drop(s->days_job);
+    s->days_job = job_hold(job);
     s->days = d->days;
     wake_window(app);
 }
@@ -635,8 +635,8 @@ static void tl_apps_apply(App* app, Job* job) {
     TimelineState* s = g_tl;
     TlListJob* d = (TlListJob*)job->data;
     if (!s || d->asked != s->apps_asked) return;
-    arena_release(&s->apps_arena);
-    s->apps_arena = job_take_arena(job);
+    job_drop(s->apps_job);
+    s->apps_job = job_hold(job);
     s->apps = d->apps;
     wake_window(app);
 }
@@ -846,7 +846,8 @@ static void tl_find_step(App* app, TimelineState* s, bool older) {
 
 static void tl_run_search(App* app, TimelineState* s) {
     s->search_due = 0;
-    arena_reset(&s->search_arena);
+    job_drop(s->search_job);
+    s->search_job = 0;
     s->results = {};
     s->find_at = 0;
     Str q = str_trim(str(s->search));
@@ -871,7 +872,8 @@ static void tl_clear_search(TimelineState* s) {
     s->search_asked = ++g_tl_seq;  // drops a search still on the way
     s->search[0] = 0;
     s->search_due = 0;
-    arena_reset(&s->search_arena);
+    job_drop(s->search_job);
+    s->search_job = 0;
     s->results = {};
     s->find_at = 0;
     s->find_pending = false;
@@ -1957,10 +1959,10 @@ static void timeline_draw(App* app, TimelineState* s, f32* next_frame_ms) {
 
 static void timeline_free(TimelineState* s) {
     if (g_tl == s) g_tl = 0;  // results still on the way are dropped
-    arena_release(&s->arena);
-    arena_release(&s->search_arena);
-    arena_release(&s->days_arena);
-    arena_release(&s->apps_arena);
+    job_drop(s->day_job);
+    job_drop(s->search_job);
+    job_drop(s->days_job);
+    job_drop(s->apps_job);
     list_free(&s->rows);
     list_free(&s->fresh);
     // The previews go with the window.
