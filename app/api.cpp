@@ -64,6 +64,10 @@ static void status_json(App* app, Buf* b) {
     buf_cstr(b, ",\"games\":");
     json_names(b, &c->processing.games);
     buf_fmt(b, ",\"gpu_3d_percent\":%u,\"gpu_busy_percent\":%u", app->worker.gpu_3d_percent, c->processing.gpu_busy_percent);
+    // The rest of what the GPU monitor reads (worker.h); free_mb is -1 while the adapter is unknown.
+    buf_fmt(b, ",\"gpu_compute_percent\":%ld,\"gpu_free_mb\":%ld,\"gpu_need_mb\":%ld,\"gpu_short\":%s",
+            atomic_get(&app->worker.gpu_compute_percent), atomic_get(&app->worker.gpu_free_mb),
+            atomic_get(&app->worker.gpu_need_mb), atomic_get(&app->worker.gpu_short) ? "true" : "false");
     buf_cstr(b, ",\"included_apps\":");
     json_names(b, &c->capture.included_apps);
     buf_cstr(b, ",\"not_games\":");

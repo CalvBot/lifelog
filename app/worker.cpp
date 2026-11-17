@@ -1,7 +1,7 @@
 // worker.cpp: see worker.h. Two threads, neither touches App:
 //   - the supervisor decides whether transcription may run, loads and frees the model, counts
 //     the queue and transcribes the files, oldest first; it sleeps until woken;
-//   - the GPU monitor samples the 3D engine's load every 2 s.
+//   - the GPU monitor reads the load and memory of the GPU Whisper runs on every 2 s.
 
 #include <pdh.h>
 #include <pdhmsg.h>
@@ -10,19 +10,38 @@
 #include "vendor/whisper/whisper.h"
 
 // ---------------------------------------------------------------------------------------------
-// GPU load, from the counters Task Manager uses. Games load the 3D engine; lifelog's own load is
-// left out of the sum.
+// The GPU, from the counters Task Manager uses. Only the adapter Whisper runs on is watched (until
+// that is known, the busiest of them all), and lifelog's own use is left out. Three readings, kept
+// apart because they mean different things:
+//   - 3D load: games and other rendering. Over the limit for a while, transcription steps aside so
+//     it does not cost frames.
+//   - compute load: other programs' CUDA and compute work. Shown, but it does not pause
+//     transcription: sharing compute slows both jobs down, it does not cost anyone frames.
+//   - memory: how much of the adapter's own memory other programs hold. The model is not loaded
+//     while it would not fit beside them, and is freed when they grow into it.
 
-struct Gpu3d {
+struct GpuWatch {
     PDH_HQUERY query;
-    PDH_HCOUNTER counter;
+    PDH_HCOUNTER engines;      // GPU Engine: utilisation per process and engine
+    PDH_HCOUNTER process_mem;  // GPU Process Memory: dedicated memory per process and adapter
+    PDH_HCOUNTER adapter_mem;  // GPU Adapter Memory: dedicated memory in use per adapter
 };
 
-static bool gpu3d_open(Gpu3d* g) {
+struct GpuReading {
+    f64 load_3d, load_compute;  // percent: the busiest engine of each kind, other programs only
+    f64 others_bytes;           // the adapter's dedicated memory held by other programs
+    f64 own_bytes;              // and by lifelog
+};
+
+static bool gpu_watch_open(GpuWatch* g) {
     *g = {};
     if (PdhOpenQueryW(nullptr, 0, &g->query) != ERROR_SUCCESS) return false;
-    if (PdhAddEnglishCounterW(g->query, L"\\GPU Engine(*engtype_3D)\\Utilization Percentage", 0, &g->counter) !=
-        ERROR_SUCCESS) {
+    bool ok = PdhAddEnglishCounterW(g->query, L"\\GPU Engine(*)\\Utilization Percentage", 0, &g->engines) == ERROR_SUCCESS;
+    // Memory is optional: without it only the loads are watched.
+    if (PdhAddEnglishCounterW(g->query, L"\\GPU Process Memory(*)\\Dedicated Usage", 0, &g->process_mem) != ERROR_SUCCESS ||
+        PdhAddEnglishCounterW(g->query, L"\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &g->adapter_mem) != ERROR_SUCCESS)
+        g->process_mem = g->adapter_mem = 0;
+    if (!ok) {
         PdhCloseQuery(g->query);
         *g = {};
         return false;
@@ -31,30 +50,121 @@ static bool gpu3d_open(Gpu3d* g) {
     return true;
 }
 
-// Percent of the 3D engine in use since the last call, summed over every other program (so it can
-// pass 100 with more than one GPU). Call at least a second apart. False if there is no reading.
-static bool gpu3d_sample(Gpu3d* g, f64* load) {
-    if (PdhCollectQueryData(g->query) != ERROR_SUCCESS) return false;
-    DWORD size = 0, count = 0;
-    PDH_STATUS status = PdhGetFormattedCounterArrayW(g->counter, PDH_FMT_DOUBLE, &size, &count, nullptr);
-    if ((u32)status != (u32)PDH_MORE_DATA || size == 0) return false;
-    Mark m = mark(scratch());
+// "pid_12_luid_0x00000000_0x0000D1A5_phys_0…" → the adapter's LUID as one number, high part first
+// as it is named (0 if the name has none).
+static u64 gpu_name_luid(const wchar_t* name) {
+    const wchar_t* at = name ? wcsstr(name, L"luid_0x") : 0;
+    if (!at) return 0;
+    wchar_t* end;
+    u64 high = wcstoull(at + 7, &end, 16);
+    if (wcsncmp(end, L"_0x", 3) != 0) return 0;
+    u64 low = wcstoull(end + 3, 0, 16);
+    return high << 32 | (low & 0xffffffffull);
+}
+
+// A counter's values for every instance, in scratch; null if there is no reading.
+static PDH_FMT_COUNTERVALUE_ITEM_W* gpu_items(PDH_HCOUNTER c, DWORD* count) {
+    DWORD size = 0;
+    *count = 0;
+    if (!c) return 0;
+    if ((u32)PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, count, nullptr) != (u32)PDH_MORE_DATA || !size) return 0;
     // The items come first, the instance names after them in the same buffer.
     PDH_FMT_COUNTERVALUE_ITEM_W* items = (PDH_FMT_COUNTERVALUE_ITEM_W*)arena_push(scratch(), size, 8);
-    bool ok = PdhGetFormattedCounterArrayW(g->counter, PDH_FMT_DOUBLE, &size, &count, items) == ERROR_SUCCESS;
-    // Instances are named "pid_<n>_luid_...". Our own are skipped: Whisper's kernels and the window
-    // can show up as 3D work, and counting them made transcription pause itself.
+    if (PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, count, items) != ERROR_SUCCESS) return 0;
+    return items;
+}
+
+// One engine of one adapter, its load summed over the programs using it.
+struct GpuEngine {
+    const wchar_t* key;  // its instance name from "luid_" on (the same for every program)
+    f64 load;
+    bool is_3d;
+};
+
+// Reads the adapter `luid` (0: every adapter, the busiest engine of all; no memory). Call at least
+// a second apart. False if there is no reading.
+static bool gpu_read(GpuWatch* g, u64 luid, GpuReading* r) {
+    *r = {};
+    if (PdhCollectQueryData(g->query) != ERROR_SUCCESS) return false;
+    Mark m = mark(scratch());
+    // Our own are skipped: Whisper's kernels and the window show up as GPU work, and counting them
+    // made transcription pause itself.
     wchar_t own[32];
     i32 own_len = swprintf(own, 32, L"pid_%lu_", GetCurrentProcessId());
-    f64 sum = 0;
-    for (DWORD i = 0; ok && i < count; i++) {
-        if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA) continue;
-        if (items[i].szName && wcsncmp(items[i].szName, own, own_len) == 0) continue;
-        sum += items[i].FmtValue.doubleValue;
+    DWORD n = 0;
+    PDH_FMT_COUNTERVALUE_ITEM_W* items = gpu_items(g->engines, &n);
+    if (!items) {
+        rewind(m);
+        return false;
+    }
+    GpuEngine* engines = PUSH_ARRAY(scratch(), GpuEngine, 512);
+    i32 count = 0;
+    for (DWORD i = 0; i < n; i++) {
+        const wchar_t* name = items[i].szName;
+        if (items[i].FmtValue.CStatus != PDH_CSTATUS_VALID_DATA || !name) continue;
+        if (wcsncmp(name, own, own_len) == 0) continue;
+        if (luid && gpu_name_luid(name) != luid) continue;
+        const wchar_t* key = wcsstr(name, L"luid_");
+        const wchar_t* type = wcsstr(name, L"engtype_");
+        if (!key || !type) continue;
+        type += 8;
+        bool is_3d = wcscmp(type, L"3D") == 0 || wcsncmp(type, L"Graphics", 8) == 0;
+        bool is_compute = wcsncmp(type, L"Compute", 7) == 0 || wcscmp(type, L"Cuda") == 0;
+        if (!is_3d && !is_compute) continue;  // copy, video, overlay: neither
+        i32 k = 0;
+        while (k < count && wcscmp(engines[k].key, key) != 0) k++;
+        if (k == count) {
+            if (count == 512) continue;
+            engines[count++] = {key, 0, is_3d};
+        }
+        engines[k].load += items[i].FmtValue.doubleValue;
+    }
+    for (i32 k = 0; k < count; k++) {
+        f64 load = engines[k].load > 100 ? 100 : engines[k].load;
+        f64* to = engines[k].is_3d ? &r->load_3d : &r->load_compute;
+        if (load > *to) *to = load;
+    }
+    if (luid) {
+        f64 used = 0;
+        items = gpu_items(g->adapter_mem, &n);
+        for (DWORD i = 0; items && i < n; i++)
+            if (items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA && gpu_name_luid(items[i].szName) == luid)
+                used += items[i].FmtValue.doubleValue;
+        items = gpu_items(g->process_mem, &n);
+        for (DWORD i = 0; items && i < n; i++)
+            if (items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA && gpu_name_luid(items[i].szName) == luid &&
+                wcsncmp(items[i].szName, own, own_len) == 0)
+                r->own_bytes += items[i].FmtValue.doubleValue;
+        r->others_bytes = used > r->own_bytes ? used - r->own_bytes : 0;
     }
     rewind(m);
-    *load = sum;
-    return ok;
+    return true;
+}
+
+// The adapter's own (dedicated) memory, from DXGI; 0 if it is not found.
+static f64 gpu_total_bytes(u64 luid) {
+    IDXGIFactory1* factory = 0;
+    if (!luid || FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return 0;
+    f64 total = 0;
+    IDXGIAdapter1* a = 0;
+    for (UINT i = 0; factory->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; i++) {
+        DXGI_ADAPTER_DESC1 d;
+        if (SUCCEEDED(a->GetDesc1(&d)) && ((u64)(u32)d.AdapterLuid.HighPart << 32 | d.AdapterLuid.LowPart) == luid)
+            total = (f64)d.DedicatedVideoMemory;
+        a->Release();
+    }
+    factory->Release();
+    return total;
+}
+
+// What the model takes on the GPU before it has been loaded once: its file and some room to work.
+static f64 gpu_model_guess(const WorkerOptions* o) {
+    wchar_t bin[MAX_PATH];
+    model_path(o->ai_dir, SETUP_TRANSCRIBER, o->model, bin);
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(bin, GetFileExInfoStandard, &info)) return 0;
+    f64 size = (f64)(((u64)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    return size * 1.25 + 512.0 * MB(1);
 }
 
 // Copies the options into `out` if the main thread has handed over new ones since `*version`.
@@ -68,49 +178,89 @@ static void worker_options_take(App* app, WorkerOptions* out, LONG* version) {
     ReleaseSRWLockShared(&w->options_lock);
 }
 
-// Busy after ~6 s over the limit, free again once `resume_after_secs` have passed under it (so a
-// loading screen or a menu does not start a transcription run mid-game).
+// A condition that has to hold for three readings (~6 s) to turn on, and to have been off for
+// `resume_secs` to turn off again (so a loading screen or a menu does not start a run mid-game).
+struct GpuGate {
+    u32 over;
+    f64 last_over;
+    bool on;
+};
+
+static void gpu_gate_step(GpuGate* g, bool over, f64 resume_secs) {
+    f64 now = now_ts();
+    if (over) {
+        g->over++;
+        g->last_over = now;
+        if (g->over >= 3) g->on = true;
+    } else {
+        g->over = 0;
+        if (g->on && now - g->last_over >= resume_secs) g->on = false;
+    }
+}
+
 static DWORD WINAPI gpu_monitor_thread(void* p) {
     App* app = (App*)p;
-    Gpu3d gpu;
-    if (!gpu3d_open(&gpu)) {
+    Worker* w = &app->worker;
+    GpuWatch gpu;
+    if (!gpu_watch_open(&gpu)) {
         WARN("GPU load counters unavailable: transcription will not pause for the GPU load");
         return 0;
     }
-    u32 over = 0;
-    f64 last_over = now_ts();
+    GpuGate busy = {}, short_of = {};
+    u64 luid = 0;
+    f64 total = 0;
+    f64 peak = 0;        // the most the loaded model has held, measured
+    char peak_model[128] = "";
     WorkerOptions o = {};
     LONG version = 0;
     while (sleep_unless_stopping(app, 2000)) {
-        f64 load = 0;
-        if (!gpu3d_sample(&gpu, &load)) continue;
-        worker_options_take(app, &o, &version);
-        Worker* w = &app->worker;
-        bool was_busy = atomic_get(&w->gpu_busy) != 0;
-        bool busy = was_busy;
-        LONG percent = (LONG)(load + 0.5);
-        bool changed = percent != atomic_get(&w->gpu_3d_percent);
-        atomic_set(&w->gpu_3d_percent, percent);
-        if (atomic_get(&w->summary_needs_gpu)) {
-            over = 0;  // the summary model's own load shows up as 3D work too; it is not a game
-        } else if (load > (f64)o.gpu_busy_percent) {
-            over++;
-            last_over = now_ts();
-            if (over >= 3 && !busy) {
-                busy = true;
-                LOG("GPU busy (%.0f%% 3D): transcription waits, audio keeps queueing", load);
-            }
-        } else {
-            over = 0;
-            if (busy && now_ts() - last_over >= (f64)o.resume_after_secs) {
-                busy = false;
-                LOG("GPU free again: transcription resumes");
-            }
+        u64 now_luid = (u64)atomic_get64(&w->gpu_luid);
+        if (now_luid != luid) {
+            luid = now_luid;
+            total = gpu_total_bytes(luid);
+            busy = short_of = {};
         }
-        atomic_set(&w->gpu_busy, busy);
-        if (was_busy != busy) worker_wake(app);
-        changed |= was_busy != busy;
-        if (changed) wake_window(app);
+        GpuReading r;
+        if (!gpu_read(&gpu, luid, &r)) continue;
+        worker_options_take(app, &o, &version);
+        if (strcmp(peak_model, o.model) != 0) {
+            peak = 0;
+            SET(peak_model, str(o.model));
+        }
+        bool loaded = WaitForSingleObject(w->gpu_free, 0) != WAIT_OBJECT_0;
+        if (loaded && r.own_bytes > peak) peak = r.own_bytes;
+        f64 need = peak > 0 ? peak : gpu_model_guess(&o);
+        f64 room = total - r.others_bytes;  // what other programs leave of it
+        bool was_busy = busy.on, was_short = short_of.on;
+        if (atomic_get(&w->summary_needs_gpu)) {
+            // The summary model's own load and memory show up as other programs'; it is not a game.
+            busy.over = short_of.over = 0;
+        } else {
+            gpu_gate_step(&busy, r.load_3d > (f64)o.gpu_busy_percent, (f64)o.resume_after_secs);
+            // Short when the model would not fit beside the others (or no longer does), with a
+            // quarter GB to spare; only once the adapter and its size are known.
+            bool tight = total > 0 && need > 0 && room < need + 256.0 * MB(1);
+            gpu_gate_step(&short_of, tight, (f64)o.resume_after_secs);
+        }
+        if (busy.on && !was_busy) LOG("GPU busy (%.0f%% 3D): transcription waits, audio keeps queueing", r.load_3d);
+        if (!busy.on && was_busy) LOG("GPU free again: transcription resumes");
+        if (short_of.on && !was_short)
+            LOG("GPU memory short (%.1f of %.1f GB free beside other programs, the model needs %.1f): transcription waits",
+                room / GB(1), total / GB(1), need / GB(1));
+        if (!short_of.on && was_short) LOG("GPU memory free again: transcription resumes");
+        LONG pct_3d = (LONG)(r.load_3d + 0.5), pct_compute = (LONG)(r.load_compute + 0.5);
+        LONG free_mb = total > 0 ? (LONG)(room / MB(1)) : -1, need_mb = (LONG)(need / MB(1));
+        bool changed = pct_3d != atomic_get(&w->gpu_3d_percent) || pct_compute != atomic_get(&w->gpu_compute_percent) ||
+                       free_mb / 64 != atomic_get(&w->gpu_free_mb) / 64 || need_mb != atomic_get(&w->gpu_need_mb);
+        atomic_set(&w->gpu_3d_percent, pct_3d);
+        atomic_set(&w->gpu_compute_percent, pct_compute);
+        atomic_set(&w->gpu_free_mb, free_mb);
+        atomic_set(&w->gpu_need_mb, need_mb);
+        atomic_set(&w->gpu_busy, busy.on);
+        atomic_set(&w->gpu_short, short_of.on);
+        bool gates = was_busy != busy.on || was_short != short_of.on;
+        if (gates) worker_wake(app);
+        if (changed || gates) wake_window(app);
     }
     PdhCloseQuery(gpu.query);
     return 0;
@@ -158,6 +308,10 @@ static bool worker_allowed(App* app, const WorkerOptions* c, f64 quiet_from, cha
         snprintf(state, cap, "%s", GAME_STATE);
     } else if (mode == MODE_AUTO && atomic_get(&w->gpu_busy)) {
         snprintf(state, cap, "waiting for the graphics card");
+    } else if (mode == MODE_AUTO && !c->endpoint[0] && atomic_get(&w->gpu_short)) {
+        // Only our own model needs room on this GPU; your server has its own.
+        snprintf(state, cap, "waiting for graphics memory (%.1f GB free, the model needs %.1f)",
+                 atomic_get(&w->gpu_free_mb) / 1024.0, atomic_get(&w->gpu_need_mb) / 1024.0);
     } else if (mode == MODE_AUTO && quiet_from > 0 && wait > 0) {
         snprintf(state, cap, "the game has closed: starting in %.0f s", wait);
     } else {
@@ -199,6 +353,12 @@ WHISPER_FN(whisper_vad_segments_get_segment_t1)
 WHISPER_FN(whisper_vad_free_segments)
 WHISPER_FN(whisper_log_set)
 WHISPER_FN(ggml_backend_load_all_from_path)
+// Which device ggml has: optional, for telling which GPU to watch.
+WHISPER_FN(ggml_backend_dev_count)
+WHISPER_FN(ggml_backend_dev_get)
+WHISPER_FN(ggml_backend_dev_type)
+WHISPER_FN(ggml_backend_dev_description)
+WHISPER_FN(ggml_backend_dev_get_props)
 #undef WHISPER_FN
 
 static bool g_whisper_loaded;
@@ -262,6 +422,15 @@ static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
         snprintf(error, cap, "whisper.dll is not the version lifelog expects: set it up again in Settings");
         return false;
     }
+    swprintf(path, MAX_PATH, L"%ls\\ggml-base.dll", dir);
+    HMODULE base = GetModuleHandleW(path);
+    p_ggml_backend_dev_count = (decltype(p_ggml_backend_dev_count))GetProcAddress(ggml, "ggml_backend_dev_count");
+    p_ggml_backend_dev_get = (decltype(p_ggml_backend_dev_get))GetProcAddress(ggml, "ggml_backend_dev_get");
+    if (base) {
+        p_ggml_backend_dev_type = (decltype(p_ggml_backend_dev_type))GetProcAddress(base, "ggml_backend_dev_type");
+        p_ggml_backend_dev_description = (decltype(p_ggml_backend_dev_description))GetProcAddress(base, "ggml_backend_dev_description");
+        p_ggml_backend_dev_get_props = (decltype(p_ggml_backend_dev_get_props))GetProcAddress(base, "ggml_backend_dev_get_props");
+    }
     p_whisper_log_set(whisper_log, 0);  // ggml's log too
     Mark m = mark(scratch());
     p_ggml_backend_load_all_from_path(narrow(scratch(), dir).ptr);
@@ -309,6 +478,95 @@ static whisper_context* whisper_open(const char* ai_dir, const char* model, char
     if (!ctx) snprintf(error, cap, "could not load the model ggml-%s.bin", model);
     else LOG("Whisper %s loaded in %.1f s", model, now_ts() - began);
     return ctx;
+}
+
+// An adapter's PCI address, from the kernel graphics thunks in gdi32 (their structs, from
+// d3dkmthk.h, which needs the driver kit's headers).
+static bool adapter_pci(LUID luid, u32* bus, u32* device, u32* function) {
+    struct OpenFromLuid { LUID luid; u32 adapter; };
+    struct Query { u32 adapter; i32 type; void* data; u32 size; };
+    struct Close { u32 adapter; };
+    struct Address { u32 bus, device, function; };
+    typedef LONG(APIENTRY * OpenFn)(OpenFromLuid*);
+    typedef LONG(APIENTRY * QueryFn)(const Query*);
+    typedef LONG(APIENTRY * CloseFn)(const Close*);
+    HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
+    OpenFn open = gdi ? (OpenFn)GetProcAddress(gdi, "D3DKMTOpenAdapterFromLuid") : 0;
+    QueryFn query = gdi ? (QueryFn)GetProcAddress(gdi, "D3DKMTQueryAdapterInfo") : 0;
+    CloseFn close = gdi ? (CloseFn)GetProcAddress(gdi, "D3DKMTCloseAdapter") : 0;
+    if (!open || !query || !close) return false;
+    OpenFromLuid o = {luid, 0};
+    if (open(&o) != 0) return false;
+    Address a = {};
+    Query q = {o.adapter, 6 /* KMTQAITYPE_ADAPTERADDRESS */, &a, sizeof(a)};
+    bool ok = query(&q) == 0;
+    Close c = {o.adapter};
+    close(&c);
+    *bus = a.bus;
+    *device = a.device;
+    *function = a.function;
+    return ok;
+}
+
+// The adapter whisper.cpp runs on, as a DXGI LUID (high part first): ggml's first GPU, the one
+// whisper takes for gpu_device 0. Matched by PCI address once the model is `loaded` (ggml's
+// device properties ask CUDA for free memory, which makes a context on the GPU: only once there
+// is one anyway), else by name when only one adapter has it. 0 if it cannot be told.
+static u64 whisper_adapter(bool loaded, char* name, i32 cap) {
+    name[0] = 0;
+    if (!p_ggml_backend_dev_count || !p_ggml_backend_dev_get || !p_ggml_backend_dev_type || !p_ggml_backend_dev_description)
+        return 0;
+    ggml_backend_dev_t dev = 0;
+    for (size_t i = 0, n = p_ggml_backend_dev_count(); i < n && !dev; i++) {
+        ggml_backend_dev_t d = p_ggml_backend_dev_get(i);
+        if (p_ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) dev = d;
+    }
+    if (!dev) return 0;  // no GPU: Whisper runs on the processor
+    const char* described = p_ggml_backend_dev_description(dev);
+    snprintf(name, cap, "%s", described ? described : "");
+    bool pci = false;
+    u32 bus = 0, device = 0, function = 0;
+    if (loaded && p_ggml_backend_dev_get_props) {
+        // Room to spare, in case this ggml's props have grown since the header lifelog has.
+        struct { ggml_backend_dev_props p; u8 spare[256]; } props = {};
+        p_ggml_backend_dev_get_props(dev, &props.p);
+        unsigned domain, b, d, f;
+        if (props.p.device_id && sscanf_s(props.p.device_id, "%x:%x:%x.%x", &domain, &b, &d, &f) == 4) {
+            pci = true;
+            bus = b, device = d, function = f;
+        }
+    }
+    IDXGIFactory1* factory = 0;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return 0;
+    u64 by_pci = 0, by_name = 0;
+    i32 named = 0;
+    IDXGIAdapter1* a = 0;
+    for (UINT i = 0; factory->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; i++) {
+        DXGI_ADAPTER_DESC1 desc;
+        bool got = SUCCEEDED(a->GetDesc1(&desc));
+        a->Release();
+        if (!got || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+        u64 luid = (u64)(u32)desc.AdapterLuid.HighPart << 32 | desc.AdapterLuid.LowPart;
+        u32 b, d, f;
+        if (pci && adapter_pci(desc.AdapterLuid, &b, &d, &f) && b == bus && d == device && f == function) by_pci = luid;
+        Mark m = mark(scratch());
+        if (name[0] && str_eq_nocase(str_trim(narrow(scratch(), desc.Description)), str_trim(str(name)))) {
+            named++;
+            by_name = luid;
+        }
+        rewind(m);
+    }
+    factory->Release();
+    return by_pci ? by_pci : named == 1 ? by_name : 0;
+}
+
+// Tells the GPU monitor which adapter to watch, when it has changed.
+static void whisper_adapter_publish(App* app, bool loaded) {
+    char name[256];
+    u64 luid = whisper_adapter(loaded, name, sizeof(name));
+    if (!luid || (u64)atomic_get64(&app->worker.gpu_luid) == luid) return;
+    InterlockedExchange64(&app->worker.gpu_luid, (LONG64)luid);
+    LOG("Whisper runs on %s: only its load and memory decide when transcription waits", name);
 }
 
 // Asked by whisper.cpp between steps: stop this clip? Yes when lifelog is closing, or when
@@ -913,6 +1171,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
     f64 retry_at = 0;    // after your server could not be reached
     f64 quiet_from = 0;  // when the last game closed, in auto mode; 0 if none has
     bool had_game = false, first = true, count = true;
+    bool looked = false;  // for the GPU Whisper runs on, before its model first loads
     char trouble[256] = "";  // why the last try failed, while waiting to try again
     WorkerOptions o = {};
     LONG version = 0;
@@ -941,6 +1200,15 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
         seen.missing = !ready;
         first = false;
+        if (ready && !yours && !looked) {
+            // Which GPU to watch, so load on another one does not hold transcription up. By name
+            // only: nothing is put on the GPU yet.
+            looked = true;
+            wchar_t bins[MAX_PATH];
+            char error[512];
+            whisper_bin_dir(c->ai_dir, bins);
+            if (whisper_load(bins, error, sizeof(error))) whisper_adapter_publish(app, false);
+        }
         bool game = c->pause_for_games && atomic_get(&app->apps.game_on);
         if (had_game && !game) quiet_from = now;
         had_game = game;
@@ -1007,6 +1275,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             ctx = whisper_open(c->ai_dir, model, error, sizeof(error));
             if (ctx) {
                 SET(ctx_model, str(model));
+                whisper_adapter_publish(app, true);
             } else {
                 SetEvent(app->worker.gpu_free);
                 WARN("%s; trying again in a minute", error);

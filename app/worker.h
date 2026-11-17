@@ -33,9 +33,16 @@ struct Worker {
     char state[160];      // what it is doing, for the window: "transcribing", "waiting for the game to close", ...
     i32 queued;           // WAV files waiting in the spool folder
     f64 queued_secs;      // how much audio that is
-    // Atomics (events.h): the GPU monitor writes the first two itself.
-    volatile LONG gpu_3d_percent;   // the 3D engine's load now, as in Task Manager
-    volatile LONG gpu_busy;         // over the limit
+    // Atomics (events.h). The GPU monitor writes these, about the adapter Whisper runs on (all
+    // of them until that is known), leaving lifelog's own use out:
+    volatile LONG gpu_3d_percent;       // other programs' 3D load now, as in Task Manager
+    volatile LONG gpu_compute_percent;  // and their compute load (shown; it does not pause)
+    volatile LONG gpu_busy;             // the 3D load has been over the limit
+    volatile LONG gpu_free_mb;          // its own memory other programs leave (-1: unknown)
+    volatile LONG gpu_need_mb;          // what the model takes there (measured once it has loaded)
+    volatile LONG gpu_short;            // the model has not fit beside the others for a while
+    volatile LONG64 gpu_luid;           // the adapter (DXGI LUID, high part first); the supervisor
+                                        // sets it when it learns which; 0: not known
     volatile LONG summary_needs_gpu;  // set by the summary while its model is (to be) on the GPU
     volatile LONG live_queued;      // `queued` and `running` as the supervisor has them now, for
     volatile LONG live_running;     // the summary writer

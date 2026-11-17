@@ -876,7 +876,17 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
         }
         if (!ImGui::IsItemActive()) s->gpu = (i32)c->processing.gpu_busy_percent;
         ImGui::SameLine();
-        weak(tmp("now %u%%", app->worker.gpu_3d_percent));
+        weak(tmp("now %u%% 3D", app->worker.gpu_3d_percent));
+        if (ImGui::IsItemHovered()) {
+            // The other readings: compute does not pause transcription; memory does, when short.
+            LONG free_mb = atomic_get(&app->worker.gpu_free_mb);
+            const char* memory = free_mb < 0 ? "not known until the model has loaded"
+                                             : tmp("%.1f GB free beside other programs, the model needs %.1f",
+                                                   free_mb / 1024.0, atomic_get(&app->worker.gpu_need_mb) / 1024.0);
+            ImGui::SetTooltip("Other programs on the graphics card Whisper uses:\n3D (games) %ld%%: over the limit, transcription waits\n"
+                              "Compute %ld%%: shared, does not pause it\nMemory: %s",
+                              atomic_get(&app->worker.gpu_3d_percent), atomic_get(&app->worker.gpu_compute_percent), memory);
+        }
     }
 
     // lifelog's own whisper.cpp, or any OpenAI-compatible transcription server.
