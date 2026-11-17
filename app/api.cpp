@@ -31,46 +31,6 @@ static Str url_enc(Arena* a, Str s) {
     return {out, n};
 }
 
-static i32 hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-// The value of the first `key=value` in a query string, percent-decoded. False if it is not there.
-static bool query_param(Arena* a, Str query, const char* key, Str* out) {
-    Str k = str(key);
-    i64 at = 0;
-    while (at <= query.len) {
-        i64 end = at;
-        while (end < query.len && query.ptr[end] != '&') end++;
-        Str kv = str_sub(query, at, end - at);
-        if (kv.len > k.len && str_starts(kv, k) && kv.ptr[k.len] == '=') {
-            Str raw = str_sub(kv, k.len + 1);
-            char* buf = PUSH_ARRAY(a, char, raw.len + 1);
-            i64 n = 0;
-            for (i64 i = 0; i < raw.len; i++) {
-                char c = raw.ptr[i];
-                if (c == '%' && i + 2 < raw.len && hex_digit(raw.ptr[i + 1]) >= 0 && hex_digit(raw.ptr[i + 2]) >= 0) {
-                    buf[n++] = (char)(hex_digit(raw.ptr[i + 1]) * 16 + hex_digit(raw.ptr[i + 2]));
-                    i += 2;
-                } else if (c == '+') {
-                    buf[n++] = ' ';
-                } else {
-                    buf[n++] = c;
-                }
-            }
-            buf[n] = 0;
-            *out = {buf, n};
-            return true;
-        }
-        at = end + 1;
-    }
-    *out = {"", 0};
-    return false;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Answers
 

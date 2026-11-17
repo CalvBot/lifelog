@@ -374,12 +374,6 @@ static f32 draw_wrapped(ImDrawList* dl, ImVec2 pos, Str text, f32 width, ImU32 c
     return draw_spans(dl, pos, text, width, &s, 1);
 }
 
-static bool ascii_eq_nocase(const char* a, const char* b, i64 n) {
-    for (i64 i = 0; i < n; i++)
-        if (tolower((u8)a[i]) != tolower((u8)b[i])) return false;
-    return true;
-}
-
 // Spans marking each case-insensitive `term` in `text`, into scratch.
 static i32 found_spans(Str text, Str term, Span** out) {
     i32 cap = 64, n = 0;
@@ -387,7 +381,7 @@ static i32 found_spans(Str text, Str term, Span** out) {
     ImU32 plain = ImGui::GetColorU32(ImGuiCol_Text);
     if (term.len) {
         for (i64 i = 0; i + term.len <= text.len && n < cap * 2 - 1;) {
-            if (ascii_eq_nocase(text.ptr + i, term.ptr, term.len)) {
+            if (str_eq_nocase({text.ptr + i, term.len}, term)) {
                 spans[n++] = {i, plain, 0};
                 spans[n++] = {i + term.len, plain, TL_FOUND};
                 i += term.len;

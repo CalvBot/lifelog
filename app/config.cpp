@@ -544,12 +544,13 @@ bool config_save_string(const char* table, const char* key, const char* s) {
 // ---------------------------------------------------------------------------------------------
 // Paths
 
-static void under_data(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) {
-    Arena* a = scratch();
-    Mark m = mark(a);
-    swprintf(out, MAX_PATH, L"%s\\%s", wide(a, str(cfg->data_dir)), name);
+void path_under(const char* dir, const wchar_t* name, wchar_t out[MAX_PATH]) {
+    Mark m = mark(scratch());
+    swprintf(out, MAX_PATH, L"%ls\\%ls", wide(scratch(), str(dir)), name);
     rewind(m);
 }
+
+static void under_data(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(cfg->data_dir, name, out); }
 
 void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"spool", out); }
 void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"audio", out); }

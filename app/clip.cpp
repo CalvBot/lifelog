@@ -371,30 +371,10 @@ bool clipboard_set_text(Str text) {
 // ---------------------------------------------------------------------------------------------
 // Copying
 
-// Appends to a zero-terminated text on the heap.
-static void text_add(List<char>* t, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(0, 0, fmt, args);
-    va_end(args);
-    CHECK(n >= 0, "a valid format string: %s", fmt);
-    if (t->count + n + 1 > t->cap) {
-        i32 cap = t->cap ? t->cap * 2 : 4096;
-        while (cap < t->count + n + 1) cap *= 2;
-        t->items = (char*)realloc(t->items, cap);
-        CHECK(t->items, "memory for %d bytes of text", cap);
-        t->cap = cap;
-    }
-    va_start(args, fmt);
-    vsnprintf(t->items + t->count, n + 1, fmt, args);
-    va_end(args);
-    t->count += n;
-}
-
 // The text of a clip: a header, then one line per transcribed line.
-static void clip_format(List<char>* t, Slice<Line> lines, f64 from, f64 to) {
+static void clip_format(Buf* t, Slice<Line> lines, f64 from, f64 to) {
     LocalTime a = local_time(from), b = local_time(to);
-    text_add(t, "lifelog — %04d-%02d-%02d %02d:%02d to %04d-%02d-%02d %02d:%02d\n\n", a.year, a.month, a.day, a.hour,
+    buf_fmt(t, "lifelog — %04d-%02d-%02d %02d:%02d to %04d-%02d-%02d %02d:%02d\n\n", a.year, a.month, a.day, a.hour,
              a.minute, b.year, b.month, b.day, b.hour, b.minute);
     bool many_days = a.year != b.year || a.month != b.month || a.day != b.day;
     for (i32 i = 0; i < lines.count; i++) {
@@ -405,10 +385,10 @@ static void clip_format(List<char>* t, Slice<Line> lines, f64 from, f64 to) {
         else snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d", t0.hour, t0.minute, t0.second);
         Str text = str_trim(l->text);
         if (l->source != SOURCE_MIC && l->title.len)
-            text_add(t, "[%s] %.*s (%.*s): %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)l->title.len,
+            buf_fmt(t, "[%s] %.*s (%.*s): %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)l->title.len,
                      l->title.ptr, (int)text.len, text.ptr);
         else
-            text_add(t, "[%s] %.*s: %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)text.len, text.ptr);
+            buf_fmt(t, "[%s] %.*s: %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)text.len, text.ptr);
     }
 }
 
@@ -462,9 +442,9 @@ ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Nam
             if (!exclude || !names_has(exclude, all.items[i].speaker)) lines.items[lines.count++] = all.items[i];
         // Each speaker as the app list shows it ("zaddish", "Brave Browser"), not its exe.
         for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), label_of(labels, lines.items[i].speaker));
-        List<char> text = {};
+        Buf text = {};
         clip_format(&text, lines, from, to);
-        Str body = {text.items, text.count};
+        Str body = {text.chars.items, text.chars.count};
         temp_path(str_fmt(scratch(), "lifelog-%s.txt", label ? label : times.ptr), path);
         if (!st) snprintf(r.error, sizeof(r.error), "could not read the database");
         else if (!write_file(path, body)) snprintf(r.error, sizeof(r.error), "could not write the clip file");
@@ -474,7 +454,7 @@ ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Nam
             r.ok = true;
             r.lines = lines.count;
         }
-        list_free(&text);
+        buf_free(&text);
     }
     SET(r.path, narrow(scratch(), path));
     rewind(m);

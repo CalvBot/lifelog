@@ -76,11 +76,7 @@ static void setup_done_apply(App* app, Event* e) {
     wake_window(app);
 }
 
-static void ai_sub(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) {
-    Mark m = mark(scratch());
-    swprintf(out, MAX_PATH, L"%ls\\%ls", wide(scratch(), str(cfg->ai.dir)), name);
-    rewind(m);
-}
+static void ai_sub(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(cfg->ai.dir, name, out); }
 
 void whisper_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"whisper", out); }
 

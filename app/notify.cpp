@@ -254,22 +254,8 @@ static void notify_drain(App* app) {
 // ---------------------------------------------------------------------------------------------
 // Links
 
-// The value of `key` in a query like "day=2026-11-15&id=3", into `out`.
-static void query_value(Str query, const char* key, char* out, i32 cap) {
-    out[0] = 0;
-    Str k = str(key);
-    while (query.len) {
-        i64 amp = str_find(query, str("&"));
-        Str part = amp < 0 ? query : str_sub(query, 0, amp);
-        if (part.len > k.len && str_starts(part, k) && part.ptr[k.len] == '=') {
-            set(out, cap, str_sub(part, k.len + 1));
-            return;
-        }
-        query = amp < 0 ? Str{"", 0} : str_sub(query, amp + 1);
-    }
-}
-
 // Only a few fixed actions exist, and the query may only hold a date or an id.
+// Either scheme is taken, whichever copy registered it: the link only picks what to show.
 bool notify_open_link(App* app, Str link) {
     Str rest = {};
     if (str_starts(link, str("lifelog:"))) rest = str_sub(link, 8);
@@ -290,10 +276,13 @@ bool notify_open_link(App* app, Str link) {
             return false;
         }
     }
-    char day[16], id[24];
-    query_value(query, "day", day, sizeof(day));
-    query_value(query, "id", id, sizeof(id));
     Mark m = mark(scratch());
+    Str day_s = {}, id_s = {};
+    query_param(scratch(), query, "day", &day_s);
+    query_param(scratch(), query, "id", &id_s);
+    char day[16], id[24];
+    SET(day, day_s);
+    SET(id, id_s);
     bool ok = true;
     if (str_eq(path, str("summary/open"))) {
         ui_show(app, TAB_JOURNAL, day);

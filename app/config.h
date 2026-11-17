@@ -100,6 +100,8 @@ bool config_save_string(const char* table, const char* key, const char* s);
 // The write itself, on the file writer's thread (or at once, when it is not running).
 bool config_write_value(const char* table, const char* key, Str value);
 
+// `dir` (UTF-8) and `name` joined with a backslash.
+void path_under(const char* dir, const wchar_t* name, wchar_t out[MAX_PATH]);
 // The paths under data_dir.
 void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]);
 void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]);

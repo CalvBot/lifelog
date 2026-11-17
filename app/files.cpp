@@ -28,17 +28,12 @@ static const char* kind_of(Str name) {
     return kind;
 }
 
-static bool starts_nocase(Str s, const char* prefix) {
-    Str p = str(prefix);
-    return s.len >= p.len && str_eq_nocase(str_sub(s, 0, p.len), p);
-}
-
 // A pasted line that is a web address: "https://…", or "www.…" (made https). Empty if not.
 static Str as_url(Arena* a, Str line) {
     for (i64 i = 0; i < line.len; i++)
         if ((u8)line.ptr[i] <= ' ' || line.ptr[i] == '\\') return {};
-    if (starts_nocase(line, "http://") || starts_nocase(line, "https://")) return str_copy(a, line);
-    if (starts_nocase(line, "www.")) return str_fmt(a, "https://%.*s", (int)line.len, line.ptr);
+    if (str_starts_nocase(line, str("http://")) || str_starts_nocase(line, str("https://"))) return str_copy(a, line);
+    if (str_starts_nocase(line, str("www."))) return str_fmt(a, "https://%.*s", (int)line.len, line.ptr);
     return {};
 }
 

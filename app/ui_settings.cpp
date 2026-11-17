@@ -713,7 +713,6 @@ static const AiFile* ai_file(App* app, SetupPart part, const char* name) {
     return 0;
 }
 
-static const char* gb(f64 bytes) { return bytes >= 1e9 ? tmp("%.1f GB", bytes / 1e9) : tmp("%.0f MB", bytes / 1e6); }
 
 // One line of the model dropdown: its name, what it is for, and its size (a tick once it is here).
 static bool model_item(const char* text, const char* note, const char* size, bool on, f32 note_x, f32 right) {
@@ -749,14 +748,14 @@ static void model_row(App* app, SettingsState* s, SetupPart part) {
         for (i32 i = 0; i < n; i++) {
             const AiModel* m = &models[i];
             const AiFile* f = ai_file(app, part, m->name);
-            const char* size = f ? tmp("%s  %s", gb(f->bytes), ICON_CHECK) : tmp("%.1f GB  %s", m->gb, ICON_ARROW_DOWN);
+            const char* size = f ? tmp("%s  %s", size_text((i64)f->bytes), ICON_CHECK) : tmp("%.1f GB  %s", m->gb, ICON_ARROW_DOWN);
             if (model_item(tmp("%s##m%d", m->label, i), m->note, size, !yours && strcmp(current, m->name) == 0, note_x, right)) chosen = m->name;
         }
         // Model files put in the folder by hand.
         for (i32 i = 0; i < app->setup.file_count[part]; i++) {
             const AiFile* f = &app->setup.files[part][i];
             if (ai_model(part, f->name)) continue;
-            if (model_item(tmp("%s##f%d", f->name, i), "A file you added", tmp("%s  %s", gb(f->bytes), ICON_CHECK),
+            if (model_item(tmp("%s##f%d", f->name, i), "A file you added", tmp("%s  %s", size_text((i64)f->bytes), ICON_CHECK),
                            !yours && strcmp(current, f->name) == 0, note_x, right))
                 chosen = f->name;
         }
@@ -1075,7 +1074,7 @@ static void ai_card(App* app, SettingsState* s, f32 width) {
     Setup* su = &app->setup;
     settings_card("ai", width);
     title("AI models");
-    status_right(su->total_bytes > 0 ? tmp("%s on this computer", gb(su->total_bytes)) : "none downloaded");
+    status_right(su->total_bytes > 0 ? tmp("%s on this computer", size_text((i64)su->total_bytes)) : "none downloaded");
     bool busy = su->move.running;
     for (i32 i = 0; i < SETUP_PARTS; i++) busy = busy || su->part[i].running;
 
@@ -1137,7 +1136,7 @@ static void ai_card(App* app, SettingsState* s, f32 width) {
         f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
         for (i32 i = 0; i < su->file_count[p]; i++) {
             AiFile* f = &su->files[p][i];
-            const char* text = tmp("%s  %s  %s##rm%d_%d", f->name, gb(f->bytes), ICON_TRASH, p, i);
+            const char* text = tmp("%s  %s  %s##rm%d_%d", f->name, size_text((i64)f->bytes), ICON_TRASH, p, i);
             wrap_button(i, text, left, right);
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(text)) {
@@ -1168,7 +1167,7 @@ static void ai_card(App* app, SettingsState* s, f32 width) {
             const AiFile* f = ai_file(app, s->remove_part, s->remove_model);
             bytes = f ? f->bytes : 0;
         }
-        ImGui::TextUnformatted(s->remove_all ? tmp("Remove all of lifelog's AI (%s)?", gb(bytes)) : tmp("Delete %s (%s)?", s->remove_model, gb(bytes)));
+        ImGui::TextUnformatted(s->remove_all ? tmp("Remove all of lifelog's AI (%s)?", size_text((i64)bytes)) : tmp("Delete %s (%s)?", s->remove_model, size_text((i64)bytes)));
         ImGui::TextColored(weak_text(), "%s",
                            s->remove_all ? "Both models and engines. Recordings and transcripts stay; Settings can download it again."
                                          : "Settings can download it again.");

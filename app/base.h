@@ -88,6 +88,7 @@ Str str_fmt(Arena* a, const char* fmt, ...);
 Str str_lower(Arena* a, Str s);
 bool str_eq(Str a, Str b);
 bool str_eq_nocase(Str a, Str b);
+bool str_starts_nocase(Str s, Str prefix);
 bool str_starts(Str s, Str prefix);
 bool str_ends(Str s, Str suffix);
 Str str_trim(Str s);
@@ -95,6 +96,8 @@ i64 str_find(Str s, Str needle);   // -1 if not there
 Str str_sub(Str s, i64 from, i64 len = -1);
 // `s` without a trailing ".exe" (any case): "Discord.EXE" is "Discord".
 Str strip_exe(Str s);
+// The value of the first `key=value` in a URL query, percent-decoded into `a`. False if absent.
+bool query_param(Arena* a, Str query, const char* key, Str* out);
 wchar_t* wide(Arena* a, Str s);     // for Windows calls
 Str narrow(Arena* a, const wchar_t* w, i64 len = -1);
 

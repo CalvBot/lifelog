@@ -107,20 +107,24 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
 // ---------------------------------------------------------------------------------------------
 // When transcription may run
 
-// WAV files in the spool folder and how long they are (16 kHz mono 16-bit, after a 44-byte header).
-static void count_queue(const wchar_t* spool, i32* files, f64* secs) {
-    *files = 0;
-    *secs = 0;
+// The WAV files in the spool folder: how many and how long (16 kHz mono 16-bit after the header),
+// and the oldest one's name (names start with the time in ms; empty when there is none). Any
+// output may be null.
+static void scan_spool(const wchar_t* spool, i32* files, f64* secs, wchar_t oldest[MAX_PATH]) {
+    if (files) *files = 0;
+    if (secs) *secs = 0;
+    if (oldest) oldest[0] = 0;
     wchar_t pattern[MAX_PATH];
     swprintf(pattern, MAX_PATH, L"%ls\\*.wav", spool);
     WIN32_FIND_DATAW f;
-    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &f, FindExSearchNameMatch, nullptr, 0);
+    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &f, FindExSearchNameMatch, 0, 0);
     if (h == INVALID_HANDLE_VALUE) return;
     do {
         if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         u64 size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
-        (*files)++;
-        if (size > WAV_HEADER) *secs += (f64)(size - WAV_HEADER) / 32000.0;  // 16 kHz, 16-bit
+        if (files) (*files)++;
+        if (secs && size > WAV_HEADER) *secs += (f64)(size - WAV_HEADER) / 32000.0;  // 16 kHz, 16-bit
+        if (oldest && (!oldest[0] || wcscmp(f.cFileName, oldest) < 0)) wcscpy_s(oldest, MAX_PATH, f.cFileName);
     } while (FindNextFileW(h, &f));
     FindClose(h);
 }
@@ -482,22 +486,6 @@ static Sent transcribe_there(Arena* a, Target* t, Str wav, Slice<Heard>* out, ch
     return SENT_OK;
 }
 
-// The oldest WAV in the spool folder (names start with the time in ms). False if there is none.
-static bool oldest_file(const wchar_t* spool, wchar_t name[MAX_PATH]) {
-    wchar_t pattern[MAX_PATH];
-    swprintf(pattern, MAX_PATH, L"%ls\\*.wav", spool);
-    WIN32_FIND_DATAW f;
-    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &f, FindExSearchNameMatch, 0, 0);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    name[0] = 0;
-    do {
-        if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (!name[0] || wcscmp(f.cFileName, name) < 0) wcscpy_s(name, MAX_PATH, f.cFileName);
-    } while (FindNextFileW(h, &f));
-    FindClose(h);
-    return name[0] != 0;
-}
-
 // Moves the clip and its .json to spool\failed, to be looked at by hand.
 static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* meta) {
     wchar_t dir[MAX_PATH], to[MAX_PATH];
@@ -681,7 +669,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
     while (!stopping(app)) {
         f64 now = now_ts();
         if (count) {  // the data drive may be slow, so only when woken or after a file
-            count_queue(spool, &seen.queued, &seen.queued_secs);
+            scan_spool(spool, &seen.queued, &seen.queued_secs, 0);
             count = false;
         }
 
@@ -767,7 +755,8 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
         if (work) {
             wchar_t name[MAX_PATH];
-            if (!oldest_file(spool, name)) {
+            scan_spool(spool, 0, 0, name);
+            if (!name[0]) {
                 count = true;  // the count was out of date
                 continue;
             }
@@ -786,7 +775,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
                 retry_at = now_ts() + 30;
                 continue;
             }
-            count_queue(spool, &seen.queued, &seen.queued_secs);
+            scan_spool(spool, &seen.queued, &seen.queued_secs, 0);
             LOG("%ls: %d lines in %.1fs (%d queued)", name, lines, now_ts() - began, seen.queued);
             if (lines > 0) event_post(app, worker_lines_apply, 0, 0, 0);
             continue;
