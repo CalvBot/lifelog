@@ -49,9 +49,9 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
 - **Settings:** which apps to record, which are games, when to transcribe, the summary time, and voice commands.
 - **Voice commands:** say "lifelog" and a command, such as "lifelog, summarise the
   last 30 minutes", "lifelog, remind me in 10 minutes to check the oven", "lifelog, open Spotify", "lifelog, pause"
-  or "lifelog, pause transcription". You can also say "lifelog", wait for the chime, then give the command. When
+  (the music), "lifelog, skip", "lifelog, pause lifelog" (private mode) or "lifelog, pause transcription". You can also say "lifelog", wait for the chime, then give the command. When
   one works, a note shows at the top of the screen for a moment ("lifelog — Alarm set: 4 minutes"). In
-  private mode only "resume" works. Settings lists them and can change the wake word from "lifelog" to your own;
+  private mode only "resume lifelog" and the media keys work. Settings lists them and can change the wake word from "lifelog" to your own;
   the first time, it downloads a small model (0.15 GB) that runs on the processor. "Clip" is not built in: it
   is left for a custom command, such as one that saves an OBS replay.
 - **Custom commands:** your own voice commands, each a folder with a small script, such as "lifelog, play Bad Guy"

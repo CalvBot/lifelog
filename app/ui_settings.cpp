@@ -1064,7 +1064,8 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
             {"summarise the last 30 minutes", "a few sentences from the summary AI, on the clipboard"},
             {"remind me in 10 minutes to ...", "a reminder (or \"at 5 pm\", \"tomorrow at 9\", \"set an alarm for 7\")"},
             {"open Spotify", "start an installed app or game"},
-            {"pause  /  resume", "private mode on or off"},
+            {"pause  /  play  /  skip  /  previous", "the music or video playing, through the media keys"},
+            {"pause  /  resume lifelog", "private mode on or off (or \"go private\", \"resume recording\")"},
             {"pause  /  continue transcription", "hold transcribing, then back to how it was"},
             {"check the AI", "start the summary AI and test it"},
             {"never mind", "cancel after the chime"},
@@ -1083,7 +1084,7 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
             ImGui::EndTable();
         }
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(weak_text(), "Say it as one sentence, or say \"%s\" and wait for the chime. In private mode only resume works.", wake);
+        ImGui::TextColored(weak_text(), "Say it as one sentence, or say \"%s\" and wait for the chime. In private mode only \"resume lifelog\" and the media keys work.", wake);
         ImGui::PopTextWrapPos();
         ImGui::Unindent(px(ROW_LABEL_W));
     }

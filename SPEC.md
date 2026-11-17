@@ -342,7 +342,11 @@ The window only exists while it is open. Closing it frees its memory; the record
     words after "to", "that" or "about" ("Alarm", "Timer" or "Reminder" if none). It is saved like the summary's
     reminders (the alerts table) and shows as a notification when due.
   - **open** / **launch** / **start** / **play** APP: starts an installed app or game from its exe.
-  - **pause** / go private and **resume** / stop private mode.
+  - **pause**, **play**, **resume**, **skip** / **next song**, **previous track**: the media keys, for whatever is
+    playing. Play and pause are the one key, which flips. A custom command that starts the sentence goes first, so
+    a Spotify script can take them over.
+  - **pause lifelog** / **pause recording** / go private, and **resume lifelog** / **resume recording** / stop private
+    mode. Plain "pause" is the media key.
   - **pause transcription** and **continue transcription**, which goes back to the mode it was in before the
     pause (`[processing] mode_before_pause`; auto if it was never paused).
   - **check the AI**, and **cancel** / **never mind**.
@@ -356,7 +360,7 @@ The window only exists while it is open. Closing it frees its memory; the record
   (0.08 GB, lightest) or small.en (0.49 GB, hears best). Changing it loads the new one at once; one not yet
   downloaded shows a Download button. On 20 s clips, CPU only, each took about 1.0, 1.4 and 4.3 s.
 - There is no built-in "clip": the phrase is left for a custom command, such as one that saves an OBS replay.
-- In private mode only resume is carried out, and nothing about the sentence is kept.
+- In private mode only resume and the media keys are carried out, and nothing about the sentence is kept.
 - Open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's
   do; a chime then says how it went. Its sentence also goes into the transcript as usual.
 - When a command works, a banner shows at the top of the screen with the window in front, for 2.5 s, then fades:

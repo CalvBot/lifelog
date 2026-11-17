@@ -221,6 +221,7 @@ enum VoiceDo : i32 {
     DO_SUMMARISE,  // a few sentences about the last `query` ("30m"), from the summary AI
     DO_REMIND,     // a reminder saying `text` at `due` (0: no time was said)
     DO_CUSTOM,     // a custom command's script: `custom` (commands.h)
+    DO_MEDIA,      // a media key, `key`, for whatever is playing
 };
 
 struct VoiceCommand {
@@ -235,6 +236,7 @@ struct VoiceCommand {
     char said[128];   // what it does, for the log and Settings: "summarise the last hour"
     char shown[128];  // what the banner says when it worked: "Alarm set: 4 minutes"
     CmdMatch custom;  // DO_CUSTOM
+    u16 key;          // DO_MEDIA: VK_MEDIA_PLAY_PAUSE, VK_MEDIA_NEXT_TRACK or VK_MEDIA_PREV_TRACK
 };
 
 static void command(VoiceCommand* c, const char* method, const char* path, const char* said) {
@@ -585,19 +587,46 @@ static void parse_builtin(const Words* ws, VoiceCommand* c) {
     }
     // No built-in "clip": that phrase is left for a custom command (OBS, a replay buffer).
 
-    // Private mode. Resume comes first: "stop private mode" is a resume.
+    // Private mode, which needs lifelog named ("pause lifelog", "resume recording", "go private"):
+    // a plain "pause" is for the music. Resume comes first: "stop private mode" is a resume.
     bool private_word = has(ws, "private") || has(ws, "privacy");
+    bool us = has(ws, "lifelog") || has_pair(ws, "life", "log") || has(ws, "recording") || has(ws, "record") || has(ws, "logging");
     bool off = has(ws, "off") || has(ws, "stop") || has(ws, "end") || has(ws, "leave") || has(ws, "exit") || has(ws, "disable");
-    if (word_in(first, "resume", "unpause", "continue") || has_pair(ws, "start", "recording") ||
+    if ((word_in(first, "resume", "unpause", "continue") && us) || has_pair(ws, "start", "recording") ||
         has_pair(ws, "keep", "recording") || (has(ws, "record") && has(ws, "again")) || (private_word && off)) {
         command(c, "POST", "/resume", "resume recording");
         snprintf(c->shown, sizeof(c->shown), "Recording again");
         c->private_ok = true;
         return;
     }
-    if (word_in(first, "pause") || private_word || has_pair(ws, "stop", "recording")) {
+    if ((word_in(first, "pause") && us) || private_word || has_pair(ws, "stop", "recording")) {
         command(c, "POST", "/pause", "private mode on");
         snprintf(c->shown, sizeof(c->shown), "Private mode on");
+        return;
+    }
+
+    // Media keys, for whatever is playing: "pause", "pause the music", "play", "resume", "skip",
+    // "next song", "previous track", "go back a song". Play and pause are the one key, which
+    // flips. Nothing about them is kept, so they work in private mode too.
+    bool song = has(ws, "song") || has(ws, "track") || has(ws, "music") || has(ws, "video");
+    u16 key = 0;
+    if (word_in(first, "pause", "resume", "unpause") || (word_in(first, "continue") && ws->n == 1) ||
+        (word_in(first, "play") && (ws->n == 1 || (ws->n <= 3 && song))) || (has(ws, "stop") && song)) {
+        key = VK_MEDIA_PLAY_PAUSE;
+        snprintf(c->said, sizeof(c->said), "%s", word_in(first, "pause") || has(ws, "stop") ? "pause" : "play");
+    } else if (word_in(first, "skip", "next") && (ws->n == 1 || song)) {
+        key = VK_MEDIA_NEXT_TRACK;
+        snprintf(c->said, sizeof(c->said), "next track");
+    } else if ((word_in(first, "previous") && (ws->n == 1 || song)) || (has_pair(ws, "go", "back") && song) ||
+               (has(ws, "last") && song && !has(ws, "minutes") && !has(ws, "hour"))) {
+        key = VK_MEDIA_PREV_TRACK;
+        snprintf(c->said, sizeof(c->said), "previous track");
+    }
+    if (key) {
+        c->what = DO_MEDIA;
+        c->key = key;
+        c->chime = CHIME_DONE;
+        c->private_ok = true;
         return;
     }
 
@@ -845,7 +874,7 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         voice_say(app, CHIME_CANCELLED, 0, 0);
     } else if (paused && !c->private_ok) {
         // Nothing about what was said is kept in private mode.
-        voice_say(app, CHIME_ERROR, "(in private mode)", "only \"resume\" works in private mode");
+        voice_say(app, CHIME_ERROR, "(in private mode)", "in private mode only \"resume lifelog\" and the music works");
     } else if (c->what == DO_CHECK_AI) {
         LOG("voice: check the AI");
         event_send(app, voice_check_ai_apply);
@@ -883,6 +912,14 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         if (strncmp(result, "started ", 8) == 0) snprintf(shown, sizeof(shown), "Opening %s", result + 8);
         else SET(shown, str(c->shown));
         voice_say(app, ok ? c->chime : CHIME_ERROR, c->said, result, ok && shown[0] ? shown : 0);
+    } else if (c->what == DO_MEDIA) {
+        INPUT in[2] = {};
+        in[0].type = in[1].type = INPUT_KEYBOARD;
+        in[0].ki.wVk = in[1].ki.wVk = c->key;
+        in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        bool ok = SendInput(2, in, sizeof(INPUT)) == 2;
+        LOG("voice: %s%s", c->said, ok ? "" : ": the key could not be sent");
+        voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, c->said, ok ? "sent" : "the key could not be sent", 0);
     } else if (c->what == DO_CUSTOM) {
         LOG("voice: \"%s\": %s", heard, c->said);
         commands_run(app, &c->custom, voice_custom_done);

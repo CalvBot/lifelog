@@ -1,15 +1,17 @@
-// voice.h: voice commands. Say the wake word ("lifelog" unless changed in Settings) and a command,
-// as one sentence ("lifelog, summarise the last hour") or with a pause after the name (it chimes, then
-// listens for six seconds). The commands: summarise the last stretch, remind me / set an
-// alarm, open an app, pause and resume (private mode), pause and continue transcription, check
-// the AI, and never mind. "Clip" is left for a custom command (commands.h), such as OBS.
+// voice.h: voice commands. Say the wake word ("lifelog" unless changed in Settings) and a
+// command, as one sentence ("lifelog, summarise the last hour") or with a pause after the name
+// (it chimes, then listens for six seconds). The commands: summarise the last stretch, remind me /
+// set an alarm, open an app, pause / play / skip (media keys), pause and resume lifelog (private
+// mode), pause and continue transcription, check the AI, and never mind. "Clip" is left for a
+// custom command (commands.h), such as one for OBS.
 //
 // The mic's capture thread has a second segmenter that hears even in private mode and ends a
 // sentence after a 0.7 s pause (capture.cpp); each sentence comes here (voice_heard), and the
 // voice thread runs a small Whisper model (base.en unless changed in Settings) on the processor
 // over it, so it works while the transcriber waits for a game. A sentence that does not start
-// with the name is dropped at once and never logged. A command is carried out through the API's own handler (api_ask), so it does exactly
-// what the CLI's does, and a chime says how it went. In private mode only "resume" is acted on.
+// with the name is dropped at once and never logged. A command is carried out through the API's
+// own handler (api_ask), so it does exactly what the CLI's does, and a chime says how it went. In
+// private mode only "resume lifelog" and the media keys are acted on.
 //
 // What is said also goes into the transcript as usual (the recording segmenter is apart).
 
