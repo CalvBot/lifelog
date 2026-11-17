@@ -179,6 +179,7 @@ static i32 cli_voice(Str text) {
     else if (c->what == DO_NOTHING) cli_print("not a command\n");
     else if (c->what == DO_API) cli_print("%s: %s %s%s%s\n", c->said, c->method, c->path, c->query[0] ? "?" : "", c->query);
     else cli_print("%s\n", c->what == DO_CANCEL ? "cancel" : c->said);
+    if (c->shown[0]) cli_print("banner when it works: %s\n", c->shown);
     return 0;
 }
 
@@ -289,6 +290,17 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     if (str_eq(cmd, str("summarise")) || str_eq(cmd, str("summarize"))) return cli_summarise(has_arg ? args[1] : str("15m"));
     if (str_eq(cmd, str("status"))) return cli_call("GET", str("/status"));
     if (str_eq(cmd, str("voice"))) return cli_voice(has_arg ? args[1] : str(""));
+    // For developers: shows the voice banner for its 2.5 s, as a command that worked would.
+    if (str_eq(cmd, str("banner"))) {
+        if (!cli_config(&g_cli.config)) return 1;
+        const char* wake = g_cli.config.voice.wake[0] ? g_cli.config.voice.wake : "lifelog";
+        char who[64];
+        SET(who, str(wake));
+        who[0] = (char)toupper((u8)who[0]);
+        banner_show(who, has_arg ? args[1].ptr : "Alarm set: 4 minutes");
+        Sleep((DWORD)(BANNER_MS + BANNER_FADE_MS + 200));
+        return 0;
+    }
     if (str_eq(cmd, str("icon"))) return cli_icon(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("config"))) {
         if (!cli_config(&g_cli.config)) return 1;

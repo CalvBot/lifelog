@@ -221,6 +221,7 @@ struct VoiceCommand {
     Chime chime;      // when it worked
     bool private_ok;  // carried out in private mode too
     char said[128];   // what it does, for the log and Settings: "clip 1h"
+    char shown[128];  // what the banner says when it worked: "Alarm set: 4 minutes"
 };
 
 static void command(VoiceCommand* c, const char* method, const char* path, const char* said) {
@@ -494,10 +495,25 @@ static void reminder_said(const Words* ws, f64 now, VoiceCommand* c) {
         snprintf(c->said, sizeof(c->said), "reminder: %s (no time said)", c->text);
         return;
     }
+    // The banner: "Timer set: 20 minutes", "Reminder set: 17:00 · Call Sam".
+    const char* kind = has(ws, "timer") ? "Timer" : has(ws, "alarm") || has(ws, "wake") ? "Alarm" : "Reminder";
+    char when[48];
+    if (after > 0) {
+        i32 mins = (i32)(after / 60), days = mins / 1440, hours = mins % 1440 / 60;
+        mins %= 60;
+        i32 wl = 0;
+        if (days) wl += snprintf(when + wl, sizeof(when) - wl, "%d day%s ", days, days == 1 ? "" : "s");
+        if (hours) wl += snprintf(when + wl, sizeof(when) - wl, "%d hour%s ", hours, hours == 1 ? "" : "s");
+        if (mins) wl += snprintf(when + wl, sizeof(when) - wl, "%d minute%s ", mins, mins == 1 ? "" : "s");
+        if (wl) when[wl - 1] = 0;
+    }
     LocalTime d = local_time(c->due);
     char when_day[16] = "";
     if (d.day != t.day) snprintf(when_day, sizeof(when_day), "%s ", d.day == local_time(now + 86400).day ? "tomorrow" : "on that day");
     snprintf(c->said, sizeof(c->said), "reminder %sat %02d:%02d: %s", when_day, d.hour, d.minute, c->text);
+    if (after <= 0) snprintf(when, sizeof(when), "%s%02d:%02d", d.day != t.day ? (d.day == local_time(now + 86400).day ? "tomorrow " : "") : "", d.hour, d.minute);
+    bool own_text = strcmp(c->text, "Timer") && strcmp(c->text, "Alarm") && strcmp(c->text, "Reminder");
+    snprintf(c->shown, sizeof(c->shown), "%s set: %s%s%s", kind, when, own_text ? " · " : "", own_text ? c->text : "");
 }
 
 // What the words after the wake name ask for.
@@ -539,6 +555,9 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
         if (strcmp(mode, "paused") == 0) snprintf(c->said, sizeof(c->said), "pause transcription");
         else if (strcmp(mode, "continue") == 0) snprintf(c->said, sizeof(c->said), "continue transcription");
         else snprintf(c->said, sizeof(c->said), "transcription %s", mode);
+        if (strcmp(mode, "paused") == 0) snprintf(c->shown, sizeof(c->shown), "Transcription paused");
+        else if (strcmp(mode, "continue") == 0) snprintf(c->shown, sizeof(c->shown), "Transcription back on");
+        else snprintf(c->shown, sizeof(c->shown), "Transcription: %s", mode);
         return;
     }
     // "summarise the last half hour", "sum up the last 10 minutes", "recap".
@@ -557,6 +576,10 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
         command(c, "POST", "/clip", "");
         snprintf(c->query, sizeof(c->query), "range=%s", range);
         snprintf(c->said, sizeof(c->said), "clip %s", range);
+        char words[32];
+        range_words(range, words, sizeof(words));
+        if (strcmp(range, "today") == 0) snprintf(c->shown, sizeof(c->shown), "Copied today");
+        else snprintf(c->shown, sizeof(c->shown), "Copied the last %s", words);
         c->chime = CHIME_CLIP_SAVED;
         return;
     }
@@ -567,11 +590,13 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
     if (word_in(first, "resume", "unpause", "continue") || has_pair(ws, "start", "recording") ||
         has_pair(ws, "keep", "recording") || (has(ws, "record") && has(ws, "again")) || (private_word && off)) {
         command(c, "POST", "/resume", "resume recording");
+        snprintf(c->shown, sizeof(c->shown), "Recording again");
         c->private_ok = true;
         return;
     }
     if (word_in(first, "pause") || private_word || has_pair(ws, "stop", "recording")) {
         command(c, "POST", "/pause", "private mode on");
+        snprintf(c->shown, sizeof(c->shown), "Private mode on");
         return;
     }
 
@@ -627,11 +652,18 @@ struct VoiceDone {
     bool keep;  // a command: Settings shows it
     char heard[160];
     char result[160];
+    char shown[128];  // the banner, when it worked; "" for none
 };
 
 static void voice_done_apply(App* app, Event* e) {
     VoiceDone* d = event_record<VoiceDone>(e);
     chime_play(app, d->chime);
+    if (d->shown[0]) {
+        char who[64];
+        SET(who, str(app->config.voice.wake[0] ? app->config.voice.wake : "lifelog"));
+        who[0] = (char)toupper((u8)who[0]);
+        banner_show(who, d->shown);
+    }
     if (!d->keep) return;
     Voice* v = &app->voice;
     SET(v->heard, str(d->heard));
@@ -640,8 +672,9 @@ static void voice_done_apply(App* app, Event* e) {
     wake_window(app);
 }
 
-static void voice_say(App* app, Chime chime, const char* heard, const char* result) {
+static void voice_say(App* app, Chime chime, const char* heard, const char* result, const char* shown = 0) {
     VoiceDone d = {};
+    if (shown) SET(d.shown, str(shown));
     d.chime = chime;
     d.keep = heard != 0;
     if (heard) SET(d.heard, str(heard));
@@ -659,7 +692,9 @@ static DWORD WINAPI voice_check_ai_main(void* p) {
     char* nl = strchr(said, '\n');
     if (nl) *nl = 0;
     LOG("voice: check the AI: %s", said);
-    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, "check the AI", said);
+    char shown[128];
+    snprintf(shown, sizeof(shown), "AI works: %.100s", said);
+    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, "check the AI", said, ok ? shown : 0);
     atomic_set(&g_voice_checking, 0);
     return 0;
 }
@@ -746,7 +781,9 @@ static DWORD WINAPI voice_summarise_main(void* p) {
     char result[160];
     if (ok) snprintf(result, sizeof(result), "on the clipboard: %.*s", (int)(out.len < 120 ? out.len : 120), out.ptr);
     else snprintf(result, sizeof(result), "%s", error);
-    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, s->said, result);
+    char shown[128];
+    snprintf(shown, sizeof(shown), "Summary copied: %s", s->title);
+    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, s->said, result, ok ? shown : 0);
     arena_release(a);
     atomic_set(&g_voice_summarising, 0);
     return 0;
@@ -801,7 +838,7 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         if (!ok) snprintf(error, sizeof(error), "say when: \"in 10 minutes\" or \"at 5 pm\"");
         ok = ok && reminder_add(app, str(c->text), str(heard), c->due, error, sizeof(error));
         LOG("voice: \"%s\": %s%s%s", heard, c->said, ok ? "" : ": ", ok ? "" : error);
-        voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, c->said, ok ? "set" : error);
+        voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, c->said, ok ? "set" : error, ok ? c->shown : 0);
     } else if (c->what == DO_API) {
         Answer r = {};
         api_ask(app, str(c->method), str(c->path), str(c->query), &r);
@@ -811,7 +848,11 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         buf_free(&r.body);
         bool ok = r.code == 200;
         LOG("voice: \"%s\": %s: %s", heard, c->said, result);
-        voice_say(app, ok ? c->chime : CHIME_ERROR, c->said, result);
+        // "started Spotify" from /launch: "Opening Spotify".
+        char shown[128];
+        if (strncmp(result, "started ", 8) == 0) snprintf(shown, sizeof(shown), "Opening %s", result + 8);
+        else SET(shown, str(c->shown));
+        voice_say(app, ok ? c->chime : CHIME_ERROR, c->said, result, ok && shown[0] ? shown : 0);
     }
     rewind(m);
 }

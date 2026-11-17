@@ -58,6 +58,7 @@ struct App;
 #include "ui_popups.cpp"
 #include "ui.cpp"
 #include "api.cpp"
+#include "banner.cpp"
 #include "voice.cpp"
 #include "cli.cpp"
 #include "main.cpp"

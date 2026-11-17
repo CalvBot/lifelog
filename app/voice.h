@@ -52,3 +52,7 @@ void voice_set_listen(App* app, bool on);
 // Main thread: the word that starts a command ("lifelog" when empty), saved. False (with a
 // message) if it is not one: under 3 letters, or anything but letters, digits and spaces.
 bool voice_set_wake(App* app, Str word);
+
+// banner.cpp. Main thread: a note at the top of the screen for 2.5 s, "WHO — TEXT" ("Jarvis — Alarm
+// set: 4 minutes"); it takes no focus or clicks.
+void banner_show(const char* who, const char* text);
