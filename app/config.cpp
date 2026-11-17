@@ -79,6 +79,12 @@ api_key = ""
 dir = ""
 # Left to delete when lifelog next starts (set by lifelog).
 cleanup = ""
+
+[chimes]
+# The sounds voice commands make: "glass", "soft" or "off".
+style = "glass"
+# 0 to 100.
+volume = 60
 )toml";
 
 const char* mode_name(Mode m) {
@@ -93,6 +99,22 @@ bool mode_parse(Str s, Mode* out) {
     if (str_eq(s, str("auto"))) *out = MODE_AUTO;
     else if (str_eq(s, str("always"))) *out = MODE_ALWAYS;
     else if (str_eq(s, str("paused"))) *out = MODE_PAUSED;
+    else return false;
+    return true;
+}
+
+const char* chime_style_name(ChimeStyle s) {
+    switch (s) {
+        case CHIME_SOFT: return "soft";
+        case CHIME_OFF: return "off";
+        default: return "glass";
+    }
+}
+
+bool chime_style_parse(Str s, ChimeStyle* out) {
+    if (str_eq(s, str("glass"))) *out = CHIME_GLASS;
+    else if (str_eq(s, str("soft"))) *out = CHIME_SOFT;
+    else if (str_eq(s, str("off"))) *out = CHIME_OFF;
     else return false;
     return true;
 }
@@ -268,6 +290,7 @@ static void config_defaults(Config* cfg) {
     cfg->summary.ask_reminders = true;
     SET(cfg->worker.model, str("large-v3-turbo"));
     SET(cfg->worker.language, str("en"));
+    cfg->chimes.volume = 60;
 }
 
 bool config_load(Config* cfg, char* error, i32 error_cap) {
@@ -359,6 +382,9 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("ai"))) {
             if (str_eq(k, str("dir"))) take_string(cfg->ai.dir, sizeof(cfg->ai.dir), &v);
             if (str_eq(k, str("cleanup"))) take_string(cfg->ai.cleanup, sizeof(cfg->ai.cleanup), &v);
+        } else if (str_eq(tb, str("chimes"))) {
+            if (str_eq(k, str("style")) && v.kind == Value::STRING) chime_style_parse(str(v.s), &cfg->chimes.style);
+            if (str_eq(k, str("volume"))) take_u32(&cfg->chimes.volume, &v);
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);

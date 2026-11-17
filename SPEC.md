@@ -298,8 +298,11 @@ The window only exists while it is open. Closing it frees its memory; the record
   - Search with no match offers "Add <name>.exe".
 - **Transcription:** Auto / Always / Paused, what it is doing, minutes waiting. In Auto, "Pause while games are running",
   the GPU limit and the current load.
-- **Daily summary:** on/off, what it is doing, ask time, word limit, Write today's now, reminder notifications
+- **Daily summary:** on/off, what it is doing, ask time, word limit, Edit prompt, reminder notifications
   on/off, and the never-mention topics (click one to allow it again).
+- **Chimes:** the sounds voice commands will make (listening, done, clip saved, didn't catch, error, cancelled).
+  Glass (bell-like, heard over a game), Soft (round and short) or Off, a volume, and a button to hear each one.
+  They are made in code (`chime.cpp`), not sound files, and lifelog never records its own sound.
 - **Files:** open the recordings folder, the log and the config file.
 - **Ctrl+Z** undoes the last change on this page (up to 50).
 

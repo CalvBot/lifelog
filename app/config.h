@@ -13,6 +13,15 @@ enum Mode : i32 {
 const char* mode_name(Mode m);
 bool mode_parse(Str s, Mode* out);
 
+// How the chimes sound (chime.h): two sets, or none.
+enum ChimeStyle : i32 {
+    CHIME_GLASS,  // bell-like, brighter: heard over a game
+    CHIME_SOFT,   // round and short, like a marimba
+    CHIME_OFF,
+};
+const char* chime_style_name(ChimeStyle s);
+bool chime_style_parse(Str s, ChimeStyle* out);
+
 struct Config {
     char data_dir[MAX_PATH];
     u16 api_port;
@@ -62,6 +71,11 @@ struct Config {
         char dir[MAX_PATH];     // where whisper\ and llm\ are (setup.h); %LOCALAPPDATA%\lifelog by default
         char cleanup[2048];     // folders to delete at the next start, separated by '|' (setup_cleanup)
     } ai;
+
+    struct {
+        ChimeStyle style;
+        u32 volume;  // 0-100
+    } chimes;
 
     struct {
         Names hidden;        // speakers hidden in the timeline (and left out of copies and playback)

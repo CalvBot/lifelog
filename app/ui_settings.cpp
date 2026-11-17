@@ -22,6 +22,8 @@ enum UndoKind : u8 {
     UNDO_REMINDERS,
     UNDO_PAUSE_GAMES,
     UNDO_NEVER,      // a never-mention topic that was allowed again: add it back
+    UNDO_CHIME_STYLE,
+    UNDO_CHIME_VOLUME,
 };
 
 // One step back for Ctrl+Z: the value it puts back.
@@ -57,6 +59,7 @@ struct SettingsState {
     char ask_at[16];
     i32 max_words;
     i32 gpu;
+    i32 chime_volume;
     bool ask_at_active;
     char wendpoint[512];  // transcription's own server
     bool wendpoint_active;
@@ -242,6 +245,8 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_REMINDERS: summary_set_ask_reminders(app, u.on); break;
     case UNDO_PAUSE_GAMES: worker_set_pause_for_games(app, u.on); break;
     case UNDO_NEVER: summary_add_never(app, str(u.text), 0, {}); break;
+    case UNDO_CHIME_STYLE: chime_set_style(app, (ChimeStyle)u.n); break;
+    case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
     }
     s->stale = true;
     ui_say(app, "Undone: %s", u.label);
@@ -829,6 +834,26 @@ static void own_server_row(App* app, SettingsState* s, SetupPart part) {
     }
 }
 
+// One of `names` picked, as a segmented control on a darker strip. The index clicked (other than
+// `on`), or -1.
+static i32 segments(const char* id, const char* const* names, i32 n, i32 on, f32 seg_w) {
+    ImVec2 pad = ImGui::GetStyle().FramePadding;
+    f32 inset = px(3);
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + seg_w * n + inset * 2, at.y + ImGui::GetFrameHeight()),
+                                              ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad.x, pad.y - inset));
+    i32 clicked = -1;
+    for (i32 i = 0; i < n; i++) {
+        ImGui::SetCursorScreenPos(ImVec2(at.x + inset + seg_w * i, at.y + inset));
+        if (pick(tmp("%s##%s", names[i], id), on == i, ImVec2(seg_w, 0)) && on != i) clicked = i;
+    }
+    ImGui::PopStyleVar();
+    ImGui::SetCursorScreenPos(at);
+    ImGui::Dummy(ImVec2(seg_w * n + inset * 2, ImGui::GetFrameHeight()));
+    return clicked;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Transcription
 
@@ -839,25 +864,14 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     f64 queued = app->worker.queued_secs / 60.0;
     status_right(queued >= 1 ? tmp("%s · %.0f min waiting", app->worker.state, queued) : app->worker.state);
 
-    // Auto | Always | Paused, as one segmented control on a darker strip.
     row_label("Run");
     const char* names[] = {"Auto", "Always", "Paused"};
-    f32 seg_w = px(78), inset = px(3);
-    ImVec2 at = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + seg_w * 3 + inset * 2, at.y + ImGui::GetFrameHeight()),
-                                              ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y - inset));
-    for (i32 m = 0; m < 3; m++) {
-        ImGui::SetCursorScreenPos(ImVec2(at.x + inset + seg_w * m, at.y + inset));
-        if (pick(tmp("%s##mode", names[m]), c->processing.mode == m, ImVec2(seg_w, 0)) && c->processing.mode != m) {
-            SettingsUndo* u = remember(s, UNDO_MODE, "transcription %s", names[m]);
-            u->n = (u32)c->processing.mode;
-            worker_set_mode(app, (Mode)m);
-        }
+    i32 m = segments("mode", names, 3, (i32)c->processing.mode, px(78));
+    if (m >= 0) {
+        SettingsUndo* u = remember(s, UNDO_MODE, "transcription %s", names[m]);
+        u->n = (u32)c->processing.mode;
+        worker_set_mode(app, (Mode)m);
     }
-    ImGui::PopStyleVar();
-    ImGui::SetCursorScreenPos(at);
-    ImGui::Dummy(ImVec2(seg_w * 3 + inset * 2, ImGui::GetFrameHeight()));
     ImGui::SameLine();
     weak(fit(c->processing.mode == MODE_AUTO ? "waits for a free GPU" : c->processing.mode == MODE_ALWAYS ? "even during games" : "still records, transcribes later",
              ImGui::GetContentRegionAvail().x));
@@ -889,6 +903,64 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
     // lifelog's own whisper.cpp, or any OpenAI-compatible transcription server.
     model_row(app, s, SETUP_TRANSCRIBER);
     if (c->worker.endpoint[0] || s->own[SETUP_TRANSCRIBER]) own_server_row(app, s, SETUP_TRANSCRIBER);
+    settings_card_end();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Chimes: the sounds voice commands make (chime.h).
+
+static void chimes_card(App* app, SettingsState* s, f32 width) {
+    Config* c = &app->config;
+    settings_card("chimes", width);
+    title("Chimes");
+    status_right("for voice commands");
+
+    row_label("Style");
+    const char* names[] = {"Glass", "Soft", "Off"};
+    i32 style = segments("chimes", names, 3, (i32)c->chimes.style, px(78));
+    if (style >= 0) {
+        SettingsUndo* u = remember(s, UNDO_CHIME_STYLE, "chimes %s", names[style]);
+        u->n = (u32)c->chimes.style;
+        chime_set_style(app, (ChimeStyle)style);
+        chime_play(app, CHIME_DONE);
+    }
+    ImGui::SameLine();
+    const char* hints[] = {"bell-like, heard over a game", "round and short", "silent"};
+    weak(fit(hints[c->chimes.style], ImGui::GetContentRegionAvail().x));
+
+    bool off = c->chimes.style == CHIME_OFF;
+    row_label("Volume");
+    ImGui::BeginDisabled(off);
+    ImGui::SetNextItemWidth(px(64));
+    ImGui::DragInt("##chime_volume", &s->chime_volume, 0.3f, 0, 100, "%d %%", ImGuiSliderFlags_AlwaysClamp);
+    // Saved, and played so you hear it, when the drag or the typing ends.
+    if (ImGui::IsItemDeactivatedAfterEdit() && (u32)s->chime_volume != c->chimes.volume) {
+        SettingsUndo* u = remember(s, UNDO_CHIME_VOLUME, "chime volume %d %%", s->chime_volume);
+        u->n = c->chimes.volume;
+        chime_set_volume(app, (u32)s->chime_volume);
+        chime_play(app, CHIME_DONE);
+    }
+    if (!ImGui::IsItemActive()) s->chime_volume = (i32)c->chimes.volume;
+    ImGui::EndDisabled();
+
+    // Each chime, to hear it; wrapped like words when they do not fit on one line.
+    row_label("Listen");
+    ImGui::BeginDisabled(off);
+    f32 left = ImGui::GetCursorPosX();
+    f32 right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (i32 i = 0; i < CHIME_COUNT; i++) {
+        const char* text = label(ICON_PLAY, tmp("%s##chime%d", chime_label((Chime)i), i));
+        f32 w = ImGui::CalcTextSize(text, 0, true).x + ImGui::GetStyle().FramePadding.x * 2;
+        if (i > 0) {
+            ImGui::SameLine();
+            if (ImGui::GetCursorScreenPos().x + w > right) {
+                ImGui::NewLine();
+                ImGui::SetCursorPosX(left);
+            }
+        }
+        if (ImGui::Button(text)) chime_play(app, (Chime)i);
+    }
+    ImGui::EndDisabled();
     settings_card_end();
 }
 
@@ -1182,6 +1254,9 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     summary_card(app, s, width);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::SetCursorPosX(x);
+    chimes_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     files_card(app, width);

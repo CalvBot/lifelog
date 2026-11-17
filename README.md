@@ -46,7 +46,7 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
   paste files or links into the timeline). Right-click to pause or quit.
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
 - **Journal:** the daily summaries, a calendar, and reminders for things you said you'd do.
-- **Settings:** which apps to record, which are games, when to transcribe, and the summary time.
+- **Settings:** which apps to record, which are games, when to transcribe, the summary time, and the chimes.
 
 From a terminal or a Stream Deck:
 

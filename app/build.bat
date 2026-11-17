@@ -35,6 +35,6 @@ copy /y ..\assets\lucide.ttf build\assets\ >nul
 cl /nologo /std:c++20 /MT /W4 /wd4100 /wd4201 /wd4505 /GR- /EHa- /utf-8 %OPT% /DUNICODE /D_UNICODE ^
     lifelog.cpp build\vendor\*.obj /Fobuild\ /Fdbuild\ /Febuild\lifelog.exe ^
     /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS ^
-    user32.lib gdi32.lib shell32.lib ole32.lib d3d11.lib dxgi.lib dwmapi.lib ^
+    user32.lib gdi32.lib shell32.lib ole32.lib d3d11.lib dxgi.lib dwmapi.lib winmm.lib ^
     || exit /b 1
 echo built build\lifelog.exe
