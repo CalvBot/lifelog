@@ -475,32 +475,49 @@ bool config_write_value(const char* table, const char* key, Str value) {
     return ok;
 }
 
+// Writes `s` as a TOML basic string (quotes, with " and \ escaped) at `out`, which has room for
+// 2 * strlen(s) + 2 bytes. Returns how many bytes it wrote.
+static i64 toml_quote_into(char* out, const char* s) {
+    i64 n = 0;
+    out[n++] = '"';
+    for (const char* c = s; *c; c++) {
+        if (*c == '"' || *c == '\\') out[n++] = '\\';
+        out[n++] = *c;
+    }
+    out[n++] = '"';
+    return n;
+}
+
+// A TOML array of the strings `items[0..count)`, each `stride` bytes apart.
+static Str toml_string_array(Arena* a, const char* items, i64 stride, i32 count) {
+    i64 cap = 3;
+    for (i32 i = 0; i < count; i++) cap += 2 * (i64)strlen(items + i * stride) + 4;
+    char* out = (char*)arena_push(a, (u64)cap, 1);
+    i64 n = 0;
+    out[n++] = '[';
+    for (i32 i = 0; i < count; i++) {
+        if (i) {
+            out[n++] = ',';
+            out[n++] = ' ';
+        }
+        n += toml_quote_into(out + n, items + i * stride);
+    }
+    out[n++] = ']';
+    out[n] = 0;
+    return {out, n};
+}
+
 bool config_save_names(const char* table, const char* key, Names* names) {
-    Arena* a = scratch();
-    Mark m = mark(a);
-    Str list = str("[");
-    for (i32 i = 0; i < names->count; i++)
-        list = str_fmt(a, "%.*s%s\"%s\"", (int)list.len, list.ptr, i ? ", " : "", names->items[i].s);
-    list = str_fmt(a, "%.*s]", (int)list.len, list.ptr);
-    bool ok = config_save_value(table, key, list);
+    Mark m = mark(scratch());
+    bool ok = config_save_value(table, key, toml_string_array(scratch(), (const char*)names->items, sizeof(Name), names->count));
     rewind(m);
     return ok;
 }
 
 bool config_save_folders(const char* table, const char* key, Folders* folders) {
-    Arena* a = scratch();
-    Mark m = mark(a);
-    Str list = str("[");
-    for (i32 i = 0; i < folders->count; i++) {
-        list = str_fmt(a, "%.*s%s\"", (int)list.len, list.ptr, i ? ", " : "");
-        for (const char* c = folders->items[i].s; *c; c++) {
-            if (*c == '"' || *c == '\\') list = str_fmt(a, "%.*s\\%c", (int)list.len, list.ptr, *c);
-            else list = str_fmt(a, "%.*s%c", (int)list.len, list.ptr, *c);
-        }
-        list = str_fmt(a, "%.*s\"", (int)list.len, list.ptr);
-    }
-    list = str_fmt(a, "%.*s]", (int)list.len, list.ptr);
-    bool ok = config_save_value(table, key, list);
+    Mark m = mark(scratch());
+    bool ok = config_save_value(table, key,
+                                toml_string_array(scratch(), (const char*)folders->items, sizeof(PathName), folders->count));
     rewind(m);
     return ok;
 }
@@ -516,15 +533,10 @@ bool config_save_u32(const char* table, const char* key, u32 n) {
 }
 
 bool config_save_string(const char* table, const char* key, const char* s) {
-    Arena* a = scratch();
-    Mark m = mark(a);
-    Str out = str("\"");
-    for (const char* c = s; *c; c++) {
-        if (*c == '"' || *c == '\\') out = str_fmt(a, "%.*s\\%c", (int)out.len, out.ptr, *c);
-        else out = str_fmt(a, "%.*s%c", (int)out.len, out.ptr, *c);
-    }
-    out = str_fmt(a, "%.*s\"", (int)out.len, out.ptr);
-    bool ok = config_save_value(table, key, out);
+    Mark m = mark(scratch());
+    char* out = (char*)arena_push(scratch(), 2 * strlen(s) + 3, 1);
+    i64 n = toml_quote_into(out, s);
+    bool ok = config_save_value(table, key, {out, n});
     rewind(m);
     return ok;
 }
