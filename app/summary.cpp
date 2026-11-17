@@ -1458,13 +1458,13 @@ const wchar_t* summary_prompt_path() {
     return path;
 }
 
-void summary_edit_prompt(App* app) {
+const wchar_t* summary_prompt_file(App* app) {
     const wchar_t* path = summary_prompt_path();
     if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !write_file(path, str(SYSTEM))) {
         ui_say(app, "Could not write summary-prompt.txt");
-        return;
+        return 0;
     }
-    ShellExecuteW(0, L"open", path, 0, 0, SW_SHOWNORMAL);
+    return path;
 }
 
 // The system prompt: summary-prompt.txt if it has any text, else the built-in one. Read for each

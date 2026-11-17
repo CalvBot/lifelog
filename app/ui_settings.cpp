@@ -910,28 +910,24 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     ImGui::SameLine();
     title("Daily summary");
 
-    // Its actions at the right of the title, and how it is doing between, cut to fit.
+    // Edit prompt at the right of the title, and how it is doing between, cut to fit.
     const char* edit = label(ICON_FILE_TEXT, "Edit prompt");
-    const char* write = label(ICON_SCROLL_TEXT, "Write today's now");
-    ImGuiStyle& st = ImGui::GetStyle();
-    f32 edit_w = ImGui::CalcTextSize(edit).x + st.FramePadding.x * 2;
-    f32 write_w = ImGui::CalcTextSize(write).x + st.FramePadding.x * 2;
-    f32 buttons_x = ImGui::GetContentRegionMax().x - write_w - st.ItemSpacing.x - edit_w;
+    f32 edit_w = ImGui::CalcTextSize(edit).x + ImGui::GetStyle().FramePadding.x * 2;
+    f32 buttons_x = ImGui::GetContentRegionMax().x - edit_w;
     if (app->summary.phase[0]) {
         ImGui::SameLine(0, px(10));
         f32 room = buttons_x - ImGui::GetCursorPosX() - px(10);
         if (room > px(40)) weak(fit(app->summary.phase, room));
     }
     ImGui::SameLine(buttons_x);
-    if (ImGui::Button(edit)) summary_edit_prompt(app);
+    // Opened from the pool, as the other files are: the shell may not open it from this thread.
+    if (ImGui::Button(edit)) {
+        const wchar_t* path = summary_prompt_file(app);
+        if (path) open_path(app, path, false);
+    }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
                           "Changes count from the next summary. Delete the file to go back to the built-in text.");
-    ImGui::SameLine();
-    if (ImGui::Button(write)) {
-        Str result = summary_act(app, scratch(), "now", 0, 0);
-        ui_say(app, "%s", str_eq(result, str("writing")) ? "Writing today's summary" : result.ptr);
-    }
 
     row_label("Ask at");
     if (!s->ask_at_active) SET(s->ask_at, str(c->summary.ask_at));
