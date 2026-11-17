@@ -119,6 +119,10 @@ Str str_sub(Str s, i64 from, i64 len) {
     if (len < 0 || from + len > s.len) len = s.len - from;
     return {s.ptr + from, len};
 }
+Str strip_exe(Str s) {
+    if (s.len > 4 && _strnicmp(s.ptr + s.len - 4, ".exe", 4) == 0) s.len -= 4;
+    return s;
+}
 
 wchar_t* wide(Arena* a, Str s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.ptr, (int)s.len, nullptr, 0);

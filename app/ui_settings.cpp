@@ -197,7 +197,7 @@ static SettingsUndo* remember(SettingsState* s, UndoKind kind, const char* fmt, 
 
 // Remembers how `exe` is now, before it is changed.
 static void remember_app(App* app, SettingsState* s, Str exe, const char* what) {
-    Str name = app_name(app, exe);
+    Str name = app_label(app, exe);
     SettingsUndo* u = remember(s, UNDO_APP, "%.*s %s", (int)name.len, name.ptr, what);
     SET(u->exe, exe);
     AppInfo* a = app_find(app, exe);
@@ -549,7 +549,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         draw_app_icon(app, exe, px(20));
         ImGui::SameLine();
         f32 left = x - ImGui::GetCursorScreenPos().x;
-        const char* name = str_copy(scratch(), app_name(app, exe)).ptr;
+        const char* name = str_copy(scratch(), app_label(app, exe)).ptr;
         ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, text_y));
         const char* shown = fit(name, left);
         ImGui::TextUnformatted(shown);
@@ -677,7 +677,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         remember_app(app, s, exe, "removed from the list");
         app_remove(app, exe);
         {
-        Str name = app_name(app, exe);
+        Str name = app_label(app, exe);
         ui_say(app, "Removed %.*s. It comes back under New if it plays sound again.", (int)name.len, name.ptr);
     }
         break;

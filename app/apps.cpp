@@ -63,8 +63,7 @@ void app_set_decision(App* app, Str exe, Decision d) {
 Str app_label(App* app, Str speaker) {
     AppInfo* a = app_find(app, speaker);
     if (a && a->name[0]) return str(a->name);
-    if (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE"))) return str_sub(speaker, 0, speaker.len - 4);
-    return speaker;
+    return strip_exe(speaker);
 }
 
 AppLabels app_labels(App* app, Arena* a) {
@@ -82,8 +81,7 @@ AppLabels app_labels(App* app, Arena* a) {
 Str label_of(AppLabels* labels, Str speaker) {
     for (i32 k = 0; labels && k < labels->count; k++)
         if (str_eq_nocase(str(labels->items[k].exe), speaker)) return str(labels->items[k].name);
-    if (str_ends(speaker, str(".exe")) || str_ends(speaker, str(".EXE"))) return str_sub(speaker, 0, speaker.len - 4);
-    return speaker;
+    return strip_exe(speaker);
 }
 
 bool proc_path(u32 pid, char* out, i32 cap) {

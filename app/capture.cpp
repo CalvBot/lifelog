@@ -396,8 +396,7 @@ static void stream_name(Stream* s, char out[64]) {
         snprintf(out, 64, "mic");
         return;
     }
-    Str exe = str(s->exe);
-    if (str_ends(exe, str(".exe"))) exe.len -= 4;
+    Str exe = strip_exe(str(s->exe));
     char stem[41];
     i32 n = 0;
     for (i64 i = 0; i < exe.len && n < 40; i++) {

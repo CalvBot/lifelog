@@ -1052,7 +1052,7 @@ static bool tl_show_listed(App* app, Str speaker, Str filter) {
     if (!app->config.ui.show_dismissed && speaker_excluded(app, speaker)) return false;
     if (!filter.len) return true;
     if (str_find(str_lower(scratch(), speaker), filter) >= 0) return true;
-    return str_find(str_lower(scratch(), app_name(app, speaker)), filter) >= 0;
+    return str_find(str_lower(scratch(), app_label(app, speaker)), filter) >= 0;
 }
 
 // Whether `speaker` is one of the day's apps.
@@ -1107,7 +1107,7 @@ static void tl_show_row(App* app, Str speaker, const char* info) {
     f32 info_x = p.x + w - isz.x - 6 * u;
     dl->AddText(ImVec2(info_x, p.y + (h - isz.y) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), info);
     ImGui::PopFont();
-    Str name = app_name(app, speaker);
+    Str name = app_label(app, speaker);
     const char* shown = excluded ? tmp("%.*s  · excluded", (int)name.len, name.ptr) : tmp("%.*s", (int)name.len, name.ptr);
     f32 name_x = p.x + 56 * u;
     ImVec2 nsz = ImGui::CalcTextSize(shown);
@@ -1515,7 +1515,7 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
     if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
     else dl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), str_eq(line->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW);
-    Str name = str(fit_text(app_name(app, line->speaker), TL_APP_W * u - is - 8 * u));
+    Str name = str(fit_text(app_label(app, line->speaker), TL_APP_W * u - is - 8 * u));
     dl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
 
     // The text: being heard, just arrived (writing itself out), or with the search marked.

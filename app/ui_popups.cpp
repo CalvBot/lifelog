@@ -245,7 +245,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         f32 w = ImGui::GetContentRegionAvail().x;
         for (i32 i = 0; i < s->preview.count && i < 3; i++) {
             Line* l = &s->preview.items[i];
-            Str name = app_name(app, l->speaker);
+            Str name = app_label(app, l->speaker);
             Str text = str_fmt(scratch(), "%s  %.*s: %.*s", hm_text(l->start_ts), (int)name.len, name.ptr, (int)l->text.len, l->text.ptr);
             ImGui::TextUnformatted(fit_text(text, w));
         }

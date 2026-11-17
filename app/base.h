@@ -93,6 +93,8 @@ bool str_ends(Str s, Str suffix);
 Str str_trim(Str s);
 i64 str_find(Str s, Str needle);   // -1 if not there
 Str str_sub(Str s, i64 from, i64 len = -1);
+// `s` without a trailing ".exe" (any case): "Discord.EXE" is "Discord".
+Str strip_exe(Str s);
 wchar_t* wide(Arena* a, Str s);     // for Windows calls
 Str narrow(Arena* a, const wchar_t* w, i64 len = -1);
 

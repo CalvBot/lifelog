@@ -637,9 +637,8 @@ static void worker_seen_apply(App* app, Event* e) {
     bool waiting = (f & SEEN_WAITING) != 0;
     if (!waiting) w->waiting_since = 0;
     else if (!w->waiting_since) w->waiting_since = now_ts();
-    Str game = str(app->apps.game_running);
+    Str game = strip_exe(str(app->apps.game_running));
     if ((f & SEEN_GAME) && game.len) {
-        if (game.len > 4 && _stricmp(game.ptr + game.len - 4, ".exe") == 0) game.len -= 4;
         snprintf(w->state, sizeof(w->state), "waiting for %.*s to close", (int)game.len, game.ptr);
     } else {
         SET(w->state, str(e->text));

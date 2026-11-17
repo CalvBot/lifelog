@@ -258,9 +258,6 @@ static const char* size_text(i64 bytes) {
     return tmp("%.0f KB", ceil(b / 1e3));
 }
 
-// An app's own name ("Brave Browser"), else "spotify.exe" → "spotify"; the mic is "me".
-static Str app_name(App* app, Str exe) { return app_label(app, exe); }
-
 // Whether a speaker is an excluded app, by its own decision or its folder's.
 static bool speaker_excluded(App* app, Str speaker) {
     if (names_has(&app->config.capture.excluded_apps, speaker)) return true;

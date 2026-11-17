@@ -43,14 +43,6 @@ static const char* CALL_APPS[] = {"discord", "teams", "ms-teams", "zoom", "slack
 // ---------------------------------------------------------------------------------------------
 // Small text helpers
 
-// Copies into a fixed buffer like SET, but never cuts a UTF-8 character in half.
-static void set_utf8(char* dst, i64 cap, Str s) {
-    if (s.len >= cap) {
-        s.len = cap - 1;
-        while (s.len > 0 && ((u8)s.ptr[s.len] & 0xC0) == 0x80) s.len--;
-    }
-    set(dst, cap, s);
-}
 
 // Splits on \n, drops a \r before it, no last empty line.
 static bool next_line(Str* rest, Str* line) {
@@ -86,12 +78,6 @@ static Str lower_quote(Arena* a, Str s) {
 
 static bool has(Str hay, const char* needle) { return str_find(hay, str(needle)) >= 0; }
 
-// `s` with every trailing ".exe" taken off (case as it is).
-static Str trim_exe(Str s) {
-    while (str_ends(s, str(".exe"))) s.len -= 4;
-    return s;
-}
-
 static i64 count_words(Str s) {
     i64 n = 0;
     bool in = false;
@@ -105,7 +91,7 @@ static i64 count_words(Str s) {
 
 static bool is_call_app(Str speaker) {
     Mark m = mark(scratch());
-    Str name = str_lower(scratch(), trim_exe(speaker));
+    Str name = str_lower(scratch(), strip_exe(speaker));
     bool call = false;
     for (i32 i = 0; i < COUNT(CALL_APPS); i++) call |= str_starts(name, str(CALL_APPS[i]));
     rewind(m);
@@ -344,7 +330,7 @@ static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* ne
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         NeverTopic t = {};
         t.id = sqlite3_column_int64(st, 0);
-        set_utf8(t.topic, sizeof(t.topic), str((const char*)sqlite3_column_text(st, 1)));
+        set(t.topic, sizeof(t.topic), str((const char*)sqlite3_column_text(st, 1)));
         list_push(never, t);
     }
     sqlite3_finalize(st);
@@ -1056,8 +1042,8 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
 
         ToastJob t = {};
         snprintf(t.tag, sizeof(t.tag), "remind-%lld", id);
-        set_utf8(t.title, sizeof(t.title), str_fmt(scratch(), "Remind you %s?", when_text(scratch(), due).ptr));
-        set_utf8(t.body, sizeof(t.body), str_fmt(scratch(), "%.*s. You said: “%.*s”", (int)text.len, text.ptr, (int)said.len, said.ptr));
+        set(t.title, sizeof(t.title), str_fmt(scratch(), "Remind you %s?", when_text(scratch(), due).ptr));
+        set(t.body, sizeof(t.body), str_fmt(scratch(), "%.*s. You said: “%.*s”", (int)text.len, text.ptr, (int)said.len, said.ptr));
         char yes[160], no[160];
         remind_link(yes, sizeof(yes), "yes", id);
         remind_link(no, sizeof(no), "no", id);
@@ -1102,10 +1088,10 @@ static void alerts_show_due(App* app, sqlite3* db) {
         Str when = parse_day(d->day, &y, &mo, &dd) ? str(WEEKDAYS[day_plus(y, mo, dd, 0).weekday]) : str(d->day);
         ToastJob t = {};
         snprintf(t.tag, sizeof(t.tag), "remind-%lld", d->id);
-        set_utf8(t.title, sizeof(t.title), d->text);
-        if (!d->said.len) set_utf8(t.body, sizeof(t.body), str_fmt(scratch(), "From %s", when.ptr));
+        set(t.title, sizeof(t.title), d->text);
+        if (!d->said.len) set(t.body, sizeof(t.body), str_fmt(scratch(), "From %s", when.ptr));
         else
-            set_utf8(t.body, sizeof(t.body),
+            set(t.body, sizeof(t.body),
                      str_fmt(scratch(), "You said on %s at %s: “%s”", when.ptr, d->time.ptr, d->said.ptr));
         char done[160], snooze[160];
         remind_link(done, sizeof(done), "done", d->id);
@@ -1652,9 +1638,9 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("Your day, summed up"));
-        if (count == 0) set_utf8(t.body, sizeof(t.body), text);
-        else if (count == 1) set_utf8(t.body, sizeof(t.body), str_fmt(a, "1 reminder. %s", text.ptr));
-        else set_utf8(t.body, sizeof(t.body), str_fmt(a, "%d reminders. %s", count, text.ptr));
+        if (count == 0) set(t.body, sizeof(t.body), text);
+        else if (count == 1) set(t.body, sizeof(t.body), str_fmt(a, "1 reminder. %s", text.ptr));
+        else set(t.body, sizeof(t.body), str_fmt(a, "%d reminders. %s", count, text.ptr));
         char open[160];
         make_link(open, sizeof(open), "summary/open?day=%s", day);
         toast_button(&t, "Read it", open);
@@ -1696,7 +1682,7 @@ static void writer_done(App* app, Job* job) {
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("The summary could not be written"));
-        set_utf8(t.body, sizeof(t.body), str(w->error));
+        set(t.body, sizeof(t.body), str(w->error));
         char again[160];
         make_link(again, sizeof(again), "summary/now?day=%s", w->day);
         toast_button(&t, "Try again", again);
@@ -1739,7 +1725,7 @@ static void ask(App* app, const char* day, f64 mine, f64 apps) {
     ToastJob t = {};
     SET(t.tag, str(TOAST_TAG));
     SET(t.title, str("Your summary starts in 5 minutes"));
-    set_utf8(t.body, sizeof(t.body),
+    set(t.body, sizeof(t.body),
              str_fmt(scratch(), "It uses the graphics card for a few minutes. Today: %s of you talking, %s from apps.",
                      minutes(scratch(), mine).ptr, minutes(scratch(), apps).ptr));
     static const char* ACTIONS[][2] = {{"Start now", "now"}, {"In an hour", "later"}, {"Delay until…", "pick"}, {"Skip today", "skip"}};
