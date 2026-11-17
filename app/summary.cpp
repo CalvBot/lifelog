@@ -2222,6 +2222,12 @@ static void summary_tick(App* app, Event* e) {
     const char* day = t.day;
     bool gaming = t.gaming;
     Summary* s = &app->summary;
+    // Once a day (and at start): old audio goes.
+    static char pruned[11];
+    if (strcmp(pruned, day) != 0) {
+        SET(pruned, str(day));
+        audio_prune(app);
+    }
     if (gaming) s->last_game_ts = now_ts();
     // Counting down to a summary: a game starting puts it off; otherwise it starts on time.
     bool counting = s->countdown_ts != 0;

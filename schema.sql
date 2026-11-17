@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS segments (
     title    TEXT,            -- window title when the audio started
     device   TEXT,            -- capture device name (mic only)
     text     TEXT NOT NULL,
-    audio    TEXT,            -- the clip it came from, 'YYYY-MM-DD/<file>.wav' under <data_dir>/audio (kept a week)
+    audio    TEXT,            -- the clip it came from, 'YYYY-MM-DD/<file>.wav' under <data_dir>/audio (kept capture.keep_audio_days)
     audio_offset REAL         -- seconds into that clip where the line starts
 );
 CREATE INDEX IF NOT EXISTS segments_start ON segments (start_ts);

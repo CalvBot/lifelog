@@ -135,7 +135,7 @@ static bool mix_audio(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 to, K
         wchar_t path[MAX_PATH];
         if (!keeps(keep, speaker) || !audio_file_path(audio_dir, file, path)) continue;
         Str wav = read_file(&files, path);
-        if (!wav.ptr || !is_worker_wav(wav)) continue;  // deleted after a week
+        if (!wav.ptr || !is_worker_wav(wav)) continue;  // deleted after capture.keep_audio_days
         const i16* pcm = (const i16*)(wav.ptr + WAV_HEADER);
         i64 n = (wav.len - WAV_HEADER) / 2;
         f64 end = start + (f64)n / AUDIO_RATE;
@@ -251,7 +251,7 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
         wchar_t path[MAX_PATH];
         Str wav = {};
         if (!audio_file_path(audio_dir, file, path)) snprintf(error, cap, "bad audio path");
-        else if (!(wav = read_file(scratch(), path)).ptr) snprintf(error, cap, "the audio was deleted (kept for a week)");
+        else if (!(wav = read_file(scratch(), path)).ptr) snprintf(error, cap, "the audio was deleted (audio is kept for capture.keep_audio_days days, 7 by default)");
         else if (!is_worker_wav(wav)) snprintf(error, cap, "unexpected audio file");
         else {
             i64 n = (wav.len - WAV_HEADER) / 2;
@@ -415,7 +415,7 @@ ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKi
         Mix mix = {};
         if (mix_audio(db, adir, from, to, &keep, &mix, r.error, sizeof(r.error))) {
             if (!mix.count) {
-                snprintf(r.error, sizeof(r.error), "no audio kept for this range (audio is kept for a week)");
+                snprintf(r.error, sizeof(r.error), "no audio kept for this range (audio is kept for capture.keep_audio_days days, 7 by default)");
             } else {
                 temp_path(str_fmt(scratch(), "lifelog-%s.wav", label ? label : times.ptr), path);
                 if (!wav_write(path, mix.samples, mix.count)) snprintf(r.error, sizeof(r.error), "could not write the audio file");
@@ -499,4 +499,73 @@ void clip_copy_later(App* app, f64 from, f64 to, Names exclude, ClipKind kind, c
     c->ctx = ctx;
     job->data = c;
     pool_post(job, clip_job_run);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Deleting old audio
+
+struct PruneJob {
+    char cutoff[11];  // folders named before this day go
+    i32 folders;
+    i32 files;
+    i32 failed;
+};
+
+static void prune_run(Job* job) {
+    PruneJob* p = (PruneJob*)job->data;
+    wchar_t dir[MAX_PATH], pattern[MAX_PATH];
+    audio_dir(dir);
+    if (_snwprintf_s(pattern, MAX_PATH, _TRUNCATE, L"%s\\*", dir) < 0) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcslen(fd.cFileName) != 10) continue;
+        char day[11];
+        for (i32 i = 0; i < 10; i++) day[i] = fd.cFileName[i] < 128 ? (char)fd.cFileName[i] : '?';
+        day[10] = 0;
+        i32 y, m, d;
+        if (!parse_day(day, &y, &m, &d) || strcmp(day, p->cutoff) >= 0) continue;
+        wchar_t folder[MAX_PATH], wavs[MAX_PATH];
+        if (_snwprintf_s(folder, MAX_PATH, _TRUNCATE, L"%s\\%s", dir, fd.cFileName) < 0) continue;
+        if (_snwprintf_s(wavs, MAX_PATH, _TRUNCATE, L"%s\\*.wav", folder) < 0) continue;
+        WIN32_FIND_DATAW wd;
+        HANDLE w = FindFirstFileW(wavs, &wd);
+        if (w != INVALID_HANDLE_VALUE) {
+            do {
+                if (wd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                wchar_t path[MAX_PATH];
+                if (_snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\%s", folder, wd.cFileName) < 0) continue;
+                if (DeleteFileW(path)) p->files++;
+                else p->failed++;
+            } while (FindNextFileW(w, &wd));
+            FindClose(w);
+        }
+        // Only goes if nothing else is in it.
+        if (RemoveDirectoryW(folder)) p->folders++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static void prune_apply(App* app, Job* job) {
+    (void)app;
+    PruneJob* p = (PruneJob*)job->data;
+    if (p->files || p->folders)
+        LOG("deleted the audio of days before %s: %d files, %d folders", p->cutoff, p->files, p->folders);
+    if (p->failed) WARN("%d old audio files could not be deleted", p->failed);
+}
+
+void audio_prune(App* app) {
+    u32 keep = app->config.capture.keep_audio_days;
+    if (!keep) return;
+    char today[11];
+    i32 y, m, d;
+    day_of(now_ts(), today);
+    if (!parse_day(today, &y, &m, &d)) return;
+    Job* job = job_new(prune_apply);
+    PruneJob* p = PUSH(&job->arena, PruneJob);
+    // Today and the keep-1 days before it stay.
+    day_of(local_ts(y, m, d - (i32)(keep - 1), 12, 0), p->cutoff);
+    job->data = p;
+    pool_post(job, prune_run);
 }

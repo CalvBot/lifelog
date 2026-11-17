@@ -155,7 +155,7 @@ static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
         f64 to = end + 0.4 < from + 3600 ? end + 0.4 : from + 3600;  // at most an hour
         ok = mix_audio(db, adir, from, to, &keep, &first.mix, error, cap);
         if (ok && !first.mix.count) {
-            snprintf(error, cap, "no audio kept for then (audio is kept for a week)");
+            snprintf(error, cap, "no audio kept for then (audio is kept for capture.keep_audio_days days, 7 by default)");
             ok = false;
         }
     } else {

@@ -69,3 +69,8 @@ struct Clips {
 // toast.
 void play(App* app, i64 line_id, PlayMode mode, Names* hidden);
 void play_stop(App* app);
+
+// Deletes the kept audio of days older than capture.keep_audio_days (0 keeps it all): the .wav
+// files in each <data_dir>\audio\YYYY-MM-DD folder, then the folder once it is empty. The text
+// stays. The main thread, once a day; the deleting is done on the pool.
+void audio_prune(App* app);
