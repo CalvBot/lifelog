@@ -48,8 +48,11 @@ static bool http_call(Arena* a, const char* method, Str url, Str extra_headers, 
         rewind(m);
         return false;
     }
-    HINTERNET session = WinHttpOpen(L"lifelog", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-
+    // A server on this PC is reached directly; anything else goes through the system proxy, as
+    // Settings' downloads do.
+    bool local = _wcsicmp(host, L"127.0.0.1") == 0 || _wcsicmp(host, L"localhost") == 0 || _wcsicmp(host, L"::1") == 0;
+    HINTERNET session = WinHttpOpen(L"lifelog", local ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, parts.nPort, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, wide(scratch(), str(method)), path, 0, WINHTTP_NO_REFERER,
                                               WINHTTP_DEFAULT_ACCEPT_TYPES,
