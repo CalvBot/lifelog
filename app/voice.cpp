@@ -203,11 +203,12 @@ static void words_between(const Words* ws, i32 from, i32 to, Words* out) {
 // Commands
 
 enum VoiceDo : i32 {
-    DO_NOTHING,   // not a command
-    DO_API,       // through the API: `method`, `path`, `query`
+    DO_NOTHING,    // not a command
+    DO_API,        // through the API: `method`, `path`, `query`
     DO_CANCEL,
-    DO_CONFIG,    // open config.toml
     DO_CHECK_AI,
+    DO_SUMMARISE,  // a few sentences about the last `query` ("30m"), from the summary AI
+    DO_REMIND,     // a reminder saying `text` at `due` (0: no time was said)
 };
 
 struct VoiceCommand {
@@ -215,9 +216,11 @@ struct VoiceCommand {
     const char* method;
     char path[32];
     char query[256];
+    f64 due;          // DO_REMIND: unix seconds
+    char text[128];   // DO_REMIND: what it is about
     Chime chime;      // when it worked
     bool private_ok;  // carried out in private mode too
-    char said[96];    // what it does, for the log and Settings: "clip the last 1h"
+    char said[128];   // what it does, for the log and Settings: "clip 1h"
 };
 
 static void command(VoiceCommand* c, const char* method, const char* path, const char* said) {
@@ -340,6 +343,163 @@ static void app_said(const Words* ws, i32 from, i32 to, char* out, i32 cap) {
     }
 }
 
+// "15m" as words, for "the last ...": "15 minutes", "hour", "today".
+static void range_words(const char* range, char* out, i32 cap) {
+    i32 n = atoi(range);
+    char unit = range[0] ? range[strlen(range) - 1] : 0;
+    if (!n || !strchr("mhd", unit)) {
+        snprintf(out, cap, "%s", range);
+        return;
+    }
+    const char* name = unit == 'm' ? "minute" : unit == 'h' ? "hour" : "day";
+    if (n == 1) snprintf(out, cap, "%s", name);
+    else snprintf(out, cap, "%d %ss", n, name);
+}
+
+// A number said as a word or digits at `*i` (moved past it), but not "a" or "an": for a clock time.
+static i32 clock_number_at(const Words* ws, i32* i) {
+    if (*i >= ws->n || word_in(ws->w[*i], "a", "an", "couple", "few")) return 0;
+    return number_at(ws, i);
+}
+
+// A reminder or alarm: "remind me in 10 minutes to check the oven", "remind me to call Sam at 5
+// pm", "set an alarm for 7:30", "set a timer for 20 minutes", "wake me up tomorrow at 8". A time
+// without am or pm is the next one: "at 5" is 05:00 or 17:00, whichever comes first, and a time
+// that has passed is tomorrow's.
+static void reminder_said(const Words* ws, f64 now, VoiceCommand* c) {
+    c->what = DO_REMIND;
+    bool used[COUNT(ws->w)] = {};
+    f64 after = 0;
+    i32 hour = -1, minute = 0;
+    char half = 0;
+    bool tomorrow = false;
+    for (i32 i = 0; i < ws->n; i++) {
+        Str w = ws->w[i];
+        if (word_in(w, "tomorrow", "tomorrows")) {
+            tomorrow = used[i] = true;
+            continue;
+        }
+        bool pm = word_in(w, "tonight", "evening", "afternoon"), am = word_in(w, "morning");
+        if (pm || am) {
+            half = pm ? 'p' : 'a';
+            used[i] = true;
+            for (i32 k = i - 1; k >= 0 && word_in(ws->w[k], "in", "the", "this"); k--) used[k] = true;
+            continue;
+        }
+        bool in = word_in(w, "in", "for", "after");
+        bool at = word_in(w, "at", "for", "by", "until", "till", "til");
+        if (!in && !at) continue;
+        i32 j = i + 1;
+        if (j < ws->n && word_in(ws->w[j], "about", "around")) j++;
+        // A length: "in 10 minutes", "for an hour and a half", "in half an hour".
+        if (in && after == 0) {
+            i32 k = j;
+            if (k + 2 < ws->n && str_eq(ws->w[k], str("half")) && word_in(ws->w[k + 1], "an", "a") && unit_of(ws->w[k + 2]) == 'h') {
+                after = 1800;
+                for (i32 x = i; x <= k + 2; x++) used[x] = true;
+                i = k + 2;
+                continue;
+            }
+            i32 n = number_at(ws, &k);
+            char u = k < ws->n ? unit_of(ws->w[k]) : 0;
+            if (n && u) {
+                f64 unit = u == 'm' ? 60 : u == 'h' ? 3600 : 86400;
+                after = n * unit;
+                k++;
+                if (k + 2 < ws->n && str_eq(ws->w[k], str("and")) && str_eq(ws->w[k + 1], str("a")) && str_eq(ws->w[k + 2], str("half"))) {
+                    after += unit / 2;
+                    k += 3;
+                }
+                for (i32 x = i; x < k; x++) used[x] = true;
+                i = k - 1;
+                continue;
+            }
+        }
+        // A clock time: "at 5", "at 7 30 pm", "for 5pm", "at seven thirty", "at noon".
+        if (at && hour < 0 && j < ws->n) {
+            i32 k = j;
+            Str t = ws->w[k];
+            i32 h = -1, m = 0;
+            if (word_in(t, "noon", "midday")) {
+                h = 12;
+                half = 'p';
+                k++;
+            } else if (word_in(t, "midnight")) {
+                h = 0;
+                half = 'a';
+                k++;
+            } else {
+                i32 n = clock_number_at(ws, &k);
+                if (!n) continue;
+                if (n >= 100) {
+                    h = n / 100;
+                    m = n % 100;
+                } else {
+                    h = n;
+                }
+                if (str_ends(t, str("pm"))) half = 'p';
+                else if (str_ends(t, str("am"))) half = 'a';
+                if (n < 100 && !half && k < ws->n) {
+                    i32 k2 = k;
+                    if (word_in(ws->w[k2], "oh", "o")) k2++;
+                    i32 got = clock_number_at(ws, &k2);
+                    if (got > 0 && got < 60 && !(k2 < ws->n && unit_of(ws->w[k2]))) {
+                        m = got;
+                        k = k2;
+                    }
+                }
+            }
+            if (k < ws->n && word_in(ws->w[k], "oclock")) k++;
+            if (k < ws->n && word_in(ws->w[k], "am", "pm")) half = ws->w[k++].ptr[0];
+            else if (k + 1 < ws->n && word_in(ws->w[k], "a", "p") && str_eq(ws->w[k + 1], str("m"))) {
+                half = ws->w[k].ptr[0];
+                k += 2;
+            }
+            if (h > 23 || m > 59) continue;
+            hour = h;
+            minute = m;
+            for (i32 x = i; x < k; x++) used[x] = true;
+            i = k - 1;
+        }
+    }
+
+    LocalTime t = local_time(now);
+    i32 day = t.day + (tomorrow ? 1 : 0);
+    if (after > 0) {
+        c->due = now + after;
+    } else if (hour >= 0) {
+        if (half == 'p' && hour < 12) hour += 12;
+        if (half == 'a' && hour == 12) hour = 0;
+        c->due = local_ts(t.year, t.month, day, hour, minute);
+        if (!half && hour >= 1 && hour < 12 && c->due <= now) c->due = local_ts(t.year, t.month, day, hour + 12, minute);
+        if (c->due <= now) c->due = local_ts(t.year, t.month, day + 1, hour, minute);
+    } else if (tomorrow) {
+        c->due = local_ts(t.year, t.month, day, 9, 0);
+    }
+
+    // What it is about: the words after "to", "that" or "about", less the time.
+    i32 from = -1;
+    for (i32 i = 1; i < ws->n && from < 0; i++)
+        if (!used[i] && word_in(ws->w[i], "to", "that", "about")) from = i + 1;
+    i32 len = 0;
+    for (i32 i = from; from >= 0 && i < ws->n; i++) {
+        if (used[i]) continue;
+        len += snprintf(c->text + len, sizeof(c->text) - len, "%s%.*s", len ? " " : "", (int)ws->w[i].len, ws->w[i].ptr);
+        if (len >= (i32)sizeof(c->text)) break;
+    }
+    if (!c->text[0]) snprintf(c->text, sizeof(c->text), "%s", has(ws, "timer") ? "Timer" : has(ws, "alarm") || has(ws, "wake") ? "Alarm" : "Reminder");
+    c->text[0] = (char)toupper((u8)c->text[0]);
+
+    if (!c->due) {
+        snprintf(c->said, sizeof(c->said), "reminder: %s (no time said)", c->text);
+        return;
+    }
+    LocalTime d = local_time(c->due);
+    char when_day[16] = "";
+    if (d.day != t.day) snprintf(when_day, sizeof(when_day), "%s ", d.day == local_time(now + 86400).day ? "tomorrow" : "on that day");
+    snprintf(c->said, sizeof(c->said), "reminder %sat %02d:%02d: %s", when_day, d.hour, d.minute, c->text);
+}
+
 // What the words after the wake name ask for.
 static void parse_command(const Words* ws, VoiceCommand* c) {
     *c = {};
@@ -357,37 +517,38 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
         c->private_ok = true;
         return;
     }
+    if (word_in(first, "remind", "wake") || has(ws, "reminder") || has(ws, "alarm") || has(ws, "timer")) {
+        reminder_said(ws, now_ts(), c);
+        return;
+    }
     if ((has(ws, "check") || has(ws, "test")) && (has(ws, "ai") || has_pair(ws, "a", "i"))) {
         c->what = DO_CHECK_AI;
         snprintf(c->said, sizeof(c->said), "check the AI");
         return;
     }
+    // "pause transcription" / "continue transcription" (back to auto or always, as it was).
     if (find_prefix(ws, "transcri") >= 0) {
-        Mode mode;
-        if (has(ws, "auto") || has(ws, "automatic") || has(ws, "on") || has(ws, "resume") || has(ws, "start")) mode = MODE_AUTO;
-        else if (has(ws, "always")) mode = MODE_ALWAYS;
-        else if (has(ws, "pause") || has(ws, "paused") || has(ws, "off") || has(ws, "stop")) mode = MODE_PAUSED;
+        const char* mode = 0;
+        if (has(ws, "always")) mode = "always";
+        else if (has(ws, "auto") || has(ws, "automatic")) mode = "auto";
+        else if (has(ws, "pause") || has(ws, "paused") || has(ws, "off") || has(ws, "stop") || has(ws, "hold")) mode = "paused";
+        else if (has(ws, "continue") || has(ws, "resume") || has(ws, "start") || has(ws, "on") || has(ws, "back") || has(ws, "unpause")) mode = "continue";
         else return;
         command(c, "POST", "/transcription", "");
-        snprintf(c->query, sizeof(c->query), "mode=%s", mode_name(mode));
-        snprintf(c->said, sizeof(c->said), "transcription %s", mode_name(mode));
+        snprintf(c->query, sizeof(c->query), "mode=%s", mode);
+        if (strcmp(mode, "paused") == 0) snprintf(c->said, sizeof(c->said), "pause transcription");
+        else if (strcmp(mode, "continue") == 0) snprintf(c->said, sizeof(c->said), "continue transcription");
+        else snprintf(c->said, sizeof(c->said), "transcription %s", mode);
         return;
     }
-    bool open = word_in(first, "open", "show");
-    if ((open || ws->n == 1) && (has(ws, "journal") || (open && find_prefix(ws, "summar") >= 0))) {
-        command(c, "POST", "/show", "open the journal");
-        snprintf(c->query, sizeof(c->query), "tab=journal");
-        return;
-    }
-    if (find_prefix(ws, "summar") >= 0) {
-        const char* action = "now";
-        if (has(ws, "later") || has(ws, "postpone") || has(ws, "delay") || has(ws, "tomorrow")) action = "later";
-        else if (has(ws, "skip")) action = "skip";
-        char day[11] = {};
-        if (has(ws, "yesterday") || has(ws, "yesterdays")) day_of(now_ts() - 86400, day);
-        command(c, "POST", "/summary", "");
-        snprintf(c->query, sizeof(c->query), "do=%s&day=%s", action, day);
-        snprintf(c->said, sizeof(c->said), "summary %s%s%s", action, day[0] ? " for " : "", day);
+    // "summarise the last half hour", "sum up the last 10 minutes", "recap".
+    if (find_prefix(ws, "summar") >= 0 || has_pair(ws, "sum", "up") || has(ws, "recap")) {
+        c->what = DO_SUMMARISE;
+        clip_range_said(ws, c->query, sizeof(c->query));
+        char words[32];
+        range_words(c->query, words, sizeof(words));
+        snprintf(c->said, sizeof(c->said), "summarise the last %s", words);
+        if (strcmp(c->query, "today") == 0) snprintf(c->said, sizeof(c->said), "summarise today");
         return;
     }
     if (has(ws, "clip") || has(ws, "clips") || word_in(first, "copy", "save")) {
@@ -397,45 +558,6 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
         snprintf(c->query, sizeof(c->query), "range=%s", range);
         snprintf(c->said, sizeof(c->said), "clip %s", range);
         c->chime = CHIME_CLIP_SAVED;
-        return;
-    }
-
-    // An app's decision or game mark: "exclude spotify", "spotify is a game", "valorant isn't a game".
-    char app[128];
-    i32 is_at = -1;
-    for (i32 i = 0; i < ws->n; i++)
-        if (word_in(ws->w[i], "is", "isnt", "its")) is_at = i;
-    i32 game_at = -1;
-    for (i32 i = 0; i < ws->n; i++)
-        if (str_eq(ws->w[i], str("game"))) game_at = i;
-    if (word_in(first, "exclude", "ignore", "include") || (str_eq(first, str("record")) && ws->n > 1 && !has(ws, "again"))) {
-        bool exclude = !word_in(first, "include", "record");
-        app_said(ws, 1, ws->n, app, sizeof(app));
-        if (!app[0]) return;
-        command(c, "POST", exclude ? "/exclude" : "/include", "");
-        snprintf(c->query, sizeof(c->query), "app=%s", url_enc(a, str(app)).ptr);
-        snprintf(c->said, sizeof(c->said), "%s %s", exclude ? "exclude" : "include", app);
-        return;
-    }
-    if (has_pair(ws, "stop", "recording") && ws->n > 2) {
-        app_said(ws, 2, ws->n, app, sizeof(app));
-        if (app[0]) {
-            command(c, "POST", "/exclude", "");
-            snprintf(c->query, sizeof(c->query), "app=%s", url_enc(a, str(app)).ptr);
-            snprintf(c->said, sizeof(c->said), "exclude %s", app);
-            return;
-        }
-    }
-    if (game_at >= 0) {
-        bool not_game = has(ws, "not") || has(ws, "isnt") || has(ws, "no");
-        // "X is (not) a game", or "game X" / "not a game X".
-        if (is_at > 0) app_said(ws, 0, is_at, app, sizeof(app));
-        else app_said(ws, game_at + 1, ws->n, app, sizeof(app));
-        if (!app[0]) app_said(ws, 0, game_at, app, sizeof(app));  // "mark valorant as a game"
-        if (!app[0]) return;
-        command(c, "POST", not_game ? "/not-game" : "/game", "");
-        snprintf(c->query, sizeof(c->query), "app=%s", url_enc(a, str(app)).ptr);
-        snprintf(c->said, sizeof(c->said), "%s %s", app, not_game ? "is not a game" : "is a game");
         return;
     }
 
@@ -452,33 +574,15 @@ static void parse_command(const Words* ws, VoiceCommand* c) {
         command(c, "POST", "/pause", "private mode on");
         return;
     }
-    if (word_in(first, "toggle")) {
-        command(c, "POST", "/toggle", "toggle private mode");
-        c->private_ok = true;
-        return;
-    }
-    if (word_in(first, "restart", "reboot", "reload")) {
-        command(c, "POST", "/restart", "restart");
-        return;
-    }
-    if (word_in(first, "quit", "exit", "shutdown") || has_pair(ws, "shut", "down")) {
-        command(c, "POST", "/quit", "quit");
-        return;
-    }
-    if (has(ws, "config") || has(ws, "configuration")) {
-        c->what = DO_CONFIG;
-        snprintf(c->said, sizeof(c->said), "open config.toml");
-        return;
-    }
-    if (has(ws, "status")) {
-        command(c, "POST", "/popup", "show the status");
-        snprintf(c->query, sizeof(c->query), "page=tray");
-        return;
-    }
-    if (open || has(ws, "settings") || has(ws, "timeline") || has(ws, "window")) {
-        const char* tab = has(ws, "settings") ? "settings" : "ui";
-        command(c, "POST", "/show", has(ws, "settings") ? "open Settings" : "open lifelog");
-        snprintf(c->query, sizeof(c->query), "tab=%s", tab);
+
+    // "open spotify", "launch valorant", "start visual studio code".
+    if (word_in(first, "open", "launch", "start", "run", "play") && ws->n > 1) {
+        char app[128];
+        app_said(ws, 1, ws->n, app, sizeof(app));
+        if (!app[0]) return;
+        command(c, "POST", "/launch", "");
+        snprintf(c->query, sizeof(c->query), "app=%s", url_enc(a, str(app)).ptr);
+        snprintf(c->said, sizeof(c->said), "open %s", app);
         return;
     }
 }
@@ -597,6 +701,75 @@ static void answer_text(Arena* a, const VoiceCommand* c, Answer* r, char* out, i
     (void)c;
 }
 
+// Summarising the last stretch, on its own thread (the AI can take a while to start).
+struct VoiceSummarise {
+    f64 from, to;
+    char said[128];
+    char title[64];   // "The last 30 minutes"
+};
+static volatile LONG g_voice_summarising;
+static VoiceSummarise g_summarise;
+static Arena g_summarise_arena;
+static AppLabels g_summarise_labels;
+// The newest this many characters are summarised (about 6,000 words for the AI's 12,288 tokens).
+static const i64 SUMMARISE_MAX_CHARS = 24000;
+
+static DWORD WINAPI voice_summarise_main(void* p) {
+    App* app = (App*)p;
+    Arena* a = &g_summarise_arena;
+    VoiceSummarise* s = &g_summarise;
+    char error[512] = {};
+    i32 lines = 0;
+    Str text = clip_text(&g_summarise_labels, a, s->from, s->to, &lines, error, sizeof(error));
+    bool ok = !error[0];
+    if (ok && !lines) {
+        snprintf(error, sizeof(error), "nothing was heard then");
+        ok = false;
+    }
+    if (ok && text.len > SUMMARISE_MAX_CHARS) {
+        Str tail = {text.ptr + text.len - SUMMARISE_MAX_CHARS, SUMMARISE_MAX_CHARS};
+        const char* nl = (const char*)memchr(tail.ptr, '\n', (size_t)tail.len);
+        if (nl) tail = {nl + 1, tail.len - (nl + 1 - tail.ptr)};
+        text = tail;
+    }
+    Str out = {};
+    ok = ok && summary_quick(app, a, text, &out, error, sizeof(error));
+    if (ok) {
+        if (!clipboard_set_text(out)) WARN("voice: summarise: the clipboard is busy");
+        ToastJob t = {};
+        SET(t.tag, str("voice-summary"));
+        SET(t.title, str(s->title));
+        set(t.body, sizeof(t.body), out);
+        notify_show(app, &t);
+    }
+    LOG("voice: %s: %s", s->said, ok ? "done" : error);
+    char result[160];
+    if (ok) snprintf(result, sizeof(result), "on the clipboard: %.*s", (int)(out.len < 120 ? out.len : 120), out.ptr);
+    else snprintf(result, sizeof(result), "%s", error);
+    voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, s->said, result);
+    arena_release(a);
+    atomic_set(&g_voice_summarising, 0);
+    return 0;
+}
+
+// The main thread: the app names for the transcript, then the thread.
+static void voice_summarise_apply(App* app, Event* e) {
+    VoiceSummarise* s = event_record<VoiceSummarise>(e);
+    if (InterlockedCompareExchange(&g_voice_summarising, 1, 0) != 0) {
+        voice_say(app, CHIME_ERROR, s->said, "already summarising");
+        return;
+    }
+    g_summarise = *s;
+    g_summarise_arena = {};
+    g_summarise_labels = app_labels(app, &g_summarise_arena);
+    Voice* v = &app->voice;
+    SET(v->heard, str(s->said));
+    SET(v->result, str("summarising..."));
+    v->heard_ts = now_ts();
+    wake_window(app);
+    start_thread(app, "voice-summarise", voice_summarise_main);
+}
+
 static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
     Arena* a = scratch();
     Mark m = mark(a);
@@ -609,17 +782,30 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
     } else if (c->what == DO_CHECK_AI) {
         LOG("voice: check the AI");
         event_send(app, voice_check_ai_apply);
-    } else if (c->what == DO_CONFIG) {
-        const wchar_t* path = config_path();
-        HINSTANCE got = ShellExecuteW(0, L"open", path, 0, 0, SW_SHOWNORMAL);
-        if ((INT_PTR)got <= 32) got = ShellExecuteW(0, L"open", L"notepad.exe", path, 0, SW_SHOWNORMAL);
-        bool ok = (INT_PTR)got > 32;
-        LOG("voice: \"%s\": open config.toml%s", heard, ok ? "" : " (failed)");
-        voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, c->said, ok ? "opened" : "could not open config.toml");
+    } else if (c->what == DO_SUMMARISE) {
+        VoiceSummarise s = {};
+        s.to = now_ts();
+        char label[64];
+        bool ok = clip_range(str(c->query), s.to, &s.from, label, sizeof(label));
+        SET(s.said, str(c->said));
+        char words[32];
+        range_words(c->query, words, sizeof(words));
+        if (strcmp(c->query, "today") == 0) SET(s.title, str("Today"));
+        else snprintf(s.title, sizeof(s.title), "The last %s", words);
+        LOG("voice: \"%s\": %s", heard, c->said);
+        if (ok) event_send(app, voice_summarise_apply, s);
+        else voice_say(app, CHIME_ERROR, c->said, "could not tell how long");
+    } else if (c->what == DO_REMIND) {
+        char error[160] = {};
+        bool ok = c->due > 0;
+        if (!ok) snprintf(error, sizeof(error), "say when: \"in 10 minutes\" or \"at 5 pm\"");
+        ok = ok && reminder_add(app, str(c->text), str(heard), c->due, error, sizeof(error));
+        LOG("voice: \"%s\": %s%s%s", heard, c->said, ok ? "" : ": ", ok ? "" : error);
+        voice_say(app, ok ? CHIME_DONE : CHIME_ERROR, c->said, ok ? "set" : error);
     } else if (c->what == DO_API) {
         Answer r = {};
         api_ask(app, str(c->method), str(c->path), str(c->query), &r);
-        if (r.code == 200 && r.after) event_send(app, api_after_apply, r.after);  // quit, restart
+        if (r.code == 200 && r.after) event_send(app, api_after_apply, r.after);
         char result[160];
         answer_text(a, c, &r, result, sizeof(result));
         buf_free(&r.body);

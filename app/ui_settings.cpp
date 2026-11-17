@@ -958,17 +958,12 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
     if (s->voice_list) {
         struct { const char* say; const char* does; } cmds[] = {
             {"clip the last hour", "copy that part of the transcript (or 15 minutes, today)"},
+            {"summarise the last 30 minutes", "a few sentences from the summary AI, on the clipboard"},
+            {"remind me in 10 minutes to ...", "a reminder (or \"at 5 pm\", \"tomorrow at 9\", \"set an alarm for 7\")"},
+            {"open Spotify", "start an installed app or game"},
             {"pause  /  resume", "private mode on or off"},
-            {"toggle", "switch private mode"},
-            {"exclude Spotify  /  include Spotify", "stop or start recording an app"},
-            {"Valorant is (not) a game", "mark an app as a game or not"},
-            {"transcription auto / always / paused", "when transcribing runs"},
-            {"summary now / later / skip", "today's summary (add \"yesterday\")"},
+            {"pause  /  continue transcription", "hold transcribing, then back to how it was"},
             {"check the AI", "start the summary AI and test it"},
-            {"status", "show the tray popup"},
-            {"open settings  /  open the journal", "open this window"},
-            {"config", "open config.toml"},
-            {"restart  /  quit", "lifelog itself"},
             {"never mind", "cancel after the chime"},
         };
         ImGui::Indent(px(ROW_LABEL_W));
@@ -985,7 +980,7 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
             ImGui::EndTable();
         }
         ImGui::PushTextWrapPos(0);
-        ImGui::TextColored(weak_text(), "Say it as one sentence, or say \"%s\" and wait for the chime. In private mode only resume and toggle work.", wake);
+        ImGui::TextColored(weak_text(), "Say it as one sentence, or say \"%s\" and wait for the chime. In private mode only resume works.", wake);
         ImGui::PopTextWrapPos();
         ImGui::Unindent(px(ROW_LABEL_W));
     }

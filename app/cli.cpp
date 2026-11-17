@@ -12,9 +12,12 @@ static const char* CLI_USAGE =
     "  lifelog pause | resume | toggle     private mode\n"
     "  lifelog exclude APP.exe | include APP.exe     never capture an app / allow it again\n"
     "  lifelog game APP.exe | not-game APP.exe       while a game runs, only record; transcribe after\n"
-    "  lifelog transcription auto | always | paused     when the GPU work may run (auto = not while gaming)\n"
+    "  lifelog transcription auto | always | paused | continue   when the GPU work may run (auto = not while\n"
+    "                          gaming; continue = back to the mode before it was paused)\n"
+    "  lifelog launch APP      start an installed app or game (spotify, \"visual studio code\")\n"
     "  lifelog summary [now | later | skip] [DAY]       the daily summary (DAY = YYYY-MM-DD, default today)\n"
     "  lifelog check-ai        start the summary AI, ask it one thing, stop it\n"
+    "  lifelog summarise [RANGE]   a few sentences about the last 15m (default), 1h or today, from the summary AI\n"
     "  lifelog status          what the running service is doing\n"
     "  lifelog quit            stop the running service\n"
     "  lifelog config          print the config file path\n"
@@ -143,6 +146,26 @@ static i32 cli_check_ai() {
     return 0;
 }
 
+// `lifelog summarise [RANGE]`: a few sentences about the last stretch from the summary AI, as the
+// voice command makes, printed here (not put on the clipboard).
+static i32 cli_summarise(Str range) {
+    if (!cli_config(&g_cli.config)) return 1;
+    f64 now = now_ts(), from = 0;
+    if (!clip_range(range, now, &from)) return cli_error("lifelog summarise [RANGE]; RANGE = 15m (default), 1h, today");
+    g_cli.stop = CreateEventW(0, TRUE, FALSE, 0);
+    summary_options_publish(&g_cli);
+    Arena a = {};
+    char error[512] = {};
+    i32 lines = 0;
+    Str text = clip_text(0, &a, from, now, &lines, error, sizeof(error));
+    Str out = {};
+    bool ok = !error[0] && lines > 0 && summary_quick(&g_cli, &a, text, &out, error, sizeof(error));
+    if (!error[0] && !lines) snprintf(error, sizeof(error), "nothing was heard then");
+    if (ok) cli_print("%.*s\n", (int)out.len, out.ptr);
+    arena_release(&a);
+    return ok ? 0 : cli_error("%s", error);
+}
+
 // What voice commands would make of a sentence, without doing it.
 static i32 cli_voice(Str text) {
     if (!cli_config(&g_cli.config)) return 1;
@@ -231,8 +254,13 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     if (str_eq(cmd, str("transcription"))) {
         if (!cli_config(&g_cli.config)) return 1;
         Mode mode = MODE_AUTO;
-        if (!has_arg || !mode_from_text(args[1], &mode)) return cli_error("say which: lifelog transcription auto | always | paused");
+        if (has_arg && str_eq(str_lower(a, args[1]), str("continue"))) return cli_call("POST", str("/transcription?mode=continue"));
+        if (!has_arg || !mode_from_text(args[1], &mode)) return cli_error("say which: lifelog transcription auto | always | paused | continue");
         return cli_call("POST", str_fmt(a, "/transcription?mode=%s", mode_name(mode)));
+    }
+    if (str_eq(cmd, str("launch"))) {
+        if (!has_arg) return cli_error("say which app: lifelog launch spotify");
+        return cli_call("POST", str_fmt(a, "/launch?app=%s", url_enc(a, args[1]).ptr));
     }
     if (str_eq(cmd, str("summary"))) {
         if (!cli_config(&g_cli.config)) return 1;
@@ -246,6 +274,7 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
         return cli_call("POST", str_fmt(a, "/summary?do=%s&day=%s", action.ptr, day.ptr));
     }
     if (str_eq(cmd, str("check-ai"))) return cli_check_ai();
+    if (str_eq(cmd, str("summarise")) || str_eq(cmd, str("summarize"))) return cli_summarise(has_arg ? args[1] : str("15m"));
     if (str_eq(cmd, str("status"))) return cli_call("GET", str("/status"));
     if (str_eq(cmd, str("voice"))) return cli_voice(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("icon"))) return cli_icon(has_arg ? args[1] : str(""));

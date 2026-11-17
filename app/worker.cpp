@@ -1426,6 +1426,11 @@ void worker_options_publish(App* app) {
 
 void worker_set_mode(App* app, Mode mode) {
     if (app->config.processing.mode == mode) return;
+    if (mode == MODE_PAUSED) {
+        // What "continue transcription" goes back to.
+        app->config.processing.before_pause = app->config.processing.mode;
+        config_save_string("processing", "mode_before_pause", mode_name(app->config.processing.mode));
+    }
     app->config.processing.mode = mode;
     LOG("transcription mode: %s", mode_name(mode));
     config_save_string("processing", "mode", mode_name(mode));

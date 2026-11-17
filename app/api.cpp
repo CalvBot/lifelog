@@ -312,8 +312,13 @@ static bool api_handle(App* app, ApiCall* c) {
         Mode mode = MODE_AUTO;
         if (transcription) {
             Str m = {};
-            if (!query_param(a, query, "mode", &m) || !mode_from_text(m, &mode)) {
-                answer_error(r, 400, "mode must be auto, always or paused");
+            bool back = query_param(a, query, "mode", &m) && str_eq(str_lower(a, str_trim(m)), str("continue"));
+            if (back) {
+                // Back to what it was before it was paused (auto if it was never paused).
+                mode = app->config.processing.mode == MODE_PAUSED ? app->config.processing.before_pause : app->config.processing.mode;
+                if (mode == MODE_PAUSED) mode = MODE_AUTO;
+            } else if (!m.len || !mode_from_text(m, &mode)) {
+                answer_error(r, 400, "mode must be auto, always, paused or continue");
                 return true;
             }
         }
@@ -409,6 +414,36 @@ static bool api_handle(App* app, ApiCall* c) {
         job->data = k;
         db_post(job, remind_check_run);
         return false;
+    }
+
+    if (str_eq(path, str("/launch"))) {
+        // Starts an app or game from where it is installed ("open spotify").
+        AppInfo* info = exe.len ? app_find(app, exe) : 0;
+        if (!info) {
+            if (named.len) answer_error(r, 400, str_fmt(a, "no app called '%s'", named.ptr).ptr);
+            else answer_error(r, 400, "say which app, e.g. spotify");
+            return true;
+        }
+        const char* name = info->name[0] ? info->name : info->exe;
+        if (!info->path[0]) {
+            answer_error(r, 400, str_fmt(a, "lifelog does not know where %s is installed", name).ptr);
+            return true;
+        }
+        wchar_t* file = wide(a, str(info->path));
+        wchar_t dir[MAX_PATH];
+        wcsncpy_s(dir, MAX_PATH, file, _TRUNCATE);
+        wchar_t* slash = wcsrchr(dir, L'\\');
+        if (slash) *slash = 0;
+        HINSTANCE got = ShellExecuteW(0, L"open", file, 0, slash ? dir : 0, SW_SHOWNORMAL);
+        if ((INT_PTR)got <= 32) {
+            answer_error(r, 500, str_fmt(a, "could not start %s (error %d)", name, (i32)(INT_PTR)got).ptr);
+            return true;
+        }
+        LOG("started %s (%s)", info->exe, info->path);
+        buf_cstr(&r->body, "{\"result\":");
+        json_quote(&r->body, str_fmt(a, "started %s", name));
+        buf_cstr(&r->body, "}");
+        return true;
     }
 
     bool show = str_eq(path, str("/show")), popup = str_eq(path, str("/popup"));

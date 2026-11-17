@@ -392,6 +392,49 @@ static void clip_format(Buf* t, Slice<Line> lines, f64 from, f64 to) {
     }
 }
 
+// [from, to]'s lines as clip_format writes them, into `out`, leaving out `exclude` (may be null),
+// each speaker named from `labels`. How many lines, or -1 if the database could not be read.
+static i32 clip_lines(sqlite3* db, AppLabels* labels, f64 from, f64 to, Names* exclude, Buf* out) {
+    Mark m = mark(scratch());
+    Slice<Line> all = {};
+    sqlite3_stmt* st = prepare(db, "SELECT " LINE_COLUMNS " FROM segments s WHERE s.end_ts >= ?1 AND s.start_ts <= ?2 "
+                                   "ORDER BY s.start_ts, s.id LIMIT 20000");
+    if (st) {
+        sqlite3_bind_double(st, 1, from);
+        sqlite3_bind_double(st, 2, to);
+        all = read_lines(st, scratch(), CLIP_MAX_LINES);
+    }
+    // Leave out the excluded speakers, keeping the order.
+    Slice<Line> lines = {PUSH_ARRAY(scratch(), Line, all.count), 0};
+    for (i32 i = 0; i < all.count; i++)
+        if (!exclude || !names_has(exclude, all.items[i].speaker)) lines.items[lines.count++] = all.items[i];
+    // Each speaker as the app list shows it ("zaddish", "Brave Browser"), not its exe.
+    for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), label_of(labels, lines.items[i].speaker));
+    clip_format(out, lines, from, to);
+    rewind(m);
+    return st ? lines.count : -1;
+}
+
+Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* error, i32 cap) {
+    *lines = 0;
+    sqlite3* db = db_open_path(true);
+    if (!db) {
+        snprintf(error, cap, "could not open the database");
+        return {"", 0};
+    }
+    Buf text = {};
+    i32 count = clip_lines(db, labels, from, to, 0, &text);
+    sqlite3_close(db);
+    Str out = str_copy(a, {text.chars.items, text.chars.count});
+    buf_free(&text);
+    if (count < 0) {
+        snprintf(error, cap, "could not read the database");
+        return {"", 0};
+    }
+    *lines = count;
+    return out;
+}
+
 ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label) {
     ClipResult r = {};
     if (!(isfinite(from) && isfinite(to) && from < to)) {
@@ -428,31 +471,17 @@ ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKi
         }
         mix_free(&mix);
     } else {
-        Slice<Line> all = {};
-        sqlite3_stmt* st = prepare(db, "SELECT " LINE_COLUMNS " FROM segments s WHERE s.end_ts >= ?1 AND s.start_ts <= ?2 "
-                                       "ORDER BY s.start_ts, s.id LIMIT 20000");
-        if (st) {
-            sqlite3_bind_double(st, 1, from);
-            sqlite3_bind_double(st, 2, to);
-            all = read_lines(st, scratch(), CLIP_MAX_LINES);
-        }
-        // Leave out the excluded speakers, keeping the order.
-        Slice<Line> lines = {PUSH_ARRAY(scratch(), Line, all.count), 0};
-        for (i32 i = 0; i < all.count; i++)
-            if (!exclude || !names_has(exclude, all.items[i].speaker)) lines.items[lines.count++] = all.items[i];
-        // Each speaker as the app list shows it ("zaddish", "Brave Browser"), not its exe.
-        for (i32 i = 0; i < lines.count; i++) lines.items[i].speaker = str_copy(scratch(), label_of(labels, lines.items[i].speaker));
         Buf text = {};
-        clip_format(&text, lines, from, to);
+        i32 count = clip_lines(db, labels, from, to, exclude, &text);
         Str body = {text.chars.items, text.chars.count};
         temp_path(str_fmt(scratch(), "lifelog-%s.txt", label ? label : times.ptr), path);
-        if (!st) snprintf(r.error, sizeof(r.error), "could not read the database");
+        if (count < 0) snprintf(r.error, sizeof(r.error), "could not read the database");
         else if (!write_file(path, body)) snprintf(r.error, sizeof(r.error), "could not write the clip file");
         else if (kind == CLIP_TEXT ? !clipboard_set_text(body) : !clipboard_set_file(path))
             snprintf(r.error, sizeof(r.error), "the clipboard is busy");
         else {
             r.ok = true;
-            r.lines = lines.count;
+            r.lines = count;
         }
         buf_free(&text);
     }

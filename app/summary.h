@@ -181,6 +181,12 @@ void reminder_answer(App* app, i64 id, const char* action);
 
 // For the CLI's check-ai: starts the AI, asks it one thing, stops it.
 bool summary_check_ai(App* app, char* said, i32 cap);
+// Voice commands: a reminder that shows at `due` (unix seconds), as the summary's do. `said` is
+// the sentence it came from. Any thread but the main one.
+bool reminder_add(App* app, Str text, Str said, f64 due, char* error, i32 cap);
+// Voice commands: a few sentences about `transcript` (clip_text's lines) from the summary AI,
+// into `a`. Slow (it may start the AI). Any thread but the main one.
+bool summary_quick(App* app, Arena* a, Str transcript, Str* out, char* error, i32 cap);
 
 // Notifications. Any thread; notify_show and notify_remove only queue the work.
 void notify_show(App* app, ToastJob* toast);

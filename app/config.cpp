@@ -301,6 +301,7 @@ static void config_defaults(Config* cfg) {
     cfg->capture.gate_rms = 0.003f;
     cfg->capture.keep_audio_days = 7;
     cfg->processing.mode = MODE_AUTO;
+    cfg->processing.before_pause = MODE_AUTO;
     cfg->processing.gpu_busy_percent = 40;
     cfg->processing.pause_for_games = true;
     cfg->processing.resume_after_secs = 60;
@@ -390,6 +391,7 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("keep_audio_days"))) take_u32(&cfg->capture.keep_audio_days, &v);
         } else if (str_eq(tb, str("processing"))) {
             if (str_eq(k, str("mode")) && v.kind == Value::STRING) mode_parse(str(v.s), &cfg->processing.mode);
+            if (str_eq(k, str("mode_before_pause")) && v.kind == Value::STRING) mode_parse(str(v.s), &cfg->processing.before_pause);
             if (str_eq(k, str("gpu_busy_percent"))) take_u32(&cfg->processing.gpu_busy_percent, &v);
             if (str_eq(k, str("pause_for_games"))) take_bool(&cfg->processing.pause_for_games, &v);
             if (str_eq(k, str("resume_after_secs"))) take_u32(&cfg->processing.resume_after_secs, &v);

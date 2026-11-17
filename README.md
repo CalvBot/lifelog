@@ -47,11 +47,11 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
 - **Journal:** the daily summaries, a calendar, and reminders for things you said you'd do.
 - **Settings:** which apps to record, which are games, when to transcribe, the summary time, and voice commands.
-- **Voice commands:** say "lifelog" and a command, such as "lifelog, clip the last hour", "lifelog, pause" or
-  "lifelog, Valorant is a game". You can also say "lifelog", wait for the chime, then give the command. They are the
-  CLI's commands. In private mode only "resume" works. Settings lists them and can change the wake word from
-  "lifelog" to your own; the first time, it downloads a small
-  model (0.15 GB) that runs on the processor.
+- **Voice commands:** say "lifelog" and a command, such as "lifelog, clip the last hour", "lifelog, summarise the
+  last 30 minutes", "lifelog, remind me in 10 minutes to check the oven", "lifelog, open Spotify", "lifelog, pause"
+  or "lifelog, pause transcription". You can also say "lifelog", wait for the chime, then give the command. In
+  private mode only "resume" works. Settings lists them and can change the wake word from "lifelog" to your own;
+  the first time, it downloads a small model (0.15 GB) that runs on the processor.
 
 From a terminal or a Stream Deck:
 
@@ -60,6 +60,8 @@ lifelog clip 15m             # or 1h, 2d, today
 lifelog toggle               # private mode; also pause, resume
 lifelog exclude spotify.exe  # stop recording an app; "include" undoes it
 lifelog summary now          # or later, skip
+lifelog summarise 30m        # a few sentences about the last 30 minutes, from the summary AI
+lifelog launch spotify       # start an installed app or game
 lifelog status
 lifelog voice "lifelog, clip the last hour"   # what a voice command would do, without doing it
 ```

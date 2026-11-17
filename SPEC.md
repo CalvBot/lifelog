@@ -327,20 +327,30 @@ The window only exists while it is open. Closing it frees its memory; the record
 - The wake word is "lifelog" unless changed in Settings (`[voice] wake_word`): at least 3 letters or digits, and
   only letters, digits, spaces, - and '. A word of 6 or more letters also matches when one letter is heard wrong
   ("jarvus" for "jarvis") or split in two ("life log"). Whisper's prompt names it, which makes it heard more often.
-- The commands are the CLI's: clip (with a spoken range: "the last hour", "fifteen minutes", "half an hour",
-  "an hour and a half", "today"; 15 minutes by default), pause / go private, resume / stop private mode, toggle,
-  exclude / include APP, APP is (not) a game, transcription auto / always / paused, summary now / later / skip
-  (for yesterday), check the AI, status (the tray popup), open (Settings, the journal), config (opens config.toml),
-  restart, quit, and cancel / never mind. `run` and `icon` are left out.
+- The commands:
+  - **clip** with a spoken range ("the last hour", "fifteen minutes", "half an hour", "an hour and a half",
+    "today"; 15 minutes by default).
+  - **summarise** (or "sum up", "recap") with the same range: the summary AI writes a few sentences about it from
+    the newest 24,000 characters of the transcript. They go on the clipboard and show as a notification.
+  - **remind me** / **set an alarm** / **set a timer** / **wake me up**: "in 10 minutes", "in an hour and a half",
+    "at 5", "at 7 30 pm", "at noon", "tomorrow at 9", "in the morning". A time without am or pm is the next one
+    ("at 5" at 10:00 is 17:00) and a passed time is tomorrow's; "tomorrow" alone is 09:00. What it is about is the
+    words after "to", "that" or "about" ("Alarm", "Timer" or "Reminder" if none). It is saved like the summary's
+    reminders (the alerts table) and shows as a notification when due.
+  - **open** / **launch** / **start** / **play** APP: starts an installed app or game from its exe.
+  - **pause** / go private and **resume** / stop private mode.
+  - **pause transcription** and **continue transcription**, which goes back to the mode it was in before the
+    pause (`[processing] mode_before_pause`; auto if it was never paused).
+  - **check the AI**, and **cancel** / **never mind**.
 - An app is named as it is said: its exe without ".exe" or its display name ("spotify", "visual studio code"),
   a running one first. The API takes such names too.
 - The mic has a second segmenter for this (`capture.cpp`). It hears even in private mode and ends a sentence after
   0.7 s of quiet. The voice thread transcribes each sentence with Whisper base.en on the processor (greedy, 4
   threads, below-normal priority), so it works while the transcriber waits for a game. A sentence that is not for
   lifelog is dropped without being logged.
-- In private mode only resume and toggle are carried out, and nothing about the sentence is kept.
-- A command is carried out by the API's own handler, so it does exactly what the CLI's does; a chime then says how
-  it went. Its sentence also goes into the transcript as usual.
+- In private mode only resume is carried out, and nothing about the sentence is kept.
+- Clip, open, private mode and transcription go through the API's own handler, so they do exactly what the CLI's
+  do; a chime then says how it went. Its sentence also goes into the transcript as usual.
 - `lifelog voice "TEXT"` prints what a sentence would do, without doing it.
 
 ## Copying
@@ -357,13 +367,16 @@ lifelog clip 15m | 1h | 2d | today
 lifelog toggle | pause | resume
 lifelog exclude X.exe | include X.exe
 lifelog summary now | later | skip
+lifelog summarise 15m | 1h | today
+lifelog transcription auto | always | paused | continue
+lifelog launch APP
 lifelog status
 lifelog check-ai
 lifelog voice "lifelog, clip the last hour"
 ```
 
 HTTP on 127.0.0.1:47800: `/status`, `/pause`, `/resume`, `/toggle`, `/exclude`, `/include`, `/game`,
-`/not-game`, `/transcription`, `/setup`, `/clip`, `/summary`, `/remind`, `/show`, `/popup`, `/quit`, `/restart`.
+`/not-game`, `/transcription` (`mode=continue` too), `/launch?app=`, `/setup`, `/clip`, `/summary`, `/remind`, `/show`, `/popup`, `/quit`, `/restart`.
 Browsers can't call it (Host and Origin are checked).
 
 ## Install

@@ -2264,3 +2264,64 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
     arena_release(&a);
     return ok;
 }
+
+// ---------------------------------------------------------------------------------------------
+// For voice commands
+
+bool reminder_add(App* app, Str text, Str said, f64 due, char* error, i32 cap) {
+    sqlite3* db = db_open(app);
+    if (!db) {
+        snprintf(error, cap, "could not open the database");
+        return false;
+    }
+    f64 now = now_ts();
+    char day[11];
+    day_of(now, day);
+    LocalTime t = local_time(now);
+    char said_time[8];
+    snprintf(said_time, sizeof(said_time), "%02d:%02d", t.hour, t.minute);
+    sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'set', NULL)");
+    if (st) {
+        bind_str(st, 1, str(day));
+        bind_str(st, 2, text);
+        bind_str(st, 3, said);
+        bind_str(st, 4, str(said_time));
+        sqlite3_bind_double(st, 5, due);
+    }
+    bool ok = sql_done(db, st) > 0;
+    sqlite3_close(db);
+    if (!ok) {
+        snprintf(error, cap, "could not save the reminder");
+        return false;
+    }
+    LOG("reminder set for %.0f s from now: %.*s", due - now, (int)text.len, text.ptr);
+    alert_due_at(app, due);
+    return true;
+}
+
+bool summary_quick(App* app, Arena* a, Str transcript, Str* out, char* error, i32 cap) {
+    SummaryOptions options = summary_options(app);
+    Llm llm = {};
+    bool ok = gpu_take(app);
+    if (!ok) snprintf(error, cap, "lifelog is closing");
+    ok = ok && llm_open(app, &options, 12288, &llm, error, cap);
+    Json reply = {};
+    if (ok) {
+        Str system = str("You summarise a stretch of a person's day from its transcript. Lines are \"[time] speaker: text\": "
+                         "the microphone is the person, the rest are apps (calls, videos, games). Write a few short plain sentences "
+                         "about what was talked about and anything decided or to do. No preamble. Return JSON.");
+        ok = llm_json(&llm, a, system, transcript,
+                      str("{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"]}"),
+                      &reply, error, cap);
+    }
+    llm_close(&llm);
+    gpu_give_back(app);
+    if (ok) {
+        *out = str_trim(json_text(json_get(&reply, "summary")));
+        if (!out->len) {
+            snprintf(error, cap, "the AI gave an empty summary");
+            ok = false;
+        }
+    }
+    return ok;
+}

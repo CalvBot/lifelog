@@ -44,6 +44,7 @@ struct Config {
 
     struct {
         Mode mode;
+        Mode before_pause;     // the mode "continue transcription" goes back to (mode_before_pause)
         u32 gpu_busy_percent;
         bool pause_for_games;  // in auto mode, wait while a game (processing.games) runs
         u32 resume_after_secs;
