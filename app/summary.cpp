@@ -318,16 +318,14 @@ static i32 sql_done(sqlite3* db, sqlite3_stmt* st) {
 }
 
 static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* never) {
-    sqlite3_stmt* st = prepare(db, "SELECT day, status, created_ts, reminders FROM summaries ORDER BY day DESC LIMIT 400");
+    sqlite3_stmt* st = prepare(db, "SELECT day, status, created_ts, (SELECT COUNT(*) FROM summary_items i WHERE i.day = s.day AND "
+                               "i.kind = 'reminder' AND i.dismissed = 0) FROM summaries s ORDER BY day DESC LIMIT 400");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         SummaryDay d = {};
         SET(d.day, str((const char*)sqlite3_column_text(st, 0)));
         SET(d.status, str((const char*)sqlite3_column_text(st, 1)));
         d.created_ts = sqlite3_column_double(st, 2);
-        Mark m = mark(scratch());
-        Json r = {};
-        if (json_parse(scratch(), col_str(st, 3, scratch()), &r, 0, 0)) d.reminders = json_len(&r);
-        rewind(m);
+        d.reminders = sqlite3_column_int(st, 3);
         list_push(days, d);
     }
     sqlite3_finalize(st);
@@ -358,6 +356,10 @@ static void lists_apply(App* app, Job* job) {
     s->version++;
     wake_window(app);
 }
+
+// At start, on the database thread: summaries saved before summary_items get their rows, made
+// from the markdown and reminders they were saved with (the old columns stay as they are).
+static void items_migrate_run(sqlite3* db, Job* job);
 
 // At start, on the database thread.
 static void lists_run(sqlite3* db, Job* job) {
@@ -471,6 +473,190 @@ static SavedRow saved_row(sqlite3* db, Arena* a, const char* day) {
     return row;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Items: each summary's lines and reminders as rows (summary_items), so the journal's buttons
+// act on an id and a moment rather than on the markdown's text.
+
+static const char* ITEM_KINDS[] = {"heading", "point", "text", "reminder"};
+
+static ItemKind item_kind(Str s) {
+    for (i32 i = 0; i < COUNT(ITEM_KINDS); i++)
+        if (str_eq(s, str(ITEM_KINDS[i]))) return (ItemKind)i;
+    return ITEM_TEXT;
+}
+
+// The "HH:MM" a point ends with: "Call Sam back (14:05)". Empty if none.
+static Str point_time(Str text) {
+    text = str_trim(text);
+    if (text.len < 7 || text.ptr[text.len - 1] != ')' || text.ptr[text.len - 7] != '(') return {};
+    Str t = str_sub(text, text.len - 6, 5);
+    return t.ptr[2] == ':' ? t : Str{};
+}
+
+static bool tx(sqlite3* db, const char* what) {
+    char* err = 0;
+    if (sqlite3_exec(db, what, 0, 0, &err) == SQLITE_OK) return true;
+    ERR("summary %s: %s", what, err ? err : "failed");
+    sqlite3_free(err);
+    return false;
+}
+
+static bool item_insert(sqlite3* db, const char* day, i32 pos, ItemKind kind, Str text, f64 ts, Str said, Str said_time, f64 due) {
+    sqlite3_stmt* st = prepare(db, "INSERT INTO summary_items (day, pos, kind, text, ts, said, said_time, due_ts) "
+                               "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
+    if (!st) return false;
+    bind_str(st, 1, str(day));
+    sqlite3_bind_int(st, 2, pos);
+    bind_str(st, 3, str(ITEM_KINDS[kind]));
+    bind_str(st, 4, text);
+    if (ts) sqlite3_bind_double(st, 5, ts);
+    if (said.len) bind_str(st, 6, said);
+    if (said_time.len) bind_str(st, 7, said_time);
+    if (due) sqlite3_bind_double(st, 8, due);
+    return sql_done(db, st) >= 0;
+}
+
+// `day`'s summary as items: a row per line of `markdown`, then one per reminder. Replaces the
+// day's earlier rows and points its alerts at the new ones. In the caller's transaction.
+static bool items_replace(sqlite3* db, const char* day, Str markdown, const Json* reminders) {
+    sqlite3_stmt* st = prepare(db, "DELETE FROM summary_items WHERE day = ?1");
+    if (st) bind_str(st, 1, str(day));
+    if (sql_done(db, st) < 0) return false;
+    i32 pos = 0;
+    Str rest = markdown, line = {};
+    while (next_line(&rest, &line)) {
+        Str t = str_trim(line), b = {};
+        if (!t.len) continue;
+        bool ok;
+        if (str_starts(t, str("## ")) || str_starts(t, str("# "))) {
+            ok = item_insert(db, day, pos++, ITEM_HEADING, str_trim(str_sub(t, str_starts(t, str("## ")) ? 3 : 2)), 0, {}, {}, 0);
+        } else if (bullet_text(t, &b)) {
+            Str hm = point_time(b);
+            ok = item_insert(db, day, pos++, ITEM_POINT, b, hm.len ? said_ts(day, hm) : 0, {}, {}, 0);
+        } else {
+            ok = item_insert(db, day, pos++, ITEM_TEXT, t, 0, {}, {}, 0);
+        }
+        if (!ok) return false;
+    }
+    for (i32 i = 0; i < json_len(reminders); i++) {
+        const Json* r = json_at(reminders, i);
+        Str text = str_trim(json_text(json_get(r, "text")));
+        if (!text.len) continue;
+        Str time = str_trim(json_text(json_get(r, "time")));
+        i32 h, mi;
+        f64 ts = parse_hhmm(time, &h, &mi) ? said_ts(day, time) : 0;
+        if (!item_insert(db, day, pos++, ITEM_REMINDER, text, ts, str_trim(json_text(json_get(r, "said"))), time, due_of(day, r))) return false;
+    }
+    st = prepare(db, "UPDATE alerts SET item = (SELECT i.id FROM summary_items i WHERE i.day = alerts.day AND "
+                 "i.kind = 'reminder' AND i.text = alerts.text) WHERE day = ?1");
+    if (st) bind_str(st, 1, str(day));
+    return sql_done(db, st) >= 0;
+}
+
+static void items_migrate_run(sqlite3* db, Job* job) {
+    if (!db) return;
+    Arena* a = &job->arena;
+    struct Old {
+        char day[11];
+        Str summary;
+        Json reminders;
+    };
+    List<Old> old = {};
+    sqlite3_stmt* st = prepare(db, "SELECT day, summary, reminders FROM summaries s WHERE status = 'done' AND "
+                               "NOT EXISTS (SELECT 1 FROM summary_items i WHERE i.day = s.day)");
+    while (st && sqlite3_step(st) == SQLITE_ROW) {
+        Old o = {};
+        SET(o.day, str((const char*)sqlite3_column_text(st, 0)));
+        o.summary = col_str(st, 1, a);
+        if (!json_parse(a, col_str(st, 2, a), &o.reminders, 0, 0) || o.reminders.type != JSON_ARRAY) o.reminders = {};
+        list_push(&old, o);
+    }
+    sqlite3_finalize(st);
+    i32 made = 0;
+    for (i32 i = 0; i < old.count; i++) {
+        Old* o = &old.items[i];
+        if (tx(db, "BEGIN IMMEDIATE") && items_replace(db, o->day, o->summary, &o->reminders) && tx(db, "COMMIT")) {
+            made++;
+        } else {
+            ERR("summary items for %s could not be made", o->day);
+            tx(db, "ROLLBACK");
+        }
+    }
+    if (made) LOG("summary items made for %d saved summaries", made);
+    list_free(&old);
+}
+
+struct ItemRow {
+    i64 id;
+    ItemKind kind;
+    Str text;
+    f64 ts;
+    Str said, said_time;  // a reminder's
+    f64 due;
+};
+
+// A line that is only bold text: a label ("**To remember**") over the points after it.
+static bool is_label(const ItemRow* r) {
+    Str t = r->text;
+    return r->kind == ITEM_TEXT && t.len > 4 && str_starts(t, str("**")) && str_ends(t, str("**"));
+}
+
+// Whether a heading or label at `i` has a line under it still shown.
+static bool has_lines_under(Slice<ItemRow> rows, i32 i) {
+    bool heading = rows.items[i].kind == ITEM_HEADING;
+    for (i32 j = i + 1; j < rows.count; j++) {
+        const ItemRow* r = &rows.items[j];
+        if (r->kind == ITEM_HEADING || r->kind == ITEM_REMINDER || (!heading && is_label(r))) return false;
+        if (!is_label(r)) return true;
+    }
+    return false;
+}
+
+// `day`'s items not dismissed, in order; headings and labels left with nothing under them are
+// left out.
+static Slice<ItemRow> items_read(sqlite3* db, Arena* a, const char* day) {
+    List<ItemRow> all = {};
+    sqlite3_stmt* st = prepare(db, "SELECT id, kind, text, COALESCE(ts, 0), said, said_time, COALESCE(due_ts, 0) FROM summary_items "
+                               "WHERE day = ?1 AND dismissed = 0 ORDER BY pos");
+    if (st) bind_str(st, 1, str(day));
+    while (st && sqlite3_step(st) == SQLITE_ROW) {
+        ItemRow r = {};
+        r.id = sqlite3_column_int64(st, 0);
+        r.kind = item_kind(col_str(st, 1, scratch()));
+        r.text = col_str(st, 2, a);
+        r.ts = sqlite3_column_double(st, 3);
+        r.said = col_str(st, 4, a);
+        r.said_time = col_str(st, 5, a);
+        r.due = sqlite3_column_double(st, 6);
+        list_push(&all, r);
+    }
+    sqlite3_finalize(st);
+    Slice<ItemRow> rows = {all.items, all.count};
+    Slice<ItemRow> out = {PUSH_ARRAY(a, ItemRow, all.count), 0};
+    for (i32 i = 0; i < rows.count; i++) {
+        bool over = rows.items[i].kind == ITEM_HEADING || is_label(&rows.items[i]);
+        if (!over || has_lines_under(rows, i)) out.items[out.count++] = rows.items[i];
+    }
+    list_free(&all);
+    return out;
+}
+
+// The summary's markdown from its items (summaries.summary; the .md file).
+static Str items_summary(Arena* a, Slice<ItemRow> rows) {
+    Buf b = {};
+    bool first = true;
+    for (i32 i = 0; i < rows.count; i++) {
+        const ItemRow* r = &rows.items[i];
+        if (r->kind == ITEM_REMINDER) continue;
+        if (!first) buf_cstr(&b, (r->kind == ITEM_HEADING || is_label(r)) ? "\n\n" : "\n");
+        if (r->kind == ITEM_HEADING) buf_cstr(&b, "## ");
+        if (r->kind == ITEM_POINT) buf_cstr(&b, "- ");
+        buf_add(&b, r->text);
+        first = false;
+    }
+    return buf_take(&b, a);
+}
+
 StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
     StoredSummary out = {};
     if (!db) return out;
@@ -481,25 +667,33 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
     out.status = row.status;
     out.created_ts = row.created_ts;
     out.model = row.model;
-    out.markdown = row.summary;
-    out.reminder_count = row.reminders.count;
-    out.reminders = PUSH_ARRAY(a, Reminder, out.reminder_count);
-    for (i32 i = 0; i < out.reminder_count; i++) {
-        const Json* j = &row.reminders.items[i];
-        Reminder* r = &out.reminders[i];
-        r->time = json_text(json_get(j, "time"));
-        r->text = json_text(json_get(j, "text"));
-        r->said = json_text(json_get(j, "said"));
+    Slice<ItemRow> rows = items_read(db, a, day);
+    out.items = PUSH_ARRAY(a, SummaryItem, rows.count);
+    out.reminders = PUSH_ARRAY(a, Reminder, rows.count);
+    for (i32 i = 0; i < rows.count; i++) {
+        const ItemRow* it = &rows.items[i];
+        if (it->kind != ITEM_REMINDER) {
+            out.items[out.item_count++] = {it->id, it->kind, it->text, it->ts};
+            continue;
+        }
+        Reminder* r = &out.reminders[out.reminder_count++];
+        r->id = it->id;
+        r->ts = it->ts;
+        r->time = it->said_time;
+        r->text = it->text;
+        r->said = it->said;
         // Its notification, if any; else when it would be due, if it said.
-        i64 id = 0;
         f64 due = 0;
-        Str state = {};
-        if (alert_find(db, a, day, str_trim(r->text), &id, &due, &state)) {
-            r->alert_state = state;
+        sqlite3_stmt* st = prepare(db, "SELECT due_ts, state FROM alerts WHERE item = ?1");
+        if (st) sqlite3_bind_int64(st, 1, it->id);
+        if (st && sqlite3_step(st) == SQLITE_ROW) {
+            due = sqlite3_column_double(st, 0);
+            r->alert_state = col_str(st, 1, a);
         } else {
-            due = due_of(day, j);
+            due = it->due;
             if (due) r->alert_state = str("none");
         }
+        sqlite3_finalize(st);
         if (due) {
             r->alert_due = due;
             r->alert_when = when_text(a, due);
@@ -509,19 +703,19 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
 }
 
 // Also kept as summaries\YYYY-MM-DD.md next to the database, readable without the app.
-static bool write_markdown(App* app, const char* day, Str summary, const Json* reminders) {
+static bool write_markdown(App* app, const char* day, Slice<ItemRow> rows) {
     Mark m = mark(scratch());
     Buf text = {};
     buf_fmt(&text, "# %s\n\n", long_date(scratch(), day).ptr);
-    buf_add(&text, summary);
+    buf_add(&text, items_summary(scratch(), rows));
     buf_cstr(&text, "\n");
-    if (json_len(reminders)) {
-        buf_cstr(&text, "\n## Reminders\n\n");
-        for (i32 i = 0; i < reminders->count; i++) {
-            Str t = json_text(json_get(&reminders->items[i], "text"));
-            Str time = json_text(json_get(&reminders->items[i], "time"));
-            buf_fmt(&text, "- [ ] %.*s (%.*s)\n", (int)t.len, t.ptr, (int)time.len, time.ptr);
-        }
+    bool any = false;
+    for (i32 i = 0; i < rows.count; i++) {
+        const ItemRow* r = &rows.items[i];
+        if (r->kind != ITEM_REMINDER) continue;
+        if (!any) buf_cstr(&text, "\n## Reminders\n\n");
+        any = true;
+        buf_fmt(&text, "- [ ] %.*s (%.*s)\n", (int)r->text.len, r->text.ptr, (int)r->said_time.len, r->said_time.ptr);
     }
     Str data = buf_take(&text, scratch());
     wchar_t dir[MAX_PATH], path[MAX_PATH];
@@ -1058,7 +1252,8 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         rewind(m);
         if (known) continue;
         Str said = str_trim(json_text(json_get(r, "said")));
-        sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'asked')");
+        sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'asked', "
+                                   "(SELECT id FROM summary_items WHERE day = ?1 AND kind = 'reminder' AND text = ?2))");
         if (!st) return;
         bind_str(st, 1, str(day));
         bind_str(st, 2, text);
@@ -1173,6 +1368,7 @@ enum EditOutcome : u8 {
     EDIT_FAILED,        // a statement failed (it is in the log)
     EDIT_NO_DAY,        // no summary for that day
     EDIT_NO_REMINDER,
+    EDIT_NO_ITEM,       // that line is not in the summary (any more)
     EDIT_BAD_DAY,
     EDIT_BAD_ACTION,
 };
@@ -1190,13 +1386,11 @@ struct SummaryEdit {
     App* app;
     EditKind kind;
     char day[11];
-    i64 id;           // EDIT_ANSWER: the reminder; EDIT_NEVER_REMOVE: the topic
-    i32 n;            // the reminder's place in the day's list; -1 for none
+    i64 id;           // EDIT_ANSWER: the alert; EDIT_NEVER_REMOVE: the topic; else the item (summary_items), 0 for none
     bool on;          // EDIT_REMIND: turn it on
     bool quiet;       // EDIT_REMIND: say nothing
     char action[16];  // EDIT_ANSWER
-    Str text;         // EDIT_DISMISS: the bullet; EDIT_NEVER_ADD: the topic
-    Str bullet;       // EDIT_NEVER_ADD: the point to take out too
+    Str text;         // EDIT_NEVER_ADD: the topic
     // What came of it, for the main thread (edit_apply).
     EditOutcome outcome;
     bool changed;     // the stored summaries changed: Summary.version
@@ -1243,104 +1437,111 @@ static void edit_answer(sqlite3* db, SummaryEdit* e) {
 
 static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
     const char* day = e->day;
-    i32 n = e->n;
-    SavedRow row = saved_row(db, a, day);
-    i32 y, mo, d;
-    if (!row.found) {
-        e->outcome = EDIT_NO_DAY;
-    } else if (n < 0 || n >= row.reminders.count) {
-        e->outcome = EDIT_NO_REMINDER;
-    } else if (!parse_day(day, &y, &mo, &d)) {
-        e->outcome = EDIT_BAD_DAY;
-    } else {
-        const Json* r = &row.reminders.items[n];
-        Str text = str_trim(json_text(json_get(r, "text")));
-        i64 id = 0;
-        f64 old_due = 0;
-        Str state = {};
-        bool known = alert_find(db, a, day, text, &id, &old_due, &state);
-        if (!e->on) {
-            if (known) {
-                sqlite3_stmt* st = prepare(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
-                if (st) sqlite3_bind_int64(st, 1, id);
-                if (sql_done(db, st) < 0) e->outcome = EDIT_FAILED;
-            }
-        } else {
-            f64 due = due_of(day, r);
-            if (due <= now_ts()) due = next_morning();
-            sqlite3_stmt* st = 0;
-            if (known) {
-                st = prepare(db, "UPDATE alerts SET state = 'set', due_ts = ?2 WHERE id = ?1");
-                if (st) {
-                    sqlite3_bind_int64(st, 1, id);
-                    sqlite3_bind_double(st, 2, due);
-                }
-            } else {
-                st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state) VALUES (?1, ?2, ?3, ?4, ?5, 'set')");
-                if (st) {
-                    bind_str(st, 1, str(day));
-                    bind_str(st, 2, text);
-                    bind_str(st, 3, json_text(json_get(r, "said")));
-                    bind_str(st, 4, json_text(json_get(r, "time")));
-                    sqlite3_bind_double(st, 5, due);
-                }
-            }
-            if (sql_done(db, st) >= 0) {
-                e->due = due;
-                alert_due_at(e->app, due);
-            } else {
-                e->outcome = EDIT_FAILED;
-            }
-        }
-        e->changed = true;
+    sqlite3_stmt* st = prepare(db, "SELECT text, said, said_time, COALESCE(due_ts, 0) FROM summary_items "
+                               "WHERE id = ?1 AND day = ?2 AND kind = 'reminder' AND dismissed = 0");
+    if (st) {
+        sqlite3_bind_int64(st, 1, e->id);
+        bind_str(st, 2, str(day));
     }
-}
-
-static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, Str bullet, i32 reminder) {
-    const char* day = e->day;
-    SavedRow row = saved_row(db, a, day);
-    if (!row.found) {
-        e->outcome = EDIT_NO_DAY;
+    bool found = st && sqlite3_step(st) == SQLITE_ROW;
+    Str text = {}, said = {}, said_time = {};
+    f64 due = 0;
+    if (found) {
+        text = col_str(st, 0, a);
+        said = col_str(st, 1, a);
+        said_time = col_str(st, 2, a);
+        due = sqlite3_column_double(st, 3);
+    }
+    sqlite3_finalize(st);
+    if (!found) {
+        e->outcome = EDIT_NO_REMINDER;
         return;
     }
-    Str text = row.summary;
-    bullet = str_trim(bullet);
-    if (bullet.len) {
-        Buf kept = {};
-        Str rest = text, line = {};
-        bool first = true;
-        while (next_line(&rest, &line)) {
-            Str b = {};
-            if (bullet_text(line, &b) && str_eq(b, bullet)) continue;
-            if (!first) buf_cstr(&kept, "\n");
-            buf_add(&kept, line);
-            first = false;
-        }
-        text = drop_empty_labels(a, buf_take(&kept, a));
-    }
-    Json* list = &row.reminders;
-    if (reminder >= 0) {
-        if (reminder >= list->count) {
-            e->outcome = EDIT_NO_REMINDER;
-            return;
-        }
-        memmove(&list->items[reminder], &list->items[reminder + 1], sizeof(Json) * (list->count - reminder - 1));
-        list->count--;
-    }
-    sqlite3_stmt* st = prepare(db, "UPDATE summaries SET summary = ?1, reminders = ?2 WHERE day = ?3");
+    // Its alert: by the item, or by the day and text for one made before items had ids.
+    i64 alert = 0;
+    st = prepare(db, "SELECT id FROM alerts WHERE item = ?1 OR (day = ?2 AND text = ?3) ORDER BY item IS NULL LIMIT 1");
     if (st) {
-        bind_str(st, 1, text);
-        bind_str(st, 2, json_string_of(a, list));
-        bind_str(st, 3, str(day));
+        sqlite3_bind_int64(st, 1, e->id);
+        bind_str(st, 2, str(day));
+        bind_str(st, 3, text);
+        if (sqlite3_step(st) == SQLITE_ROW) alert = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    e->changed = true;
+    if (!e->on) {
+        if (!alert) return;
+        st = prepare(db, "UPDATE alerts SET state = 'no' WHERE id = ?1");
+        if (st) sqlite3_bind_int64(st, 1, alert);
+        if (sql_done(db, st) < 0) e->outcome = EDIT_FAILED;
+        return;
+    }
+    if (due <= now_ts()) due = next_morning();
+    if (alert) {
+        st = prepare(db, "UPDATE alerts SET state = 'set', due_ts = ?2, item = ?3 WHERE id = ?1");
+        if (st) {
+            sqlite3_bind_int64(st, 1, alert);
+            sqlite3_bind_double(st, 2, due);
+            sqlite3_bind_int64(st, 3, e->id);
+        }
+    } else {
+        st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'set', ?6)");
+        if (st) {
+            bind_str(st, 1, str(day));
+            bind_str(st, 2, text);
+            bind_str(st, 3, said);
+            bind_str(st, 4, said_time);
+            sqlite3_bind_double(st, 5, due);
+            sqlite3_bind_int64(st, 6, e->id);
+        }
     }
     if (sql_done(db, st) < 0) {
         e->outcome = EDIT_FAILED;
         return;
     }
-    i32 y, mo, d;
-    if (parse_day(day, &y, &mo, &d)) write_markdown(app, day, text, list);
+    e->due = due;
+    alert_due_at(e->app, due);
+}
+
+// Takes item `item` out of `day`'s summary: marks it dismissed (a reminder's notification goes
+// off with it), then writes the summary's markdown and its .md file again from what is left.
+static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, i64 item) {
+    const char* day = e->day;
+    if (!tx(db, "BEGIN IMMEDIATE")) {
+        e->outcome = EDIT_FAILED;
+        return;
+    }
+    sqlite3_stmt* st = prepare(db, "UPDATE summary_items SET dismissed = 1 WHERE id = ?1 AND day = ?2 AND dismissed = 0");
+    if (st) {
+        sqlite3_bind_int64(st, 1, item);
+        bind_str(st, 2, str(day));
+    }
+    i32 changed = sql_done(db, st);
+    if (changed > 0) {
+        st = prepare(db, "UPDATE alerts SET state = 'no' WHERE item = ?1 AND state IN ('asked', 'set')");
+        if (st) sqlite3_bind_int64(st, 1, item);
+        if (sql_done(db, st) < 0) changed = -1;
+    }
+    Slice<ItemRow> rows = {};
+    if (changed > 0) {
+        rows = items_read(db, a, day);
+        st = prepare(db, "UPDATE summaries SET summary = ?1 WHERE day = ?2");
+        if (st) {
+            bind_str(st, 1, items_summary(a, rows));
+            bind_str(st, 2, str(day));
+        }
+        if (sql_done(db, st) < 0) changed = -1;
+    }
+    if (changed <= 0 || !tx(db, "COMMIT")) {
+        tx(db, "ROLLBACK");
+        e->outcome = changed == 0 ? EDIT_NO_ITEM : EDIT_FAILED;
+        return;
+    }
+    write_markdown(app, day, rows);
+    SavedRow row = saved_row(db, a, day);
+    i32 reminders = 0;
+    for (i32 i = 0; i < rows.count; i++) reminders += rows.items[i].kind == ITEM_REMINDER;
     e->has_row = true;
-    e->row = day_row(day, row.status.ptr, row.created_ts, list->count);
+    e->row = day_row(day, row.status.ptr, row.created_ts, reminders);
     e->changed = true;
 }
 
@@ -1354,7 +1555,7 @@ static void edit_run(sqlite3* db, Job* job) {
     switch (e->kind) {
     case EDIT_ANSWER: edit_answer(db, e); break;
     case EDIT_REMIND: edit_remind(db, a, e); break;
-    case EDIT_DISMISS: edit_dismiss(e->app, db, a, e, e->text, e->n); break;
+    case EDIT_DISMISS: edit_dismiss(e->app, db, a, e, e->id); break;
     case EDIT_NEVER_ADD: {
         sqlite3_stmt* st = prepare(db, "INSERT INTO summary_never (topic, created_ts) VALUES (?1, ?2)");
         if (st) {
@@ -1368,7 +1569,7 @@ static void edit_run(sqlite3* db, Job* job) {
         e->topic.id = sqlite3_last_insert_rowid(db);
         set(e->topic.topic, sizeof(e->topic.topic), e->text);
         LOG("the summary will never mention: %.*s", (int)e->text.len, e->text.ptr);
-        if (e->day[0] && e->bullet.len) edit_dismiss(e->app, db, a, e, e->bullet, -1);
+        if (e->day[0] && e->id) edit_dismiss(e->app, db, a, e, e->id);
         break;
     }
     case EDIT_NEVER_REMOVE: {
@@ -1415,6 +1616,7 @@ static void edit_apply(App* app, Job* job) {
     case EDIT_FAILED: say = e->kind == EDIT_SKIP ? "Could not save the skip" : "Could not save that (see the log)"; break;
     case EDIT_NO_DAY: say = "No summary for that day"; break;
     case EDIT_NO_REMINDER: say = "No such reminder"; break;
+    case EDIT_NO_ITEM: say = "That point is already gone"; break;
     case EDIT_BAD_DAY: say = "Bad day"; break;
     case EDIT_BAD_ACTION: break;  // a link from an old notification: in the log
     }
@@ -1427,7 +1629,6 @@ static SummaryEdit* edit_new(App* app, Job** job, EditKind kind, const char* day
     SummaryEdit* e = PUSH(&(*job)->arena, SummaryEdit);
     e->app = app;
     e->kind = kind;
-    e->n = -1;
     if (day) SET(e->day, str(day));
     (*job)->data = e;
     return e;
@@ -1444,24 +1645,23 @@ void reminder_answer(App* app, i64 id, const char* action) {
     db_post(job, edit_run);
 }
 
-void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet) {
+void reminder_set(App* app, const char* day, i64 item, bool on, bool quiet) {
     Job* job;
     SummaryEdit* e = edit_new(app, &job, EDIT_REMIND, day);
-    e->n = n;
+    e->id = item;
     e->on = on;
     e->quiet = quiet;
     db_post(job, edit_run);
 }
 
-void summary_dismiss(App* app, const char* day, Str bullet, i32 reminder) {
+void summary_dismiss(App* app, const char* day, i64 item) {
     Job* job;
     SummaryEdit* e = edit_new(app, &job, EDIT_DISMISS, day);
-    e->text = str_copy(&job->arena, bullet);
-    e->n = reminder;
+    e->id = item;
     db_post(job, edit_run);
 }
 
-void summary_add_never(App* app, Str topic, const char* day, Str bullet) {
+void summary_add_never(App* app, Str topic, const char* day, i64 item) {
     topic = str_trim(topic);
     if (!topic.len) {
         ui_say(app, "Say what to leave out");
@@ -1470,7 +1670,7 @@ void summary_add_never(App* app, Str topic, const char* day, Str bullet) {
     Job* job;
     SummaryEdit* e = edit_new(app, &job, EDIT_NEVER_ADD, day);
     e->text = str_copy(&job->arena, topic);
-    e->bullet = str_copy(&job->arena, bullet);
+    e->id = day ? item : 0;
     db_post(job, edit_run);
 }
 
@@ -1750,13 +1950,20 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         summary = str_trim(str_fmt(a, "%.*s%.*s", (int)summary.len, summary.ptr, (int)section.len, section.ptr));
         Json reminders = keep_real_reminders(a, json_get(&result, "reminders"), mine);
         f64 saved_ts = now_ts();
-        if (!save(db, day, "done", saved_ts, cfg->model, summary, json_string_of(a, &reminders))) {
+        bool stored = tx(db, "BEGIN IMMEDIATE");
+        stored = stored && save(db, day, "done", saved_ts, cfg->model, summary, json_string_of(a, &reminders)) &&
+                 items_replace(db, day, summary, &reminders) && tx(db, "COMMIT");
+        if (!stored) {
             snprintf(error, cap, "could not save the summary: %s", sqlite3_errmsg(db));
+            tx(db, "ROLLBACK");
             goto done;
         }
-        *saved = day_row(day, "done", saved_ts, reminders.count);
+        Slice<ItemRow> rows = items_read(db, a, day);
+        i32 shown_reminders = 0;
+        for (i32 i = 0; i < rows.count; i++) shown_reminders += rows.items[i].kind == ITEM_REMINDER;
+        *saved = day_row(day, "done", saved_ts, shown_reminders);
         if (cfg->ask_reminders) alerts_offer(app, db, day, &reminders);
-        if (!write_markdown(app, day, summary, &reminders)) WARN("could not write the summary file for %s", day);
+        if (!write_markdown(app, day, rows)) WARN("could not write the summary file for %s", day);
         i32 count = reminders.count;
         LOG("summary for %s done (%lld words, %d reminders)", day, count_words(summary), count);
         phase_post(app, "done");
@@ -2077,6 +2284,7 @@ void summary_start(App* app) {
     app->summary.wake = CreateEventW(0, FALSE, FALSE, 0);
     CHECK(app->summary.wake, "the summary's wake event (error %lu)", GetLastError());
     summary_options_publish(app);
+    db_post(job_new(0), items_migrate_run);
     Job* job = job_new(lists_apply);
     job->data = PUSH(&job->arena, ListsRead);
     db_post(job, lists_run);

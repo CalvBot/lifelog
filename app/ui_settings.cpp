@@ -225,7 +225,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_WORDS: summary_set_max_words(app, u.n); break;
     case UNDO_REMINDERS: summary_set_ask_reminders(app, u.on); break;
     case UNDO_PAUSE_GAMES: worker_set_pause_for_games(app, u.on); break;
-    case UNDO_NEVER: summary_add_never(app, str(u.text), 0, {}); break;
+    case UNDO_NEVER: summary_add_never(app, str(u.text), 0, 0); break;
     case UNDO_CHIME_STYLE: chime_set_style(app, (ChimeStyle)u.n); break;
     case UNDO_CHIME_VOLUME: chime_set_volume(app, u.n); break;
     }

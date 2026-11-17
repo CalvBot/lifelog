@@ -31,9 +31,26 @@ CREATE TABLE IF NOT EXISTS summaries (
     status     TEXT NOT NULL,     -- 'done' | 'skipped'
     created_ts REAL NOT NULL,
     model      TEXT,
-    summary    TEXT,              -- markdown
-    reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}
+    summary    TEXT,              -- markdown, as shown (made from summary_items)
+    reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}, as the model wrote them
 );
+
+-- Each summary's lines and reminders, in order: what the journal shows, and what its buttons
+-- (dismiss, never mention, remind me, show in timeline) act on, by id. Written with the summary;
+-- a rewrite replaces the day's rows, so dismissed ones come back.
+CREATE TABLE IF NOT EXISTS summary_items (
+    id        INTEGER PRIMARY KEY,
+    day       TEXT NOT NULL,     -- the summary's day, 'YYYY-MM-DD'
+    pos       INTEGER NOT NULL,  -- its place in the day
+    kind      TEXT NOT NULL,     -- 'heading' | 'point' | 'text' | 'reminder'
+    text      TEXT NOT NULL,     -- markdown (bold) for a heading, point or text; the to-do of a reminder
+    ts        REAL,              -- unix seconds of the moment it is about (a point's "(14:05)", when a reminder was said)
+    said      TEXT,              -- a reminder: my words
+    said_time TEXT,              -- a reminder: 'HH:MM'
+    due_ts    REAL,              -- a reminder: when it said it is due, if it did
+    dismissed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS summary_items_day ON summary_items (day, pos);
 
 -- Files pasted into the timeline from the tray ("Paste here"); copies kept under <data_dir>/files.
 CREATE TABLE IF NOT EXISTS files (
@@ -56,6 +73,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     said_time TEXT,              -- 'HH:MM'
     due_ts    REAL NOT NULL,     -- unix seconds
     state     TEXT NOT NULL,     -- 'asked' | 'set' | 'shown' | 'no'
+    item      INTEGER,           -- the reminder's summary_items id (added later: see db_init)
     UNIQUE (day, text)
 );
 

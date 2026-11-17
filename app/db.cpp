@@ -67,6 +67,7 @@ bool db_init() {
     if (ok && !has_column(db, "segments", "audio")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio TEXT", 0, 0, 0);
     if (ok && !has_column(db, "segments", "audio_offset")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio_offset REAL", 0, 0, 0);
     if (ok && !has_column(db, "files", "link")) sqlite3_exec(db, "ALTER TABLE files ADD COLUMN link INTEGER NOT NULL DEFAULT 0", 0, 0, 0);
+    if (ok && !has_column(db, "alerts", "item")) sqlite3_exec(db, "ALTER TABLE alerts ADD COLUMN item INTEGER", 0, 0, 0);
     sqlite3_close(db);
     rewind(m);
     return ok;

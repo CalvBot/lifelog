@@ -19,7 +19,18 @@ struct SummaryDay {
     i32 reminders;       // how many "to do" points
 };
 
+// A summary's line, as the journal shows it (summary_items).
+enum ItemKind : u8 { ITEM_HEADING, ITEM_POINT, ITEM_TEXT, ITEM_REMINDER };
+struct SummaryItem {
+    i64 id;
+    ItemKind kind;   // not ITEM_REMINDER: those are StoredSummary.reminders
+    Str text;        // markdown
+    f64 ts;          // the moment it is about, for "show in timeline"; 0 if none
+};
+
 struct Reminder {
+    i64 id;      // its summary_items id
+    f64 ts;      // when it was said; 0 if not known
     Str time;    // "HH:MM" when it was said
     Str text;    // the to-do
     Str said;    // my words
@@ -36,7 +47,8 @@ struct StoredSummary {
     Str status;
     f64 created_ts;
     Str model;
-    Str markdown;
+    SummaryItem* items;      // the lines not dismissed, in order
+    i32 item_count;
     Reminder* reminders;
     i32 reminder_count;
 };
@@ -153,20 +165,20 @@ const wchar_t* summary_prompt_file(App* app);
 // One day's summary, with each reminder's notification state. Any thread.
 StoredSummary summary_get(sqlite3* db, Arena* a, const char* day);
 
-// Takes a point out of a day's summary (it comes back if the day is rewritten). `bullet` is the
-// line's text; `reminder` is an index into its reminders, or -1.
-void summary_dismiss(App* app, const char* day, Str bullet, i32 reminder);
-// Never mention `topic` again; with a day and bullet, also takes that point out.
-void summary_add_never(App* app, Str topic, const char* day, Str bullet);
+// Takes a line or reminder (`item`, a SummaryItem or Reminder id) out of a day's summary; it comes
+// back if the day is rewritten. A reminder's notification goes off with it.
+void summary_dismiss(App* app, const char* day, i64 item);
+// Never mention `topic` again; with a day and item, also takes that line out.
+void summary_add_never(App* app, Str topic, const char* day, i64 item);
 void summary_remove_never(App* app, i64 id);
 
-// The journal's bell: notify about reminder `n` of `day` when it is due (or tomorrow at 09:00).
+// The journal's bell: notify about reminder `item` of `day` when it is due (or tomorrow at 09:00).
 // The window then says when it will show ("tomorrow at 09:00").
 //
 // These change the database on its thread (db_post) and return at once. Each reports what it
 // did (the row, topic or due time it changed); the main thread updates Summary's lists from that
 // and the window says what happened. The main thread.
-void reminder_set(App* app, const char* day, i32 n, bool on, bool quiet = false);
+void reminder_set(App* app, const char* day, i64 item, bool on, bool quiet = false);
 // A reminder notification's buttons: "yes", "no", "done", "snooze".
 void reminder_answer(App* app, i64 id, const char* action);
 

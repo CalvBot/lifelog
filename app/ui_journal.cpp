@@ -55,7 +55,7 @@ struct JournalState {
     // The point being taken out with "never mention", and the topic typed for it.
     bool never_open;
     bool never_focus;
-    char never_bullet[1024];
+    i64 never_item;
     char never_topic[128];
     u64 asked;  // the request on the way (g_journal_seq); older results are dropped
 };
@@ -172,21 +172,6 @@ static Str strip_md(Str s) {
     }
     out[n] = 0;
     return {out, n};
-}
-
-// The "HH:MM" at the end of a "To remember" point: "Call Sam back (14:05)". Empty if none.
-static Str trailing_time(Str text) {
-    text = str_trim(text);
-    if (text.len < 7 || text.ptr[text.len - 1] != ')' || text.ptr[text.len - 7] != '(') return {};
-    Str t = str_sub(text, text.len - 6, 5);
-    return t.ptr[2] == ':' ? t : Str{};
-}
-
-// Unix time of "HH:MM" on journal day `day` (before 04:00 is the next morning); 0 if not a time.
-static f64 moment(const char* day, Str hm) {
-    i32 h, m;
-    if (!parse_hhmm(hm, &h, &m)) return 0;
-    return said_ts(day, hm);
 }
 
 // "Today" or "Wed 12 Nov", for the day list.
@@ -427,7 +412,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         ImGui::TextColored(weak_text(), "%s", app->summary.phase[0] ? app->summary.phase : "writing");
     }
 
-    if (!sum->found || sum->markdown.len == 0) {
+    if (!sum->found || (sum->item_count == 0 && sum->reminder_count == 0)) {
         bool skipped = sum->found && str_eq(sum->status, str("skipped"));
         ImGui::TextColored(weak_text(), "%s", skipped ? "Skipped." : "No summary yet.");
         if (!writing) {
@@ -444,35 +429,27 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         return;
     }
 
-    // Markdown: headings, bullets and plain lines.
+    // Its lines: headings, points and plain text, each acted on by its id.
     const f32 slot_w = px(3 * SLOT_BUTTON + 8);
-    Str rest = sum->markdown;
-    while (rest.len) {
-        i64 nl = str_find(rest, str("\n"));
-        Str raw = nl < 0 ? rest : str_sub(rest, 0, nl);
-        rest = nl < 0 ? Str{} : str_sub(rest, nl + 1);
-        Str line = raw;
-        while (line.len && (line.ptr[line.len - 1] == '\r' || line.ptr[line.len - 1] == ' ' || line.ptr[line.len - 1] == '\t')) line.len--;
-        Str lead = line;
-        while (lead.len && (lead.ptr[0] == ' ' || lead.ptr[0] == '\t')) lead = str_sub(lead, 1);
-
-        if (str_starts(line, str("## ")) || str_starts(line, str("# "))) {
+    for (i32 i = 0; i < sum->item_count; i++) {
+        SummaryItem* it = &sum->items[i];
+        if (it->kind == ITEM_HEADING) {
+            if (i) ImGui::Dummy(ImVec2(0, 0));
             ImGui::Dummy(ImVec2(0, px(2)));
-            sized_text(18, text_color(), str_sub(line, str_starts(line, str("## ")) ? 3 : 2));
-        } else if (str_starts(lead, str("- ")) || str_starts(lead, str("* "))) {
-            Str bullet = str_sub(lead, 2);
-            ImGui::PushID((i32)(raw.ptr - sum->markdown.ptr));
+            sized_text(18, text_color(), it->text);
+        } else if (it->kind == ITEM_POINT) {
+            ImGui::PushID((i32)it->id);
             ImVec2 row_min = ImGui::GetCursorScreenPos();
-            ImGui::TextUnformatted("•");
+            ImGui::TextUnformatted("\xe2\x80\xa2");
             ImGui::SameLine();
             f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - slot_w - px(8);
             if (width < px(80)) width = px(80);
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
-            Str shown = strip_md(bullet);
+            Str shown = strip_md(it->text);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
             ImGui::PopTextWrapPos();
             ImVec2 row_max = ImVec2(row_min.x + col_w, ImGui::GetItemRectMax().y);
-            bool open = s->never_open && str_eq(str(s->never_bullet), bullet);
+            bool open = s->never_open && s->never_item == it->id;
             if (open) {
                 ImGui::Indent(px(16));
                 ImGui::AlignTextToFramePadding();
@@ -491,34 +468,31 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                 ImGui::Unindent(px(16));
                 if (save && str_trim(str(s->never_topic)).len) {
                     s->never_open = false;
-                    summary_add_never(app, str(s->never_topic), day, bullet);
+                    summary_add_never(app, str(s->never_topic), day, it->id);
                 }
             } else if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(row_min, row_max)) {
                 // Drawn into space the row always keeps, so hovering never moves the text.
                 f32 x = row_min.x + col_w - slot_w;
-                Str hm = trailing_time(bullet);
-                f64 ts = hm.len ? moment(day, hm) : 0;
-                if (ts) {
-                    if (slot_button(x, row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, strip_md(bullet));
+                if (it->ts) {
+                    if (slot_button(x, row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, it->ts, shown);
                     x += px(SLOT_BUTTON + 4);
                 }
                 if (slot_button(x, row_min.y, ICON_X, "Dismiss (not worth keeping)")) {
-                    summary_dismiss(app, day, bullet, -1);
+                    summary_dismiss(app, day, it->id);
                     ui_say(app, "Dismissed. Rewrite brings it back");
                 }
                 x += px(SLOT_BUTTON + 4);
                 if (slot_button(x, row_min.y, ICON_BAN, "Never mention this topic")) {
                     s->never_open = true;
                     s->never_focus = true;
-                    SET(s->never_bullet, bullet);
+                    s->never_item = it->id;
                     s->never_topic[0] = 0;
                 }
             }
             ImGui::PopID();
-        } else if (str_trim(line).len == 0) {
-            ImGui::Dummy(ImVec2(0, 0));
         } else {
-            Str shown = strip_md(line);
+            if (i && it->text.len > 4 && str_starts(it->text, str("**"))) ImGui::Dummy(ImVec2(0, 0));  // a label
+            Str shown = strip_md(it->text);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
         }
     }
@@ -529,7 +503,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         for (i32 n = 0; n < sum->reminder_count; n++) {
             Reminder* r = &sum->reminders[n];
             bool set = str_eq(r->alert_state, str("set"));
-            ImGui::PushID(n);
+            ImGui::PushID((i32)r->id);
             ImVec2 row_min = ImGui::GetCursorScreenPos();
             ImGui::TextColored(weak_text(), "%.*s", (int)r->time.len, r->time.ptr);
             ImGui::SameLine();
@@ -551,15 +525,13 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
                                 : (r->alert_when.len && r->alert_due > now_ts()) ? tmp("Remind me %.*s", (int)r->alert_when.len, r->alert_when.ptr)
                                 : "Remind me tomorrow at 09:00";
                 if (slot_button(x, row_min.y, set ? ICON_BELL_RING : ICON_BELL, tip)) {
-                    reminder_set(app, day, n, !set);  // it says when
+                    reminder_set(app, day, r->id, !set);  // it says when
                 }
             }
-            f64 ts = moment(day, r->time);
+            f64 ts = r->ts;
             if (hovered && ts && slot_button(x + px(SLOT_BUTTON + 4), row_min.y, ICON_SCROLL_TEXT, "Show in timeline")) ui_jump(app, ts, r->said);
             if (hovered && slot_button(x + px(2 * (SLOT_BUTTON + 4)), row_min.y, ICON_X, "Dismiss (not a real to-do)")) {
-                // A notification that is on goes off first, while its place in the list is known.
-                if (set) reminder_set(app, day, n, false, true);  // the dismiss says what happened
-                summary_dismiss(app, day, {}, n);
+                summary_dismiss(app, day, r->id);  // its notification goes off with it
                 ui_say(app, "Dismissed. Rewrite brings it back");
             }
             ImGui::PopID();
