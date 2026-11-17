@@ -223,11 +223,9 @@ static void tl_preview_apply(App* app, Job* job) {
 }
 
 static void tl_clip_done(App* app, ClipResult* r, ClipKind kind, i64) {
-    if (!r->ok) ui_say(app, "%s", r->error);
-    else if (kind == CLIP_TEXT) ui_say(app, "Copied %d lines", r->lines);
-    else if (kind == CLIP_FILE) ui_say(app, "Copied %d lines as a file", r->lines);
-    else if (r->seconds < 60) ui_say(app, "Copied %.0f s of audio", ceil(r->seconds));
-    else ui_say(app, "Copied %s of audio", duration_text(r->seconds));
+    Mark m = mark(scratch());
+    ui_say(app, "%s", copy_message(r, kind));
+    rewind(m);
 }
 
 static void tl_copy_range(App* app, f64 from, f64 to, Names exclude, ClipKind kind) {

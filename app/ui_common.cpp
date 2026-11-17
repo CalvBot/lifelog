@@ -204,6 +204,15 @@ static const char* duration_text(f64 secs) {
     return tmp("%lld h %lld min", m / 60, m % 60);
 }
 
+// What a finished copy says: "Copied 12 lines", "Copied 40 s of audio", or what went wrong.
+// Into scratch.
+static const char* copy_message(const ClipResult* r, ClipKind kind) {
+    if (!r->ok) return tmp("%s", r->error);
+    if (kind == CLIP_TEXT) return tmp("Copied %d lines", r->lines);
+    if (kind == CLIP_FILE) return tmp("Copied %d lines as a file", r->lines);
+    if (r->seconds < 60) return tmp("Copied %.0f s of audio", ceil(r->seconds));
+    return tmp("Copied %s of audio", duration_text(r->seconds));
+}
 // "now", "5 min ago", "3 h ago", "12 Nov"
 static const char* ago_text(f64 ts) {
     if (ts <= 0) return "";

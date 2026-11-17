@@ -13,13 +13,6 @@ struct CopyState {
 };
 static CopyState g_copy;
 
-// What a finished copy says.
-static const char* copy_message(ClipResult* r, ClipKind kind) {
-    if (!r->ok) return tmp("%s", r->error);
-    if (kind == CLIP_TEXT) return tmp("Copied %d lines", r->lines);
-    if (kind == CLIP_FILE) return tmp("Copied %d lines as a file", r->lines);
-    return tmp("Copied %s of audio", duration_text(r->seconds));
-}
 
 static void copy_done(App* app, ClipResult* r, ClipKind kind, i64) {
     g_copy.result = *r;
@@ -28,11 +21,12 @@ static void copy_done(App* app, ClipResult* r, ClipKind kind, i64) {
     // With the menu gone, the window says it instead.
     if (!app->ui.popup_state) {
         Mark m = mark(scratch());
-        ui_say(app, "%s", copy_message(r, kind));
+        ui_say(app, "%s", copy_message(r, kind));  // wakes the window
         rewind(m);
         g_copy.done = false;
+    } else {
+        wake_window(app);
     }
-    wake_window(app);
 }
 
 struct PopupState {
