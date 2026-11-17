@@ -555,7 +555,15 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const W
         return SENT_OK;
     }
 
+    // Where the clip sits: its first sample's position at its rate (see capture.cpp). Clips spooled
+    // before positions were written have only start_ts.
+    const Json* rate_j = json_get(&meta, "sample_rate");
+    i32 rate = rate_j->type == JSON_NUMBER && rate_j->num > 0 ? (i32)rate_j->num : 16000;
+    const Json* start_j = json_get(&meta, "start");
     f64 start_ts = json_get(&meta, "start_ts")->num;
+    i64 start = start_j->type == JSON_NUMBER ? (i64)start_j->num : (i64)floor(start_ts * rate + 0.5);
+    i64 length = wav.len > WAV_HEADER ? (wav.len - WAV_HEADER) / 2 : 0;
+    start_ts = (f64)start / rate;
     Str source = json_text(json_get(&meta, "source"));
     Str exe = json_text(json_get(&meta, "exe"));
     Str named = json_text(json_get(&meta, "speaker"));  // a person in a call, if the clip says
@@ -565,17 +573,33 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const W
     Str kept = heard.count ? str_fmt(a, "%04d-%02d-%02d/%s", lt.year, lt.month, lt.day, label.ptr) : Str{};
 
     if (heard.count) {
+        sqlite3_stmt* rec = 0;
         sqlite3_stmt* st = 0;
         bool saved = sqlite3_exec(db, "BEGIN IMMEDIATE", 0, 0, 0) == SQLITE_OK &&
+                     sqlite3_prepare_v2(db, "INSERT INTO recordings (file, sample_rate, start, length, source, speaker) VALUES (?, ?, ?, ?, ?, ?)",
+                                        -1, &rec, 0) == SQLITE_OK &&
                      sqlite3_prepare_v2(db,
-                                        "INSERT INTO segments (start_ts, end_ts, source, speaker, exe, pid, title, device, text, audio, audio_offset)"
-                                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                        "INSERT INTO segments (start_ts, end_ts, source, speaker, exe, pid, title, device, text, recording,"
+                                        " start_sample, end_sample) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                         -1, &st, 0) == SQLITE_OK;
+        if (saved) {
+            bind_str(rec, 1, kept);
+            sqlite3_bind_int(rec, 2, rate);
+            sqlite3_bind_int64(rec, 3, start);
+            sqlite3_bind_int64(rec, 4, length);
+            bind_str(rec, 5, source);
+            bind_str(rec, 6, speaker);
+            saved = sqlite3_step(rec) == SQLITE_DONE;
+        }
+        i64 recording = sqlite3_last_insert_rowid(db);
         const Json* pid = json_get(&meta, "pid");
         for (i32 i = 0; saved && i < heard.count; i++) {
             Heard* h = &heard.items[i];
-            sqlite3_bind_double(st, 1, start_ts + h->start);
-            sqlite3_bind_double(st, 2, start_ts + h->end);
+            i64 from = (i64)floor(h->start * rate + 0.5), to = (i64)floor(h->end * rate + 0.5);
+            from = from < 0 ? 0 : from > length ? length : from;
+            to = to < from ? from : to > length ? length : to;
+            sqlite3_bind_double(st, 1, (f64)(start + from) / rate);
+            sqlite3_bind_double(st, 2, (f64)(start + to) / rate);
             bind_str(st, 3, source);
             bind_str(st, 4, speaker);
             bind_opt(st, 5, exe);
@@ -584,12 +608,14 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const W
             bind_opt(st, 7, json_text(json_get(&meta, "title")));
             bind_opt(st, 8, json_text(json_get(&meta, "device")));
             bind_str(st, 9, h->text);
-            bind_opt(st, 10, kept);
-            sqlite3_bind_double(st, 11, h->start);
+            sqlite3_bind_int64(st, 10, recording);
+            sqlite3_bind_int64(st, 11, from);
+            sqlite3_bind_int64(st, 12, to);
             saved = sqlite3_step(st) == SQLITE_DONE;
             sqlite3_reset(st);
         }
         if (!saved) WARN("%s: saving its lines failed (%s); trying again later", label.ptr, sqlite3_errmsg(db));
+        sqlite3_finalize(rec);
         sqlite3_finalize(st);
         saved = saved && sqlite3_exec(db, "COMMIT", 0, 0, 0) == SQLITE_OK;
         if (!saved) {

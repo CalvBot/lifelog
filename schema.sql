@@ -1,6 +1,19 @@
 -- Loaded by lifelog at start. Must stay idempotent.
 PRAGMA journal_mode = WAL;
 
+-- One row per recorded clip that had words in it. Positions are sample counts at sample_rate
+-- since 1970 (UTC), taken from the capture device's clock.
+CREATE TABLE IF NOT EXISTS recordings (
+    id          INTEGER PRIMARY KEY,
+    file        TEXT NOT NULL,     -- 'YYYY-MM-DD/<file>.wav' under <data_dir>/audio (deleted after capture.keep_audio_days)
+    sample_rate INTEGER NOT NULL,  -- 16000
+    start       INTEGER NOT NULL,  -- the position of its first sample
+    length      INTEGER NOT NULL,  -- in samples
+    source      TEXT NOT NULL,     -- as its lines'
+    speaker     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recordings_start ON recordings (start);
+
 CREATE TABLE IF NOT EXISTS segments (
     id       INTEGER PRIMARY KEY,
     start_ts REAL NOT NULL,   -- unix seconds (UTC)
@@ -12,8 +25,9 @@ CREATE TABLE IF NOT EXISTS segments (
     title    TEXT,            -- window title when the audio started
     device   TEXT,            -- capture device name (mic only); a record, not read back
     text     TEXT NOT NULL,
-    audio    TEXT,            -- the clip it came from, 'YYYY-MM-DD/<file>.wav' under <data_dir>/audio (kept capture.keep_audio_days)
-    audio_offset REAL         -- seconds into that clip where the line starts
+    recording    INTEGER,     -- the recording it was heard in (NULL for lines from before audio was kept)
+    start_sample INTEGER,     -- where it is in that recording, in samples from its start; start_ts and
+    end_sample   INTEGER      -- end_ts are these as unix seconds, kept for searching by time
 );
 CREATE INDEX IF NOT EXISTS segments_start ON segments (start_ts);
 

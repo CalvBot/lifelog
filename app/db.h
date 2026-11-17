@@ -36,7 +36,7 @@ struct Line {
     Str speaker;   // "me", an exe name, or a person in a call
     Str title;
     Str text;
-    bool audio;    // its clip was kept (it may since have been deleted: capture.keep_audio_days)
+    bool audio;    // it has a recording (whose file may since have been deleted: capture.keep_audio_days)
 };
 
 struct FileItem {

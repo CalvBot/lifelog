@@ -43,6 +43,8 @@ static bool has_column(sqlite3* db, const char* table, const char* column) {
     return found;
 }
 
+static bool migrate_recordings(sqlite3* db);
+
 bool db_init() {
     wchar_t dir[MAX_PATH];
     Mark m = mark(scratch());
@@ -64,8 +66,11 @@ bool db_init() {
         ok = false;
     }
     // Columns added after the first release.
-    if (ok && !has_column(db, "segments", "audio")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio TEXT", 0, 0, 0);
-    if (ok && !has_column(db, "segments", "audio_offset")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio_offset REAL", 0, 0, 0);
+    if (ok && !has_column(db, "segments", "recording")) {
+        if (!has_column(db, "segments", "audio")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio TEXT", 0, 0, 0);
+        if (!has_column(db, "segments", "audio_offset")) sqlite3_exec(db, "ALTER TABLE segments ADD COLUMN audio_offset REAL", 0, 0, 0);
+        ok = migrate_recordings(db);
+    }
     if (ok && !has_column(db, "files", "link")) sqlite3_exec(db, "ALTER TABLE files ADD COLUMN link INTEGER NOT NULL DEFAULT 0", 0, 0, 0);
     if (ok && !has_column(db, "alerts", "item")) sqlite3_exec(db, "ALTER TABLE alerts ADD COLUMN item INTEGER", 0, 0, 0);
     sqlite3_close(db);
@@ -93,7 +98,76 @@ static void bind_opt(sqlite3_stmt* st, int i, Str s) {
     else sqlite3_bind_null(st, i);
 }
 
-#define LINE_COLUMNS "s.id, s.start_ts, s.end_ts, s.source, s.speaker, s.title, s.text, s.audio IS NOT NULL"
+// Lines used to name their clip's file and their start in it in seconds (the "audio" and
+// "audio_offset" columns), and each mix worked out where a clip starts from its lines. Now a
+// recording holds the clip and each line its sample range in it. Runs once, in one transaction.
+static bool migrate_recordings(sqlite3* db) {
+    const i32 rate = 16000;
+    Arena* a = scratch();
+    Mark m = mark(a);
+    wchar_t audio[MAX_PATH];
+    audio_dir(audio);
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE;"
+                               "CREATE INDEX migrate_audio ON segments (audio);"
+                               "ALTER TABLE segments ADD COLUMN recording INTEGER;"
+                               "ALTER TABLE segments ADD COLUMN start_sample INTEGER;"
+                               "ALTER TABLE segments ADD COLUMN end_sample INTEGER;", 0, 0, 0) == SQLITE_OK;
+    sqlite3_stmt* clips = 0;
+    sqlite3_stmt* add = 0;
+    sqlite3_stmt* point = 0;
+    ok = ok && sqlite3_prepare_v2(db, "SELECT audio, MIN(start_ts - audio_offset), MAX(end_ts), MIN(source), MIN(speaker) FROM segments "
+                                      "WHERE audio IS NOT NULL AND audio_offset IS NOT NULL GROUP BY audio", -1, &clips, 0) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2(db, "INSERT INTO recordings (file, sample_rate, start, length, source, speaker) VALUES (?, ?, ?, ?, ?, ?)",
+                                  -1, &add, 0) == SQLITE_OK;
+    ok = ok && sqlite3_prepare_v2(db, "UPDATE segments SET recording = ?1, start_sample = CAST(ROUND(start_ts * ?3) AS INTEGER) - ?2, "
+                                      "end_sample = CAST(ROUND(end_ts * ?3) AS INTEGER) - ?2 WHERE audio = ?4", -1, &point, 0) == SQLITE_OK;
+    i32 count = 0;
+    while (ok && sqlite3_step(clips) == SQLITE_ROW) {
+        Str file = col_str(clips, 0, a);
+        f64 start_secs = sqlite3_column_double(clips, 1);
+        i64 start = (i64)floor(start_secs * rate + 0.5);
+        i64 length = (i64)ceil((sqlite3_column_double(clips, 2) - start_secs) * rate);
+        // The file's own length, while it is still kept.
+        wchar_t path[MAX_PATH];
+        swprintf(path, MAX_PATH, L"%ls\\%ls", audio, wide(a, file));
+        for (wchar_t* c = path; *c; c++)
+            if (*c == L'/') *c = L'\\';
+        WIN32_FILE_ATTRIBUTE_DATA info;
+        if (GetFileAttributesExW(path, GetFileExInfoStandard, &info) && info.nFileSizeLow > WAV_HEADER && !info.nFileSizeHigh)
+            length = (info.nFileSizeLow - WAV_HEADER) / 2;
+        bind_str(add, 1, file);
+        sqlite3_bind_int(add, 2, rate);
+        sqlite3_bind_int64(add, 3, start);
+        sqlite3_bind_int64(add, 4, length);
+        bind_str(add, 5, col_str(clips, 3, a));
+        bind_str(add, 6, col_str(clips, 4, a));
+        ok = sqlite3_step(add) == SQLITE_DONE;
+        sqlite3_reset(add);
+        sqlite3_bind_int64(point, 1, sqlite3_last_insert_rowid(db));
+        sqlite3_bind_int64(point, 2, start);
+        sqlite3_bind_int(point, 3, rate);
+        bind_str(point, 4, file);
+        ok = ok && sqlite3_step(point) == SQLITE_DONE;
+        sqlite3_reset(point);
+        count++;
+    }
+    sqlite3_finalize(clips);
+    sqlite3_finalize(add);
+    sqlite3_finalize(point);
+    ok = ok && sqlite3_exec(db, "DROP INDEX migrate_audio;"
+                                "ALTER TABLE segments DROP COLUMN audio;"
+                                "ALTER TABLE segments DROP COLUMN audio_offset;"
+                                "COMMIT;", 0, 0, 0) == SQLITE_OK;
+    if (ok) LOG("database: %d kept clips moved to the recordings table", count);
+    else {
+        ERR("database: moving the kept clips to the recordings table failed: %s", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", 0, 0, 0);
+    }
+    rewind(m);
+    return ok;
+}
+
+#define LINE_COLUMNS "s.id, s.start_ts, s.end_ts, s.source, s.speaker, s.title, s.text, s.recording IS NOT NULL"
 
 // Runs `st` (already bound) and reads Lines from it; finalizes it.
 static Slice<Line> read_lines(sqlite3_stmt* st, Arena* a, i32 limit) {

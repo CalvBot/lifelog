@@ -98,55 +98,53 @@ static bool keeps(Keep* k, Str speaker) {
 }
 
 struct MixPart {
-    f64 start, end;  // recording times
+    i64 start, end;  // positions (samples since 1970, as recordings.start)
     const i16* samples;
-    i64 count;
     i64 at;          // where it goes in the mix, in samples
 };
 
 static int mix_part_order(const void* a, const void* b) {
-    f64 x = ((const MixPart*)a)->start, y = ((const MixPart*)b)->start;
+    i64 x = ((const MixPart*)a)->start, y = ((const MixPart*)b)->start;
     return x < y ? -1 : x > y ? 1 : 0;
 }
+
+// The longest a recording can be (capture's hard limit is 30 s): how far before `from` to look.
+static const i64 RECORDING_MAX = 120 * 16000;
 
 // The kept audio of [from, to) from the speakers `keep` accepts, all mixed together, with
 // silences longer than a second shortened to one. `out` is empty if nothing was kept. False (with
 // `error`) if the database failed or the mix would pass 3 hours.
 static bool mix_audio(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 to, Keep* keep, Mix* out, char* error, i32 cap) {
     *out = {};
-    // Each kept clip once, with the moment it starts (a line's start minus its offset into the clip).
-    sqlite3_stmt* st = prepare(db, "SELECT audio, MIN(start_ts - audio_offset), speaker FROM segments "
-                                   "WHERE end_ts >= ?1 AND start_ts <= ?2 AND audio IS NOT NULL AND audio_offset IS NOT NULL "
-                                   "GROUP BY audio");
+    i64 lo = (i64)floor(from * AUDIO_RATE), hi = (i64)ceil(to * AUDIO_RATE);
+    sqlite3_stmt* st = prepare(db, "SELECT file, start, length, speaker FROM recordings "
+                                   "WHERE start > ?1 - ?3 AND start < ?2 AND start + length > ?1 AND sample_rate = 16000");
     if (!st) {
         snprintf(error, cap, "could not read the database");
         return false;
     }
-    sqlite3_bind_double(st, 1, from);
-    sqlite3_bind_double(st, 2, to);
+    sqlite3_bind_int64(st, 1, lo);
+    sqlite3_bind_int64(st, 2, hi);
+    sqlite3_bind_int64(st, 3, RECORDING_MAX);
 
     // The clips' bytes live in their own arena, given back at the end (a long mix reads a lot).
     Arena files = {};
     List<MixPart> parts = {};
     while (sqlite3_step(st) == SQLITE_ROW) {
         Str file = col_str(st, 0, &files);
-        f64 start = sqlite3_column_double(st, 1);
-        Str speaker = col_str(st, 2, &files);
+        i64 start = sqlite3_column_int64(st, 1);
+        Str speaker = col_str(st, 3, &files);
         wchar_t path[MAX_PATH];
         if (!keeps(keep, speaker) || !audio_file_path(audio_dir, file, path)) continue;
         Str wav = read_file(&files, path);
         if (!wav.ptr || !is_worker_wav(wav)) continue;  // deleted after capture.keep_audio_days
         const i16* pcm = (const i16*)(wav.ptr + WAV_HEADER);
         i64 n = (wav.len - WAV_HEADER) / 2;
-        f64 end = start + (f64)n / AUDIO_RATE;
-        f64 a = start > from ? start : from, b = end < to ? end : to;
+        i64 length = sqlite3_column_int64(st, 2);
+        if (n > length) n = length;
+        i64 a = start > lo ? start : lo, b = start + n < hi ? start + n : hi;
         if (a >= b) continue;
-        i64 skip = (i64)((a - start) * AUDIO_RATE);
-        i64 take = (i64)((b - a) * AUDIO_RATE);
-        if (skip > n) skip = n;
-        if (take > n - skip) take = n - skip;
-        if (take <= 0) continue;
-        MixPart p = {a, a + (f64)take / AUDIO_RATE, pcm + skip, take, 0};
+        MixPart p = {a, b, pcm + (a - start), 0};
         list_push(&parts, p);
     }
     sqlite3_finalize(st);
@@ -155,17 +153,18 @@ static bool mix_audio(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 to, K
     if (parts.count) {
         qsort(parts.items, parts.count, sizeof(MixPart), mix_part_order);
         // Lay the parts on a timeline, closing gaps down to one second.
-        f64 shift = parts[0].start, last_end = parts[0].start;
-        list_push(&out->jumps, {0.0, parts[0].start});
+        const i64 second = (i64)AUDIO_RATE;
+        i64 shift = parts[0].start, last_end = parts[0].start;
+        list_push(&out->jumps, {0.0, (f64)parts[0].start / AUDIO_RATE});
         i64 total = 0;
         for (i32 i = 0; i < parts.count; i++) {
             MixPart* p = &parts.items[i];
-            if (p->start > last_end + 1.0) {
-                shift += p->start - last_end - 1.0;
-                list_push(&out->jumps, {p->start - shift, p->start});
+            if (p->start > last_end + second) {
+                shift += p->start - last_end - second;
+                list_push(&out->jumps, {(f64)(p->start - shift) / AUDIO_RATE, (f64)p->start / AUDIO_RATE});
             }
-            p->at = (i64)((p->start - shift) * AUDIO_RATE);
-            if (p->at + p->count > total) total = p->at + p->count;
+            p->at = p->start - shift;
+            if (p->at + (p->end - p->start) > total) total = p->at + (p->end - p->start);
             if (p->end > last_end) last_end = p->end;
         }
         if ((f64)total / AUDIO_RATE > MIX_MAX_SECS) {
@@ -179,7 +178,7 @@ static bool mix_audio(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 to, K
             for (i32 i = 0; i < parts.count; i++) {
                 MixPart* p = &parts.items[i];
                 i16* o = out->samples + p->at;
-                for (i64 j = 0; j < p->count; j++) {
+                for (i64 j = 0; j < p->end - p->start; j++) {
                     i32 s = (i32)o[j] + (i32)p->samples[j];
                     o[j] = (i16)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
                 }
@@ -204,20 +203,20 @@ static bool mix_from(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 secs, 
             return true;
         }
         mix_free(out);
-        // Nothing here: jump to the next line with audio from the speakers wanted.
-        sqlite3_stmt* st = prepare(db, "SELECT start_ts, speaker FROM segments WHERE start_ts >= ?1 AND audio IS NOT NULL "
-                                       "ORDER BY start_ts LIMIT 2000");
+        // Nothing here: jump to the next recording from the speakers wanted.
+        sqlite3_stmt* st = prepare(db, "SELECT start, speaker FROM recordings WHERE start >= ?1 AND sample_rate = 16000 "
+                                       "ORDER BY start LIMIT 2000");
         if (!st) {
             snprintf(error, cap, "could not read the database");
             return false;
         }
-        sqlite3_bind_double(st, 1, from + secs);
+        sqlite3_bind_int64(st, 1, (i64)ceil((from + secs) * AUDIO_RATE));
         bool found = false;
         Mark m = mark(scratch());
         while (!found && sqlite3_step(st) == SQLITE_ROW) {
             Str speaker = col_str(st, 1, scratch());
             if (keeps(keep, speaker)) {
-                from = sqlite3_column_double(st, 0) - 0.3;
+                from = (f64)sqlite3_column_int64(st, 0) / AUDIO_RATE;
                 found = true;
             }
         }
@@ -231,7 +230,8 @@ static bool mix_from(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 secs, 
 // One line's audio, with a little room either side so words are not clipped.
 static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, char* error, i32 cap) {
     *out = {};
-    sqlite3_stmt* st = prepare(db, "SELECT audio, audio_offset, end_ts - start_ts, start_ts FROM segments WHERE id = ?1");
+    sqlite3_stmt* st = prepare(db, "SELECT r.file, r.start, r.length, r.sample_rate, s.start_sample, s.end_sample "
+                                   "FROM segments s JOIN recordings r ON r.id = s.recording WHERE s.id = ?1");
     if (!st) {
         snprintf(error, cap, "could not read the database");
         return false;
@@ -240,14 +240,14 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
     Mark m = mark(scratch());
     bool ok = false;
     if (sqlite3_step(st) != SQLITE_ROW) {
-        snprintf(error, cap, "that line is gone");
-    } else if (sqlite3_column_type(st, 0) == SQLITE_NULL || sqlite3_column_type(st, 1) == SQLITE_NULL) {
         snprintf(error, cap, "no audio was kept for this line");
+    } else if (sqlite3_column_int(st, 3) != 16000) {
+        snprintf(error, cap, "unexpected audio file");
     } else {
         Str file = col_str(st, 0, scratch());
-        f64 offset = sqlite3_column_double(st, 1);
-        f64 length = sqlite3_column_double(st, 2);
-        f64 start_ts = sqlite3_column_double(st, 3);
+        i64 start = sqlite3_column_int64(st, 1);
+        i64 length = sqlite3_column_int64(st, 2);
+        i64 from = sqlite3_column_int64(st, 4), to = sqlite3_column_int64(st, 5);
         wchar_t path[MAX_PATH];
         Str wav = {};
         if (!audio_file_path(audio_dir, file, path)) snprintf(error, cap, "bad audio path");
@@ -255,17 +255,17 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
         else if (!is_worker_wav(wav)) snprintf(error, cap, "unexpected audio file");
         else {
             i64 n = (wav.len - WAV_HEADER) / 2;
-            f64 a_secs = offset - 0.3, b_secs = offset + length + 0.4;
-            i64 a = a_secs > 0 ? (i64)(a_secs * AUDIO_RATE) : 0;
-            i64 b = b_secs > 0 ? (i64)(b_secs * AUDIO_RATE) : 0;
+            if (n > length) n = length;
+            const i64 before = (i64)(0.3 * AUDIO_RATE), after = (i64)(0.4 * AUDIO_RATE);
+            i64 a = from - before > 0 ? from - before : 0;
+            i64 b = to + after < n ? to + after : n;
             if (a > n) a = n;
-            if (b > n) b = n;
             if (b < a) b = a;
             out->count = b - a;
             out->samples = (i16*)malloc((size_t)(out->count ? out->count : 1) * sizeof(i16));
             CHECK(out->samples, "memory for %lld samples of audio", out->count);
             if (out->count) memcpy(out->samples, wav.ptr + WAV_HEADER + a * 2, (size_t)out->count * 2);
-            list_push(&out->jumps, {0.0, start_ts - 0.3});
+            list_push(&out->jumps, {0.0, (f64)(start + a) / AUDIO_RATE});
             ok = true;
         }
     }
