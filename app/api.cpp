@@ -579,21 +579,36 @@ static DWORD WINAPI api_main(void* param) {
         ERR("API port %u: could not listen (error %d); the CLI and the Stream Deck cannot reach lifelog", port, error);
         return 0;
     }
+    // Sleeps until a connection comes or the program ends.
+    WSAEVENT ready = WSACreateEvent();
+    if (ready == WSA_INVALID_EVENT || WSAEventSelect(s, ready, FD_ACCEPT) != 0) {
+        ERR("API port %u: could not wait for connections (error %d)", port, WSAGetLastError());
+        if (ready != WSA_INVALID_EVENT) WSACloseEvent(ready);
+        closesocket(s);
+        return 0;
+    }
     LOG("API on http://127.0.0.1:%u", port);
     while (!stopping(app)) {
-        // Wakes twice a second to see whether the program is ending.
-        fd_set ready;
-        FD_ZERO(&ready);
-        FD_SET(s, &ready);
-        timeval wait = {0, 500 * 1000};
-        if (select(0, &ready, 0, 0, &wait) <= 0) continue;
-        SOCKET c = accept(s, 0, 0);
-        if (c == INVALID_SOCKET) continue;
-        After after = api_serve_one(app, c, port);
-        shutdown(c, SD_SEND);
-        closesocket(c);
-        if (after != AFTER_NOTHING) event_send(app, api_after_apply, after);
+        HANDLE waits[2] = {app->stop, ready};
+        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) break;
+        WSANETWORKEVENTS seen;
+        WSAEnumNetworkEvents(s, ready, &seen);  // resets `ready`
+        for (;;) {
+            SOCKET c = accept(s, 0, 0);
+            if (c == INVALID_SOCKET) break;  // none left (WSAEWOULDBLOCK)
+            // It inherits the listening socket's event and non-blocking mode: api_serve_one
+            // wants a plain blocking socket.
+            WSAEventSelect(c, 0, 0);
+            u_long nonblocking = 0;
+            ioctlsocket(c, FIONBIO, &nonblocking);
+            After after = api_serve_one(app, c, port);
+            shutdown(c, SD_SEND);
+            closesocket(c);
+            if (after != AFTER_NOTHING) event_send(app, api_after_apply, after);
+            if (stopping(app)) break;
+        }
     }
+    WSACloseEvent(ready);
     closesocket(s);
     return 0;
 }

@@ -29,6 +29,7 @@ AppInfo* app_get(App* app, Str exe) {
     AppInfo* a = app_find(app, exe);
     if (a) return a;
     a = list_push(&app->apps.list);
+    app->apps.version++;
     Mark m = mark(scratch());
     SET(a->exe, str_lower(scratch(), exe));
     rewind(m);
@@ -45,6 +46,7 @@ const char* app_path(App* app, Str exe) {
 
 void apps_from_config(App* app) {
     Config* c = &app->config;
+    app->apps.version++;
     for (i32 i = 0; i < c->capture.included_apps.count; i++) app_get(app, str(c->capture.included_apps[i].s))->decision = DECISION_INCLUDED;
     for (i32 i = 0; i < c->capture.excluded_apps.count; i++) app_get(app, str(c->capture.excluded_apps[i].s))->decision = DECISION_EXCLUDED;
     for (i32 i = 0; i < c->processing.games.count; i++) app_get(app, str(c->processing.games[i].s))->game = GAME_YES;
@@ -53,6 +55,7 @@ void apps_from_config(App* app) {
 
 void app_set_decision(App* app, Str exe, Decision d) {
     app_get(app, exe)->decision = d;
+    app->apps.version++;
     Config* c = &app->config;
     names_set(&c->capture.included_apps, exe, d == DECISION_INCLUDED);
     names_set(&c->capture.excluded_apps, exe, d == DECISION_EXCLUDED);
@@ -101,6 +104,7 @@ bool proc_path(u32 pid, char* out, i32 cap) {
 
 void app_set_game(App* app, Str exe, GameMark g) {
     app_get(app, exe)->game = g;
+    app->apps.version++;
     Config* c = &app->config;
     names_set(&c->processing.games, exe, g == GAME_YES);
     names_set(&c->processing.not_games, exe, g == GAME_DISMISSED);
@@ -642,6 +646,7 @@ static void lines_apply(App* app, Job* job) {
         a->lines = l->counts.items[i].lines;
         a->last_ts = l->counts.items[i].last_ts;
     }
+    app->apps.version++;
     wake_window(app);
 }
 
@@ -1160,6 +1165,7 @@ static Str scan_store(App* app, Scan* scan, Arena* a, i32* new_games) {
         (*new_games)++;
     }
     if (*new_games) config_save_names("processing", "games", &c->processing.games);
+    app->apps.version++;
     return lines;
 }
 

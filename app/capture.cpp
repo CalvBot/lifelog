@@ -776,7 +776,10 @@ static void watch_apply(App* app, Job* job) {
         a->playing = on;
     }
     streams_reap(app);
-    if (changed) wake_window(app);
+    if (changed) {
+        app->apps.version++;
+        wake_window(app);
+    }
 }
 
 // Once a second: what runs, what has windows and what plays sound, gathered on the watcher

@@ -118,9 +118,6 @@ bool ui_draw_window(App* app, f32* next_frame_ms) {
     ImGui::EndChild();
     ImGui::PopStyleVar();
 
-    // While something plays, the timeline follows it.
-    if (app->clips.playing_line && (*next_frame_ms < 0 || *next_frame_ms > 250)) *next_frame_ms = 250;
-
     // The toast, centred above the bottom edge for 4 s.
     if (app->ui.toast[0]) {
         f64 age = now_ts() - app->ui.toast_ts;

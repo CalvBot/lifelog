@@ -288,12 +288,8 @@ static bool run(App* app, const wchar_t* cmd, const wchar_t** env, i32 env_count
     if (!ok) snprintf(error, cap, "could not run %ls (error %lu)", cmd, GetLastError());
     rewind(m);
     if (ok) {
-        while (WaitForSingleObject(pi.hProcess, 500) == WAIT_TIMEOUT) {
-            if (stopping(app)) {
-                TerminateProcess(pi.hProcess, 1);
-                break;
-            }
-        }
+        HANDLE waits[2] = {pi.hProcess, app->stop};
+        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 1);
         DWORD code = 1;
         GetExitCodeProcess(pi.hProcess, &code);
         CloseHandle(pi.hProcess);

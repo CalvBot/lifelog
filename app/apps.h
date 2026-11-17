@@ -46,6 +46,7 @@ struct ExePath {
 
 struct Apps {
     List<AppInfo> list;
+    u64 version;            // bumped when anything Settings lists about the apps changes
     char game_running[64];  // a game exe running now, "" if none
     volatile LONG game_on;  // game_running is set: an atomic other threads read (events.h)
     List<ExePath> paths;

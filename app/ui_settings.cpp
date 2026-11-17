@@ -49,8 +49,8 @@ struct SettingsState {
     Name rows[APPS_PER_PAGE];
     i32 row_count;
     bool stale;
-    f64 loaded_ts;
-    i32 loaded_apps;  // App.apps.list.count when it was made
+    u64 loaded_version;  // App.apps.version when it was made
+    i32 drawn_frame;     // the last frame Settings was drawn in
     char search[128];
     bool show_by_folder;  // list apps that only follow a folder rule too
     i32 by_folder;        // how many of those the list on screen has (shown or not)
@@ -288,8 +288,7 @@ static void apps_load(App* app, SettingsState* s) {
         SET(s->rows[s->row_count++].s, str(rows[i].exe));
     list_free(&rows);
     s->stale = false;
-    s->loaded_ts = now;
-    s->loaded_apps = app->apps.list.count;
+    s->loaded_version = app->apps.version;
     rewind(m);
 }
 
@@ -1193,12 +1192,13 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     // Ctrl+Z, unless a text box has the keys (it has its own undo).
     if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) undo_last(app, s);
 
-    f64 now = now_ts();
-    if (s->stale || now - s->loaded_ts > 10 || s->loaded_apps != app->apps.list.count) apps_load(app, s);
-    // What the AI folder has: looked at again every few seconds, and after a change.
-    if (now - app->setup.scanned_ts > 5) ai_scan(app);
-    f32 next = (f32)((s->loaded_ts + 10 - now) * 1000) + 10;
-    want_frame(next_frame_ms, next);
+    // Opening Settings looks again at everything; after that, only at what changed.
+    bool opened = s->drawn_frame != ImGui::GetFrameCount() - 1;
+    s->drawn_frame = ImGui::GetFrameCount();
+    if (opened || s->stale || s->loaded_version != app->apps.version) apps_load(app, s);
+    // What the AI folder has: setup's changes ask for a look (scanned_ts = 0). Files moved in by
+    // hand show the next time Settings is opened.
+    if (opened || !app->setup.scanned_ts) ai_scan(app);
 
     f32 avail = ImGui::GetContentRegionAvail().x;
     f32 width = avail < px(760) ? avail : px(760);
