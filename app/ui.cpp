@@ -56,7 +56,6 @@ static void listen_button(App* app) {
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(14));
     if (button(text, ImVec2(px(116), 0))) {
         capture_set_paused(app, !paused);
-        tray_update(app);
     }
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);

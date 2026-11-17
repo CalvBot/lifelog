@@ -314,7 +314,6 @@ static bool api_handle(App* app, ApiCall* c) {
         }
         if (pause || resume || toggle) {
             capture_set_paused(app, toggle ? !app->capture.paused : pause);
-            tray_update(app);
         } else if (exclude || include) {
             app_set_decision(app, exe, exclude ? DECISION_EXCLUDED : DECISION_INCLUDED);
             wake_window(app);

@@ -180,7 +180,6 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
         ImGui::SameLine(right - sw);
         if (toggle("##listening", &on)) {
             capture_set_paused(app, !on);
-            tray_update(app);
         }
     }
     ImGui::Separator();

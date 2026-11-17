@@ -852,6 +852,7 @@ void capture_set_paused(App* app, bool paused) {
     if ((atomic_get(&app->capture.paused) != 0) == paused) return;
     atomic_set(&app->capture.paused, paused);
     LOG("%s", paused ? "private mode: recording nothing" : "recording again");
+    tray_update(app);
     wake_window(app);
 }
 

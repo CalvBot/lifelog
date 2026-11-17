@@ -488,7 +488,6 @@ static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyMenu(menu);
             if (cmd == CMD_PAUSE) {
                 capture_set_paused(&g_app, !g_app.capture.paused);
-                tray_update(&g_app);
             } else if (cmd == CMD_RESTART) {
                 app_restart(&g_app);
             } else if (cmd == CMD_QUIT) {

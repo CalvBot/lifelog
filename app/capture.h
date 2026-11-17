@@ -37,6 +37,7 @@ struct Capture {
 
 // Starts the mic and the watcher that starts and stops a stream per app.
 void capture_start(App* app);
+// Private mode on or off; the tray icon follows.
 void capture_set_paused(App* app, bool paused);
 // Stops every stream and writes out what each had (when the program ends). It lets go of the
 // lock while the threads finish, so others are not held up, and has it again when it returns.
