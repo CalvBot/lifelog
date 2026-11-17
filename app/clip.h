@@ -21,7 +21,7 @@ struct ClipResult {
 // speaker named from `labels` (may be null). Slow: it reads the database and the audio files, and
 // mixing audio can take a while. Any thread but the main one.
 // `label` names the file "lifelog-<label>.txt"; by default it is the times ("2026-11-15-1400-to-1415").
-ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind,
+ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind,
                      const char* label = 0);
 // The main thread: clip_copy on the pool, then `done(app, result, kind, ctx)` back on the main
 // thread. Takes `exclude` (freed after).
@@ -45,7 +45,7 @@ void file_open(App* app, i64 id, bool in_folder);
 void file_delete(App* app, i64 id);
 // Where a pasted file is on disk (its copy under data_dir\files, or what a link points at). False
 // for a web address or a bad path. Does not check that the file is still there.
-bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]);
+bool file_full_path(FileItem* f, wchar_t out[MAX_PATH]);
 
 // Playback of kept audio (16 kHz mono).
 enum PlayMode : u8 {

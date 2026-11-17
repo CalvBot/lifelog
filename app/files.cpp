@@ -180,7 +180,7 @@ enum PasteKind : u8 {
 
 // What was on the clipboard, handed to the thread that saves it. Freed by that thread.
 struct PasteJob {
-    App* app;     // for settings() and db_open only
+    App* app;     // for db_open only
     PasteKind kind;
     f64 ts;       // the moment it was pasted
     u8* data;     // malloc'd
@@ -307,7 +307,6 @@ static i32 paste_links(sqlite3* db, f64 ts, Str text) {
 
 // Saves what the job holds. Returns how many were saved; `error` is set if something failed.
 static i32 paste_save(PasteJob* job, sqlite3* db, char* error, i32 cap) {
-    App* app = job->app;
     Mark m = mark(scratch());
     LocalTime t = local_time(job->ts);
     Str day = str_fmt(scratch(), "%04d-%02d-%02d", t.year, t.month, t.day);
@@ -324,7 +323,7 @@ static i32 paste_save(PasteJob* job, sqlite3* db, char* error, i32 cap) {
     }
 
     wchar_t dir[MAX_PATH];
-    files_dir(settings(app), dir);
+    files_dir(dir);
     swprintf(dir + wcslen(dir), MAX_PATH - wcslen(dir), L"\\%ls", wide(scratch(), day));
     i32 made = SHCreateDirectoryExW(0, dir, 0);
     if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
@@ -431,7 +430,7 @@ i32 files_paste(App* app, char* error, i32 cap) {
 // ---------------------------------------------------------------------------------------------
 // Opening
 
-bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
+bool file_full_path(FileItem* f, wchar_t out[MAX_PATH]) {
     out[0] = 0;
     if (str_eq(f->kind, str("url")) || !f->path.len) return false;
     Mark m = mark(scratch());
@@ -444,7 +443,7 @@ bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
             return false;
         }
         wchar_t dir[MAX_PATH];
-        files_dir(cfg, dir);
+        files_dir(dir);
         swprintf(out, MAX_PATH, L"%ls\\%ls", dir, wide(scratch(), f->path));
     }
     for (wchar_t* c = out; *c; c++)
@@ -454,14 +453,13 @@ bool file_full_path(const Config* cfg, FileItem* f, wchar_t out[MAX_PATH]) {
 }
 
 struct OpenJob {
-    const Config* cfg;
     i64 id;
     bool in_folder;
     char error[256];
 };
 
-static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error, i32 cap) {
-    sqlite3* db = db_open_path(cfg, true);
+static void file_open_now(i64 id, bool in_folder, char* error, i32 cap) {
+    sqlite3* db = db_open_path(true);
     if (!db) {
         snprintf(error, cap, "could not open the database");
         return;
@@ -475,7 +473,7 @@ static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error
         if (!as_url(scratch(), f.path).len) snprintf(error, cap, "not a web address");
         else if (!shell_open(wide(scratch(), f.path), 0))
             snprintf(error, cap, "could not open %s", f.path.ptr);
-    } else if (!file_full_path(cfg, &f, path)) {
+    } else if (!file_full_path(&f, path)) {
         snprintf(error, cap, "bad path");
     } else if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(error, cap, "the file is gone from %s", narrow(scratch(), path).ptr);
@@ -488,7 +486,7 @@ static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error
 
 static void open_run(Job* job) {
     OpenJob* o = (OpenJob*)job->data;
-    file_open_now(o->cfg, o->id, o->in_folder, o->error, sizeof(o->error));
+    file_open_now(o->id, o->in_folder, o->error, sizeof(o->error));
     if (o->error[0]) WARN("opening a pasted file: %s", o->error);
 }
 
@@ -501,7 +499,6 @@ static void open_apply(App* app, Job* job) {
 // Deleting
 
 struct DeleteJob {
-    const Config* cfg;
     i64 id;
     bool deleted;
     char error[256];
@@ -522,7 +519,7 @@ static void delete_run(sqlite3* db, Job* job) {
         return;
     }
     wchar_t path[MAX_PATH];
-    if (!f.link && file_full_path(d->cfg, &f, path) && !DeleteFileW(path) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+    if (!f.link && file_full_path(&f, path) && !DeleteFileW(path) && GetLastError() != ERROR_FILE_NOT_FOUND &&
         GetLastError() != ERROR_PATH_NOT_FOUND) {
         snprintf(d->error, sizeof(d->error), "could not delete %s (error %lu)", narrow(scratch(), path).ptr, GetLastError());
         rewind(m);
@@ -548,7 +545,6 @@ static void delete_apply(App* app, Job* job) {
 void file_delete(App* app, i64 id) {
     Job* job = job_new(delete_apply);
     DeleteJob* d = PUSH(&job->arena, DeleteJob);
-    d->cfg = settings(app);
     d->id = id;
     job->data = d;
     db_post(job, delete_run);
@@ -557,7 +553,6 @@ void file_delete(App* app, i64 id) {
 void file_open(App* app, i64 id, bool in_folder) {
     Job* job = job_new(open_apply);
     OpenJob* o = PUSH(&job->arena, OpenJob);
-    o->cfg = settings(app);
     o->id = id;
     o->in_folder = in_folder;
     job->data = o;

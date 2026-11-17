@@ -392,13 +392,13 @@ static void clip_format(Buf* t, Slice<Line> lines, f64 from, f64 to) {
     }
 }
 
-ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label) {
+ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKind kind, const char* label) {
     ClipResult r = {};
     if (!(isfinite(from) && isfinite(to) && from < to)) {
         snprintf(r.error, sizeof(r.error), "the range must end after it starts");
         return r;
     }
-    sqlite3* db = db_open_path(cfg, true);
+    sqlite3* db = db_open_path(true);
     if (!db) {
         snprintf(r.error, sizeof(r.error), "could not open the database");
         return r;
@@ -410,7 +410,7 @@ ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Nam
 
     if (kind == CLIP_AUDIO) {
         wchar_t adir[MAX_PATH];
-        audio_dir(cfg, adir);
+        audio_dir(adir);
         Keep keep = {exclude, {}};
         Mix mix = {};
         if (mix_audio(db, adir, from, to, &keep, &mix, r.error, sizeof(r.error))) {
@@ -465,7 +465,6 @@ ClipResult clip_copy(const Config* cfg, AppLabels* labels, f64 from, f64 to, Nam
 }
 
 struct ClipJob {
-    const Config* cfg;
     AppLabels labels;
     f64 from, to;
     Names exclude;
@@ -478,7 +477,7 @@ struct ClipJob {
 
 static void clip_job_run(Job* job) {
     ClipJob* c = (ClipJob*)job->data;
-    c->result = clip_copy(c->cfg, &c->labels, c->from, c->to, &c->exclude, c->kind, c->label[0] ? c->label : 0);
+    c->result = clip_copy(&c->labels, c->from, c->to, &c->exclude, c->kind, c->label[0] ? c->label : 0);
     list_free(&c->exclude);
 }
 
@@ -490,7 +489,6 @@ static void clip_job_apply(App* app, Job* job) {
 void clip_copy_later(App* app, f64 from, f64 to, Names exclude, ClipKind kind, const char* label, ClipDone* done, i64 ctx) {
     Job* job = job_new(clip_job_apply);
     ClipJob* c = PUSH(&job->arena, ClipJob);
-    c->cfg = settings(app);
     c->labels = app_labels(app, &job->arena);
     c->from = from;
     c->to = to;

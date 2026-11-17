@@ -105,8 +105,12 @@ bool config_write_value(const char* table, const char* key, Str value);
 
 // `dir` (UTF-8) and `name` joined with a backslash.
 void path_under(const char* dir, const wchar_t* name, wchar_t out[MAX_PATH]);
+// data_dir and api_port as config_load read them. They do not change while the program runs, so
+// any thread may use them without a copy.
+const char* data_dir();
+u16 api_port();
 // The paths under data_dir.
-void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]);
-void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]);
-void files_dir(const Config* cfg, wchar_t out[MAX_PATH]);
-void db_path(const Config* cfg, wchar_t out[MAX_PATH]);
+void spool_dir(wchar_t out[MAX_PATH]);
+void audio_dir(wchar_t out[MAX_PATH]);
+void files_dir(wchar_t out[MAX_PATH]);
+void db_path(wchar_t out[MAX_PATH]);

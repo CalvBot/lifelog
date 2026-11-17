@@ -16,7 +16,8 @@
 // file) names a cleanup, run then, whether it was applied, dropped or its thread gave up.
 //
 // Hot flags read by many threads (private mode, the GPU load) are atomics. The settings a thread
-// needs are its own copy, handed to it by the main thread when one changes (worker.h, summary.h).
+// needs are its own copy, handed over by the main thread when one changes (WorkerOptions in
+// worker.h, SummaryOptions in summary.h).
 
 #pragma once
 
@@ -124,12 +125,3 @@ void events_apply(App* app);
 // Atomics for the flags threads share.
 inline LONG atomic_get(volatile LONG* v) { return InterlockedCompareExchange(v, 0, 0); }
 inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
-
-// The settings now: a copy of App.config without its app lists (those stay with the main
-// thread). Each change makes a new copy; old ones are kept until exit, so a thread may hold on
-// to the one it has. Any thread, no lock.
-const Config* settings(App* app);
-// The main thread: a setting changed (config_save_value calls it, so every setter does).
-void settings_changed();
-// The main thread: makes the new copy if a setting changed since the last one, and says so.
-bool settings_publish(App* app);

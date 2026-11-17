@@ -276,7 +276,7 @@ static TlPreview* tl_preview(App* app, FileItem* f) {
     TlPreviewJob* j = PUSH(&job->arena, TlPreviewJob);
     j->file_id = f->id;
     j->image = str_eq(f->kind, str("image"));
-    if (!file_full_path(&app->config, f, j->path)) {
+    if (!file_full_path(f, j->path)) {
         job_drop(job);
         p->done = true;  // nothing to show
         return p;

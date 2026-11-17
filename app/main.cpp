@@ -25,18 +25,11 @@ static const UINT_PTR REDRAW_TIMER = 1;
 // window drag running its own loop) wait for the message loop.
 static i32 g_busy;
 
-// After anything the main thread did: the copy of the settings other threads read is brought up
-// to date, and the transcriber told when it changed.
-static void settings_check(App* app) {
-    if (settings_publish(app)) worker_wake(app);
-}
-
 static void apply_events(App* app) {
     if (g_busy) return;
     g_busy++;
     events_apply(app);
     g_busy--;
-    settings_check(app);
 }
 
 void wake_window(App* app) {
@@ -336,7 +329,6 @@ static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
     g_busy++;
     bool keep = draw(&g_app, &next_ms);
     g_busy--;
-    settings_check(&g_app);
 
     ImGui::Render();
     ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
@@ -492,7 +484,6 @@ static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (cmd == CMD_QUIT) {
                 app_quit(&g_app);
             }
-            settings_check(&g_app);
             return 0;
         }
         }
@@ -622,9 +613,8 @@ static i32 run_app() {
         return 1;
     }
     setup_cleanup(&app->config);  // before the AI is loaded from there
-    settings_publish(app);  // before any thread reads settings()
     disk_start();
-    app->storage.ready = db_init(&app->config);
+    app->storage.ready = db_init();
 
     ImGui_ImplWin32_EnableDpiAwareness();
     gpu_init();
@@ -641,7 +631,6 @@ static i32 run_app() {
     summary_start(app);
     api_start(app);
     tray_update(app);
-    settings_check(app);
     LOG("lifelog started");
 
     bool want_main = true;  // the window opens at start unless --tray was passed

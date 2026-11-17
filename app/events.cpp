@@ -119,37 +119,3 @@ void events_apply(App* app) {
     while (event_take(&app->events, &e, &dropped)) e.apply(app, &e);
     if (dropped) WARN("events: %u dropped, the queue was full", dropped);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Settings
-
-static Config* volatile g_settings;
-static bool g_settings_changed;
-
-void settings_changed() { g_settings_changed = true; }
-
-const Config* settings(App*) {
-    return (const Config*)InterlockedCompareExchangePointer((PVOID volatile*)&g_settings, 0, 0);
-}
-
-bool settings_publish(App* app) {
-    if (g_settings && !g_settings_changed) return false;
-    g_settings_changed = false;
-    Config now;
-    memcpy(&now, &app->config, sizeof(Config));
-    now.capture.included_apps = {};
-    now.capture.excluded_apps = {};
-    now.capture.removed_apps = {};
-    now.capture.included_folders = {};
-    now.capture.excluded_folders = {};
-    now.processing.games = {};
-    now.processing.not_games = {};
-    now.ui.hidden = {};
-    Config* cur = g_settings;
-    if (cur && memcmp(cur, &now, sizeof(Config)) == 0) return false;
-    Config* next = (Config*)malloc(sizeof(Config));
-    CHECK(next, "memory for the settings");
-    memcpy(next, &now, sizeof(Config));
-    InterlockedExchangePointer((PVOID volatile*)&g_settings, next);
-    return true;
-}

@@ -68,6 +68,18 @@ struct Notify {
     HWND window;             // the notify thread's message window, which links are sent to
 };
 
+// What the summary threads (and llm.cpp) need of the settings.
+struct SummaryOptions {
+    bool enabled;
+    char ask_at[8];       // "HH:MM"
+    u32 max_words;
+    bool ask_reminders;
+    char model[128];
+    char endpoint[512];
+    char api_key[256];
+    char ai_dir[MAX_PATH];
+};
+
 struct Summary {
     char phase[160];      // what it is doing: "", "asks at 21:00", "writing: notes for 3 of 5 parts", ...
     bool writing;
@@ -83,9 +95,19 @@ struct Summary {
     Notify notify;
     Latest phase_next;          // the summary threads' newest phase, for the main thread (events.h)
     Latest tick;                // the clock's newest reading (summary_tick)
+    // The options as the main thread last handed them over (summary_options_publish).
+    SRWLOCK options_lock;
+    SummaryOptions options;
+    HANDLE wake;                // auto-reset: the summary's clock looks again
 };
 
 void summary_start(App* app);
+// Hands the summary threads the settings in App.config now, and wakes the clock. The setters
+// below call it; so does anything else that changes what they use (the AI folder). The main
+// thread (or the CLI, before it calls summary_check_ai).
+void summary_options_publish(App* app);
+// A copy of the options as last handed over. Any thread.
+SummaryOptions summary_options(App* app);
 
 // The notification's and the window's buttons. `action`: "now", "later" (in an hour), "until"
 // (with `at`, "HH:MM"), "skip", "pick" (opens the delay box). `day` defaults to today.

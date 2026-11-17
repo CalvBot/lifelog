@@ -562,7 +562,7 @@ static After api_serve_one(App* app, SOCKET c, u16 port) {
 
 static DWORD WINAPI api_main(void* param) {
     App* app = (App*)param;
-    u16 port = settings(app)->api_port;
+    u16 port = api_port();
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         ERR("API: Winsock did not start");

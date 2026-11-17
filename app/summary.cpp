@@ -501,7 +501,7 @@ static bool write_markdown(App* app, const char* day, Str summary, const Json* r
     }
     Str data = buf_take(&text, scratch());
     wchar_t dir[MAX_PATH], path[MAX_PATH];
-    swprintf(dir, MAX_PATH, L"%ls\\summaries", wide(scratch(), str(settings(app)->data_dir)));
+    swprintf(dir, MAX_PATH, L"%ls\\summaries", wide(scratch(), str(data_dir())));
     SHCreateDirectoryExW(0, dir, 0);
     swprintf(path, MAX_PATH, L"%ls\\%hs.md", dir, day);
     bool ok = write_file(path, data);
@@ -1127,7 +1127,7 @@ enum EditKind : u8 {
 };
 
 struct SummaryEdit {
-    App* app;         // for write_markdown, which reads only settings()
+    App* app;
     EditKind kind;
     char day[11];
     i64 id;           // EDIT_ANSWER: the reminder; EDIT_NEVER_REMOVE: the topic
@@ -1391,9 +1391,35 @@ void summary_remove_never(App* app, i64 id) {
 // ---------------------------------------------------------------------------------------------
 // Settings
 
+void summary_options_publish(App* app) {
+    const Config* c = &app->config;
+    Summary* s = &app->summary;
+    AcquireSRWLockExclusive(&s->options_lock);
+    SummaryOptions* o = &s->options;
+    o->enabled = c->summary.enabled;
+    SET(o->ask_at, str(c->summary.ask_at));
+    o->max_words = c->summary.max_words;
+    o->ask_reminders = c->summary.ask_reminders;
+    SET(o->model, str(c->summary.model));
+    SET(o->endpoint, str(c->summary.endpoint));
+    SET(o->api_key, str(c->summary.api_key));
+    SET(o->ai_dir, str(c->ai.dir));
+    ReleaseSRWLockExclusive(&s->options_lock);
+    if (s->wake) SetEvent(s->wake);
+}
+
+SummaryOptions summary_options(App* app) {
+    Summary* s = &app->summary;
+    AcquireSRWLockShared(&s->options_lock);
+    SummaryOptions o = s->options;
+    ReleaseSRWLockShared(&s->options_lock);
+    return o;
+}
+
 void summary_set_enabled(App* app, bool on) {
     app->config.summary.enabled = on;
     config_save_bool("summary", "enabled", on);
+    summary_options_publish(app);
 }
 
 void summary_set_ask_at(App* app, Str hhmm) {
@@ -1404,6 +1430,7 @@ void summary_set_ask_at(App* app, Str hhmm) {
     }
     snprintf(app->config.summary.ask_at, sizeof(app->config.summary.ask_at), "%02d:%02d", h, m);
     config_save_string("summary", "ask_at", app->config.summary.ask_at);
+    summary_options_publish(app);
 }
 
 const wchar_t* summary_prompt_path() {
@@ -1443,11 +1470,13 @@ void summary_set_max_words(App* app, u32 words) {
     words = words < 50 ? 50 : words > 2000 ? 2000 : words;
     app->config.summary.max_words = words;
     config_save_u32("summary", "max_words", words);
+    summary_options_publish(app);
 }
 
 void summary_set_ask_reminders(App* app, bool on) {
     app->config.summary.ask_reminders = on;
     config_save_bool("summary", "ask_reminders", on);
+    summary_options_publish(app);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1458,8 +1487,9 @@ static bool pause_ms(App* app, u32 ms) { return sleep_unless_stopping(app, ms); 
 
 // On the writer thread. `labels` are the apps' names, from its job.
 static bool write_day(App* app, const char* day, AppLabels* labels, char* error, i32 cap) {
-    const Config* cfg = settings(app);  // the settings as they are now
-    LOG("writing the summary for %s with %s", day, cfg->summary.model);
+    SummaryOptions options = summary_options(app);  // as they are now: a change counts from the next summary
+    const SummaryOptions* cfg = &options;
+    LOG("writing the summary for %s with %s", day, cfg->model);
 
     // 1. Let transcription catch up, so the end of the day is in it.
     phase_post(app, "waiting for transcription to catch up");
@@ -1534,7 +1564,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
         if (chunks.count == 1) {
             phase_post(app, "writing the summary");
             Str material = str_fmt(a, "Transcript of your day (you said %lld words in it):\n\n%s%s", words, chunks.items[0].text.ptr, flagged.ptr);
-            Str prompt = summary_prompt(a, day, cfg->summary.max_words, material, past, rule);
+            Str prompt = summary_prompt(a, day, cfg->max_words, material, past, rule);
             if (!llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap)) goto done;
         } else {
             // Long day: notes for each part, then the summary from the notes.
@@ -1590,7 +1620,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
                 }
                 buf_add(&material, flagged);
                 phase_post(app, "writing the summary");
-                Str prompt = summary_prompt(a, day, cfg->summary.max_words, buf_take(&material, a), past, rule);
+                Str prompt = summary_prompt(a, day, cfg->max_words, buf_take(&material, a), past, rule);
                 parts_ok = llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap);
             }
             buf_free(&material);
@@ -1613,12 +1643,12 @@ static bool write_day(App* app, const char* day, AppLabels* labels, char* error,
         while (section.len && isspace((u8)section.ptr[section.len - 1])) section.len--;
         summary = str_trim(str_fmt(a, "%.*s%.*s", (int)summary.len, summary.ptr, (int)section.len, section.ptr));
         Json reminders = keep_real_reminders(a, json_get(&result, "reminders"), mine);
-        if (!save(db, day, "done", cfg->summary.model, summary, json_string_of(a, &reminders))) {
+        if (!save(db, day, "done", cfg->model, summary, json_string_of(a, &reminders))) {
             snprintf(error, cap, "could not save the summary: %s", sqlite3_errmsg(db));
             goto done;
         }
         lists_refresh(app, db);
-        if (cfg->summary.ask_reminders) alerts_offer(app, db, day, &reminders);
+        if (cfg->ask_reminders) alerts_offer(app, db, day, &reminders);
         if (!write_markdown(app, day, summary, &reminders)) WARN("could not write the summary file for %s", day);
         i32 count = reminders.count;
         LOG("summary for %s done (%lld words, %d reminders)", day, count_words(summary), count);
@@ -1859,17 +1889,19 @@ static DWORD WINAPI summary_main(void* param) {
     for (;;) {
         sqlite3* db = db_open(app);
         if (db) alerts_show_due(app, db);
-        if (!sleep_unless_stopping(app, 15000)) {
+        HANDLE waits[2] = {app->stop, app->summary.wake};
+        if (WaitForMultipleObjects(2, waits, FALSE, 15000) == WAIT_OBJECT_0) {
             if (db) sqlite3_close(db);
             break;
         }
         SummaryTick t = {};
         day_of(now_ts(), t.day);
-        const Config* c = settings(app);
+        SummaryOptions c_ = summary_options(app);
+        const SummaryOptions* c = &c_;
         t.gaming = atomic_get(&app->apps.game_on) || atomic_get(&app->worker.gpu_busy);
         t.status = -1;
         // Only once it is time to ask: whether today is done, and how much was said.
-        if (db && c->summary.enabled && now_ts() >= ask_moment(t.day, c->summary.ask_at)) {
+        if (db && c->enabled && now_ts() >= ask_moment(t.day, c->ask_at)) {
             t.status = status_of(db, t.day);
             if (t.status == 0) t.talked = talk_secs(db, t.day, &t.mine, &t.apps);
         }
@@ -1881,6 +1913,10 @@ static DWORD WINAPI summary_main(void* param) {
 
 void summary_start(App* app) {
     app->summary.notify.lock = SRWLOCK_INIT;
+    app->summary.options_lock = SRWLOCK_INIT;
+    app->summary.wake = CreateEventW(0, FALSE, FALSE, 0);
+    CHECK(app->summary.wake, "the summary's wake event (error %lu)", GetLastError());
+    summary_options_publish(app);
     Job* job = job_new(lists_apply);
     job->data = PUSH(&job->arena, ListsRead);
     db_post(job, lists_run);
@@ -1893,7 +1929,8 @@ void summary_start(App* app) {
 // check-ai
 
 bool summary_check_ai(App* app, char* said, i32 cap) {
-    const Config* cfg = settings(app);
+    SummaryOptions options = summary_options(app);
+    const SummaryOptions* cfg = &options;
     atomic_set(&app->worker.summary_needs_gpu, 1);
     worker_wake(app);
     f64 started = now_ts();
@@ -1913,7 +1950,7 @@ bool summary_check_ai(App* app, char* said, i32 cap) {
     worker_wake(app);
     if (ok) {
         Str text = json_string_of(&a, &reply);
-        snprintf(said, cap, "loaded %s in %.0fs\n%s\nstopped after %.0fs", cfg->summary.model, loaded, text.ptr, now_ts() - started);
+        snprintf(said, cap, "loaded %s in %.0fs\n%s\nstopped after %.0fs", cfg->model, loaded, text.ptr, now_ts() - started);
     } else {
         snprintf(said, cap, "%s", error);
     }

@@ -12,7 +12,7 @@ struct Storage {
 // Opens a connection (WAL, busy timeout). Null if the database cannot be opened.
 sqlite3* db_open(App* app);
 // Creates the tables if needed and adds columns that came later. Any thread.
-bool db_init(Config* cfg);
+bool db_init();
 
 // The database thread: its own connection, for the queries and writes the window asks for, so
 // a frame never waits on the disk. A request is a job (events.h): `run` fills it in on the

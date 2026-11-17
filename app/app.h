@@ -1,8 +1,9 @@
 // app.h: App, the one value that holds what the program is doing. The main thread owns it: it is
 // the only thread that reads or changes it, so nothing locks it and a frame always sees one
-// moment. Other threads get what they need in a job or from atomics and settings(), and hand
-// their results back as events and jobs (events.h); slow work runs on the database thread
-// (db.h), the file writer (disk.h) and the pool (pool.h).
+// moment. Other threads get what they need in a job, from atomics or from their own copy of the
+// settings (worker_options_publish, summary_options_publish), and hand their results back as
+// events and jobs (events.h); slow work runs on the database thread (db.h), the file writer
+// (disk.h) and the pool (pool.h).
 //
 // Functions that take `App*` are for the main thread unless their comment says otherwise. When
 // another thread changes something the window shows, the main thread calls wake_window() as it

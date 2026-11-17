@@ -97,54 +97,54 @@ static void setup_done_apply(App* app, Event* e) {
     wake_window(app);
 }
 
-static void ai_sub(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(cfg->ai.dir, name, out); }
+static void ai_sub(const char* ai_dir, const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(ai_dir, name, out); }
 
-void whisper_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"whisper", out); }
+void whisper_dir(const char* ai_dir, wchar_t out[MAX_PATH]) { ai_sub(ai_dir, L"whisper", out); }
 
-void whisper_bin_dir(const Config* cfg, wchar_t out[MAX_PATH]) {
+void whisper_bin_dir(const char* ai_dir, wchar_t out[MAX_PATH]) {
     wchar_t dir[MAX_PATH];
-    whisper_dir(cfg, dir);
+    whisper_dir(ai_dir, dir);
     swprintf(out, MAX_PATH, L"%ls\\%ls", dir, WHISPER_BUILD);
 }
 
-void llm_dir(const Config* cfg, wchar_t out[MAX_PATH]) { ai_sub(cfg, L"llm", out); }
+void llm_dir(const char* ai_dir, wchar_t out[MAX_PATH]) { ai_sub(ai_dir, L"llm", out); }
 
 static bool exists(const wchar_t* path) { return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES; }
 
-void model_path(const Config* cfg, SetupPart part, const char* model, wchar_t out[MAX_PATH]) {
+void model_path(const char* ai_dir, SetupPart part, const char* model, wchar_t out[MAX_PATH]) {
     wchar_t dir[MAX_PATH];
     Mark m = mark(scratch());
     wchar_t* name = wide(scratch(), str(model));
     if (part == SETUP_TRANSCRIBER) {
-        whisper_dir(cfg, dir);
+        whisper_dir(ai_dir, dir);
         swprintf(out, MAX_PATH, L"%ls\\ggml-%ls.bin", dir, name);
     } else {
-        llm_dir(cfg, dir);
+        llm_dir(ai_dir, dir);
         swprintf(out, MAX_PATH, L"%ls\\%ls.gguf", dir, name);
     }
     rewind(m);
 }
 
-void llm_exe_path(const Config* cfg, wchar_t out[MAX_PATH]) {
+void llm_exe_path(const char* ai_dir, wchar_t out[MAX_PATH]) {
     wchar_t dir[MAX_PATH];
-    llm_dir(cfg, dir);
+    llm_dir(ai_dir, dir);
     swprintf(out, MAX_PATH, L"%ls\\llama-server.exe", dir);
 }
 
-bool whisper_ready(const Config* cfg, const char* model) {
+bool whisper_ready(const char* ai_dir, const char* model) {
     wchar_t dir[MAX_PATH], bins[MAX_PATH], dll[MAX_PATH], bin[MAX_PATH], vad[MAX_PATH];
-    whisper_dir(cfg, dir);
-    whisper_bin_dir(cfg, bins);
+    whisper_dir(ai_dir, dir);
+    whisper_bin_dir(ai_dir, bins);
     swprintf(dll, MAX_PATH, L"%ls\\whisper.dll", bins);
-    model_path(cfg, SETUP_TRANSCRIBER, model, bin);
+    model_path(ai_dir, SETUP_TRANSCRIBER, model, bin);
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
     return exists(dll) && exists(bin) && exists(vad);
 }
 
-bool summary_ai_ready(const Config* cfg, const char* model) {
+bool summary_ai_ready(const char* ai_dir, const char* model) {
     wchar_t exe[MAX_PATH], gguf[MAX_PATH];
-    llm_exe_path(cfg, exe);
-    model_path(cfg, SETUP_SUMMARY_AI, model, gguf);
+    llm_exe_path(ai_dir, exe);
+    model_path(ai_dir, SETUP_SUMMARY_AI, model, gguf);
     return exists(exe) && exists(gguf);
 }
 
@@ -575,7 +575,7 @@ bool setup_remove(App* app, SetupPart part, const char* model) {
         return false;
     }
     wchar_t path[MAX_PATH];
-    model_path(&app->config, part, model, path);
+    model_path(app->config.ai.dir, part, model, path);
     app->setup.scanned_ts = 0;
     if (!DeleteFileW(path) && GetLastError() != ERROR_FILE_NOT_FOUND) {
         WARN("could not delete the model %s (error %lu)", model, GetLastError());
@@ -598,8 +598,8 @@ void setup_remove_all(App* app) {
         return;
     }
     wchar_t whisper[MAX_PATH], llm[MAX_PATH], kept[MAX_PATH], none[MAX_PATH];
-    whisper_dir(&app->config, whisper);
-    llm_dir(&app->config, llm);
+    whisper_dir(app->config.ai.dir, whisper);
+    llm_dir(app->config.ai.dir, llm);
     bool ok = remove_ai_dir(whisper, kept);
     ok = remove_ai_dir(llm, none) && ok;
     if (kept[0]) cleanup_add(app, kept);
@@ -705,15 +705,16 @@ static bool copy_tree(MoveJob* j, const wchar_t* from, const wchar_t* to, char* 
     return ok;
 }
 
-// The new AI folder has everything. Publishes the settings at once, so every thread reads the new
-// folder from here on, then lets the move thread clear the old one.
+// The new AI folder has everything. Hands it to the transcriber and the summary at once, so they
+// load from there from here on, then lets the move thread clear the old one.
 static void move_apply(App* app, Job* job) {
     MoveJob* j = (MoveJob*)job->data;
     SET(app->config.ai.dir, str(j->to_utf8));
     config_save_string("ai", "dir", app->config.ai.dir);
     cleanup_keep(app, str(app->config.ai.dir));
     LOG("the AI files are now in %s", app->config.ai.dir);
-    if (settings_publish(app)) worker_wake(app);
+    worker_options_publish(app);
+    summary_options_publish(app);
     SetEvent(j->applied);
 }
 
@@ -854,8 +855,8 @@ static void scan_part(App* app, SetupPart part, const wchar_t* dir, const wchar_
 
 void ai_scan(App* app) {
     wchar_t whisper[MAX_PATH], llm[MAX_PATH];
-    whisper_dir(&app->config, whisper);
-    llm_dir(&app->config, llm);
+    whisper_dir(app->config.ai.dir, whisper);
+    llm_dir(app->config.ai.dir, llm);
     app->setup.total_bytes = 0;
     scan_part(app, SETUP_TRANSCRIBER, whisper, L"ggml-*.bin", "ggml-", ".bin");
     scan_part(app, SETUP_SUMMARY_AI, llm, L"*.gguf", "", ".gguf");
@@ -887,12 +888,12 @@ void setup_start(App* app, SetupPart part, const char* model) {
     SET(job->model, str(known->name));
     wcsncpy_s(job->url, known->url, _TRUNCATE);
     if (part == SETUP_TRANSCRIBER) {
-        whisper_dir(&app->config, job->dir);
-        whisper_bin_dir(&app->config, job->bins);
+        whisper_dir(app->config.ai.dir, job->dir);
+        whisper_bin_dir(app->config.ai.dir, job->bins);
     } else {
-        llm_dir(&app->config, job->dir);
+        llm_dir(app->config.ai.dir, job->dir);
     }
-    model_path(&app->config, part, known->name, job->target);
+    model_path(app->config.ai.dir, part, known->name, job->target);
     Mark m = mark(scratch());
     SHCreateDirectoryExW(0, wide(scratch(), str(app->config.ai.dir)), 0);
     rewind(m);
@@ -911,4 +912,5 @@ void summary_set_endpoint(App* app, Str url, Str model) {
         config_save_string("summary", "model", app->config.summary.model);
     }
     LOG("summary AI: %s", url.len ? app->config.summary.endpoint : "lifelog's own");
+    summary_options_publish(app);
 }

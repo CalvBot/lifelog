@@ -115,7 +115,7 @@ static void player_at_apply(App* app, Event* e) {
 static void player_run(Player* pl, sqlite3* db, char* error, i32 cap) {
     App* app = pl->app;
     wchar_t adir[MAX_PATH];
-    audio_dir(settings(app), adir);
+    audio_dir(adir);
 
     // The line it starts from.
     sqlite3_stmt* st = prepare(db, "SELECT speaker, start_ts, end_ts FROM segments WHERE id = ?1");
@@ -267,7 +267,7 @@ static DWORD WINAPI player_thread(void* p) {
     Job* job = job_new(player_done);
     PlayerDone* d = PUSH(&job->arena, PlayerDone);
     d->pl = pl;
-    sqlite3* db = db_open_path(settings(app), true);
+    sqlite3* db = db_open_path(true);
     if (!db) snprintf(d->error, sizeof(d->error), "could not open the database");
     else player_run(pl, db, d->error, sizeof(d->error));
     sqlite3_close(db);

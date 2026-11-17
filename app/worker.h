@@ -10,10 +10,24 @@
 // summary writes, it steps aside too, so the two models never share the GPU.
 //
 // The mode, limit and wait are in App.config.processing; the functions below change them there
-// and in config.toml. The supervisor takes no lock: it reads them from settings() and posts its
-// state, the queue and "lines written" to the main thread (events.h), which keeps the fields below.
+// and in config.toml, and hand the transcription threads their own copy (WorkerOptions). The
+// supervisor posts its state, the queue and "lines written" to the main thread (events.h), which
+// keeps the fields below.
 
 #pragma once
+
+// What the supervisor and the GPU monitor need of the settings.
+struct WorkerOptions {
+    Mode mode;
+    u32 gpu_busy_percent;
+    bool pause_for_games;
+    u32 resume_after_secs;
+    char model[128];
+    char language[16];
+    char endpoint[512];
+    char api_key[256];
+    char ai_dir[MAX_PATH];
+};
 
 struct Worker {
     char state[160];      // what it is doing, for the window: "transcribing", "waiting for the game to close", ...
@@ -32,9 +46,17 @@ struct Worker {
     HANDLE done;          // set when the supervisor has stopped and freed the model
     HANDLE wake;          // auto-reset: something the supervisor waits on changed (worker_wake)
     Latest seen;          // the supervisor's newest status, for the main thread (events.h)
+    // The options as the main thread last handed them over; each thread copies them when
+    // `options_version` moves.
+    SRWLOCK options_lock;
+    WorkerOptions options;
+    volatile LONG options_version;
 };
 
 void worker_start(App* app);
+// Hands the transcription threads the settings in App.config now and wakes them. The setters
+// below call it; so does anything else that changes what they use (the AI folder).
+void worker_options_publish(App* app);
 void worker_set_mode(App* app, Mode mode);
 void worker_set_gpu_limit(App* app, u32 percent);
 // Whether auto mode waits while a game runs (saved to the config).

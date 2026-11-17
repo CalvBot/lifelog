@@ -301,6 +301,12 @@ static void config_defaults(Config* cfg) {
     cfg->chimes.volume = 60;
 }
 
+static char g_data_dir[MAX_PATH];
+static u16 g_api_port;
+
+const char* data_dir() { return g_data_dir; }
+u16 api_port() { return g_api_port; }
+
 bool config_load(Config* cfg, char* error, i32 error_cap) {
     Arena* a = scratch();
     Mark m = mark(a);
@@ -401,6 +407,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
     }
     if (!cfg->data_dir[0]) SET(cfg->data_dir, str_fmt(a, "%s\\data", narrow(a, local_dir()).ptr));
     if (!cfg->ai.dir[0]) SET(cfg->ai.dir, narrow(a, local_dir()));
+    SET(g_data_dir, str(cfg->data_dir));
+    g_api_port = cfg->api_port;
     rewind(m);
     return ok;
 }
@@ -417,7 +425,6 @@ static i64 line_end(Str s, i64 pos) {
 }
 
 bool config_save_value(const char* table, const char* key, Str value) {
-    settings_changed();
     disk_save_key(table, key, value);
     return true;
 }
@@ -559,9 +566,9 @@ void path_under(const char* dir, const wchar_t* name, wchar_t out[MAX_PATH]) {
     rewind(m);
 }
 
-static void under_data(const Config* cfg, const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(cfg->data_dir, name, out); }
+static void under_data(const wchar_t* name, wchar_t out[MAX_PATH]) { path_under(g_data_dir, name, out); }
 
-void spool_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"spool", out); }
-void audio_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"audio", out); }
-void files_dir(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"files", out); }
-void db_path(const Config* cfg, wchar_t out[MAX_PATH]) { under_data(cfg, L"lifelog.db", out); }
+void spool_dir(wchar_t out[MAX_PATH]) { under_data(L"spool", out); }
+void audio_dir(wchar_t out[MAX_PATH]) { under_data(L"audio", out); }
+void files_dir(wchar_t out[MAX_PATH]) { under_data(L"files", out); }
+void db_path(wchar_t out[MAX_PATH]) { under_data(L"lifelog.db", out); }

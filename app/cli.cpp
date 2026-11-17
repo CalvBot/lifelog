@@ -125,7 +125,7 @@ static i32 cli_clip(Str range) {
         rewind(m);
         return 1;
     }
-    ClipResult c = clip_copy(&g_cli.config, 0, from, now, 0, CLIP_FILE, label);
+    ClipResult c = clip_copy(0, from, now, 0, CLIP_FILE, label);
     if (!c.ok) return cli_error("%s", c.error);
     cli_print("%d lines → %s (on the clipboard)\n", c.lines, c.path);
     return 0;
@@ -135,6 +135,7 @@ static i32 cli_check_ai() {
     if (!cli_config(&g_cli.config)) return 1;
     g_cli.stop = CreateEventW(0, TRUE, FALSE, 0);
     static char said[4096];
+    summary_options_publish(&g_cli);
     bool ok = summary_check_ai(&g_cli, said, sizeof(said));
     if (!ok) return cli_error("%s", said);
     cli_print("%s\n", said);

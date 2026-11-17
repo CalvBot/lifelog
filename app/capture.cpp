@@ -601,7 +601,7 @@ static DWORD WINAPI stream_main(void* p) {
 static void stream_start(App* app, Stream* s) {
     s->app = app;
     s->lock = SRWLOCK_INIT;
-    spool_dir(&app->config, s->spool);
+    spool_dir(s->spool);
     s->gate = app->config.capture.gate_rms;
     s->playing_ts = now_ts();
     s->thread = CreateThread(0, 0, stream_main, s, 0, 0);

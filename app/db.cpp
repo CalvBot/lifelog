@@ -14,9 +14,9 @@ static Str schema_text(Arena* a) {
 
 // Opens the database for reading and writing (made if missing), or `read_only` for copying and
 // playback, which never write.
-static sqlite3* db_open_path(const Config* cfg, bool read_only) {
+static sqlite3* db_open_path(bool read_only) {
     wchar_t path[MAX_PATH];
-    db_path(cfg, path);
+    db_path(path);
     Mark m = mark(scratch());
     Str utf8 = narrow(scratch(), path);
     sqlite3* db = 0;
@@ -43,16 +43,16 @@ static bool has_column(sqlite3* db, const char* table, const char* column) {
     return found;
 }
 
-bool db_init(Config* cfg) {
+bool db_init() {
     wchar_t dir[MAX_PATH];
     Mark m = mark(scratch());
-    wchar_t* data = wide(scratch(), str(cfg->data_dir));
+    wchar_t* data = wide(scratch(), str(data_dir()));
     SHCreateDirectoryExW(0, data, 0);
-    spool_dir(cfg, dir);
+    spool_dir(dir);
     SHCreateDirectoryExW(0, dir, 0);
     rewind(m);
 
-    sqlite3* db = db_open_path(cfg, false);
+    sqlite3* db = db_open_path(false);
     if (!db) return false;
     Str schema = schema_text(scratch());
     bool ok = schema.ptr != 0;
@@ -72,8 +72,8 @@ bool db_init(Config* cfg) {
     return ok;
 }
 
-sqlite3* db_open(App* app) {
-    return db_open_path(settings(app), false);
+sqlite3* db_open(App*) {
+    return db_open_path(false);
 }
 
 // A column as a Str copied into `a` ("" for NULL).

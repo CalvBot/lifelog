@@ -57,6 +57,17 @@ static bool gpu3d_sample(Gpu3d* g, f64* load) {
     return ok;
 }
 
+// Copies the options into `out` if the main thread has handed over new ones since `*version`.
+static void worker_options_take(App* app, WorkerOptions* out, LONG* version) {
+    Worker* w = &app->worker;
+    LONG now = atomic_get(&w->options_version);
+    if (now == *version) return;
+    AcquireSRWLockShared(&w->options_lock);
+    *out = w->options;
+    *version = atomic_get(&w->options_version);
+    ReleaseSRWLockShared(&w->options_lock);
+}
+
 // Busy after ~6 s over the limit, free again once `resume_after_secs` have passed under it (so a
 // loading screen or a menu does not start a transcription run mid-game).
 static DWORD WINAPI gpu_monitor_thread(void* p) {
@@ -68,11 +79,12 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
     }
     u32 over = 0;
     f64 last_over = now_ts();
+    WorkerOptions o = {};
+    LONG version = 0;
     while (sleep_unless_stopping(app, 2000)) {
         f64 load = 0;
         if (!gpu3d_sample(&gpu, &load)) continue;
-        // The flags are atomics and the limits come from settings().
-        const Config* cfg = settings(app);
+        worker_options_take(app, &o, &version);
         Worker* w = &app->worker;
         bool was_busy = atomic_get(&w->gpu_busy) != 0;
         bool busy = was_busy;
@@ -81,7 +93,7 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
         atomic_set(&w->gpu_3d_percent, percent);
         if (atomic_get(&w->summary_needs_gpu)) {
             over = 0;  // the summary model's own load shows up as 3D work too; it is not a game
-        } else if (load > (f64)cfg->processing.gpu_busy_percent) {
+        } else if (load > (f64)o.gpu_busy_percent) {
             over++;
             last_over = now_ts();
             if (over >= 3 && !busy) {
@@ -90,7 +102,7 @@ static DWORD WINAPI gpu_monitor_thread(void* p) {
             }
         } else {
             over = 0;
-            if (busy && now_ts() - last_over >= (f64)cfg->processing.resume_after_secs) {
+            if (busy && now_ts() - last_over >= (f64)o.resume_after_secs) {
                 busy = false;
                 LOG("GPU free again: transcription resumes");
             }
@@ -129,21 +141,20 @@ static void scan_spool(const wchar_t* spool, i32* files, f64* secs, wchar_t olde
     FindClose(h);
 }
 
-// Whether transcription may run now, and the few words saying why (not). No lock: it reads
-// atomics and settings(). Waiting for a game, the state is GAME_STATE and the main thread puts
-// the game's name in.
+// Whether transcription may run now, and the few words saying why (not). It reads atomics and the
+// supervisor's options. Waiting for a game, the state is GAME_STATE and the main thread puts the
+// game's name in.
 static const char* GAME_STATE = "waiting for a game to close";
 
-static bool worker_allowed(App* app, f64 quiet_from, char* state, i32 cap) {
+static bool worker_allowed(App* app, const WorkerOptions* c, f64 quiet_from, char* state, i32 cap) {
     Worker* w = &app->worker;
-    const Config* c = settings(app);
-    Mode mode = c->processing.mode;
-    f64 wait = (f64)c->processing.resume_after_secs - (now_ts() - quiet_from);
+    Mode mode = c->mode;
+    f64 wait = (f64)c->resume_after_secs - (now_ts() - quiet_from);
     if (atomic_get(&w->summary_needs_gpu)) {
         snprintf(state, cap, "waiting for the daily summary");
     } else if (mode == MODE_PAUSED) {
         snprintf(state, cap, "paused");
-    } else if (mode == MODE_AUTO && c->processing.pause_for_games && atomic_get(&app->apps.game_on)) {
+    } else if (mode == MODE_AUTO && c->pause_for_games && atomic_get(&app->apps.game_on)) {
         snprintf(state, cap, "%s", GAME_STATE);
     } else if (mode == MODE_AUTO && atomic_get(&w->gpu_busy)) {
         snprintf(state, cap, "waiting for the graphics card");
@@ -243,11 +254,11 @@ static bool whisper_load(const wchar_t* dir, char* error, i32 cap) {
 }
 
 // Loads ggml-<model>.bin onto the GPU. Null (with `error`) if it could not.
-static whisper_context* whisper_open(const Config* cfg, const char* model, char* error, i32 cap) {
+static whisper_context* whisper_open(const char* ai_dir, const char* model, char* error, i32 cap) {
     wchar_t bins[MAX_PATH], bin[MAX_PATH];
-    whisper_bin_dir(cfg, bins);
+    whisper_bin_dir(ai_dir, bins);
     if (!whisper_load(bins, error, cap)) return 0;
-    model_path(cfg, SETUP_TRANSCRIBER, model, bin);
+    model_path(ai_dir, SETUP_TRANSCRIBER, model, bin);
     whisper_context_params cp = p_whisper_context_default_params();
     cp.use_gpu = true;
     cp.flash_attn = true;
@@ -265,6 +276,8 @@ static whisper_context* whisper_open(const Config* cfg, const char* model, char*
 // every quarter second.
 struct AbortCheck {
     App* app;
+    WorkerOptions options;  // its own copy, so a change (say, to paused) counts mid-clip
+    LONG version;
     f64 next;
     bool aborted;
 };
@@ -277,7 +290,8 @@ static bool whisper_should_abort(void* p) {
     if (now < c->next) return false;
     c->next = now + 0.25;
     char why[160];
-    c->aborted = !worker_allowed(c->app, 0, why, sizeof(why));
+    worker_options_take(c->app, &c->options, &c->version);
+    c->aborted = !worker_allowed(c->app, &c->options, 0, why, sizeof(why));
     g_whisper_aborting = c->aborted;
     return c->aborted;
 }
@@ -369,7 +383,7 @@ enum Sent : u8 {
 };
 
 // With our own whisper.cpp. In `a`.
-static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char* language, bool mic, Str wav, Slice<Heard>* out, char* error, i32 cap) {
+static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const WorkerOptions* o, bool mic, Str wav, Slice<Heard>* out, char* error, i32 cap) {
     *out = {};
     Slice<f32> samples = {};
     if (!wav_samples(a, wav, &samples)) {
@@ -379,7 +393,7 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char
     whisper_full_params wp = p_whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
     wp.n_threads = 4;
     wp.beam_search.beam_size = 5;
-    wp.language = language[0] ? language : "auto";
+    wp.language = o->language[0] ? o->language : "auto";
     // No text carried over from the last window, so one bad line does not repeat into the next.
     wp.no_context = true;
     wp.n_max_text_ctx = 0;
@@ -389,7 +403,7 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char
     // Silero voice detection: only speech is transcribed, so music, game noise and silence are
     // skipped (and do not get made-up lines). Timestamps stay on the file's own timeline.
     wchar_t dir[MAX_PATH], vad[MAX_PATH];
-    whisper_dir(settings(app), dir);
+    whisper_dir(o->ai_dir, dir);
     swprintf(vad, MAX_PATH, L"%ls\\%hs", dir, WHISPER_VAD_MODEL);
     Str vad_path = narrow(a, vad);
     wp.vad = true;
@@ -398,14 +412,15 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const char
     // The mic is only ever your own voice, close up: a lower bar than for apps (0.5), whose
     // music and game sound would get through it.
     if (mic) wp.vad_params.threshold = 0.35f;
-    AbortCheck check = {app, 0, false};
+    AbortCheck* check = PUSH(a, AbortCheck);
+    check->app = app;
     wp.abort_callback = whisper_should_abort;
-    wp.abort_callback_user_data = &check;
+    wp.abort_callback_user_data = check;
 
     g_whisper_aborting = false;
     i32 result = p_whisper_full(ctx, wp, samples.items, samples.count);
     g_whisper_aborting = false;
-    if (check.aborted) return SENT_ABORTED;
+    if (check->aborted) return SENT_ABORTED;
     if (result != 0) {
         snprintf(error, cap, "whisper.cpp failed on it (%d)", result);
         return SENT_BAD;
@@ -503,7 +518,7 @@ static void set_aside(const wchar_t* spool, const wchar_t* wav, const wchar_t* m
 // Transcribes spool\<name> (with `ctx`, or your server `t` when ctx is null) and saves its lines.
 // SENT_OK also when the file was set aside; on SENT_RETRY and SENT_ABORTED the file stays where
 // it is. Not on the main thread.
-static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const char* language, Target* t, const wchar_t* spool,
+static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const WorkerOptions* o, Target* t, const wchar_t* spool,
                             const wchar_t* name, i32* lines_out) {
     *lines_out = 0;
     Arena* a = scratch();
@@ -526,7 +541,7 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
     }
     Slice<Heard> heard = {};
     bool mic = str_eq(json_text(json_get(&meta, "source")), str("mic"));
-    Sent sent = ctx ? transcribe_here(app, a, ctx, language, mic, wav, &heard, error, sizeof(error))
+    Sent sent = ctx ? transcribe_here(app, a, ctx, o, mic, wav, &heard, error, sizeof(error))
                     : transcribe_there(a, t, wav, &heard, error, sizeof(error));
     if (sent == SENT_RETRY || sent == SENT_ABORTED) {
         if (sent == SENT_RETRY && !stopping(app)) WARN("%s: %s; trying again later", label.ptr, error);
@@ -583,7 +598,7 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
             return SENT_RETRY;
         }
         wchar_t audio[MAX_PATH], day_dir[MAX_PATH], to[MAX_PATH];
-        audio_dir((Config*)settings(app), audio);  // data_dir does not change while the program runs
+        audio_dir(audio);
         swprintf(day_dir, MAX_PATH, L"%ls\\%04d-%02d-%02d", audio, lt.year, lt.month, lt.day);
         SHCreateDirectoryExW(0, day_dir, 0);
         swprintf(to, MAX_PATH, L"%ls\\%ls", day_dir, name);
@@ -600,7 +615,7 @@ static Sent transcribe_file(App* app, sqlite3* db, whisper_context* ctx, const c
 // ---------------------------------------------------------------------------------------------
 // The supervisor
 //
-// It takes no lock. It reads atomics and settings(), and posts what it is doing to the main
+// It reads atomics and its own copy of the options, and posts what it is doing to the main
 // thread when that changes. It sleeps until worker_wake (a new WAV, a game, the GPU, the summary,
 // a setting) or a timer it needs (a retry, the countdown after a game) says to look again.
 
@@ -648,7 +663,7 @@ static void worker_post_seen(App* app, WorkerSeen* now, WorkerSeen* last) {
 static DWORD WINAPI supervisor_thread(void* p) {
     App* app = (App*)p;
     wchar_t spool[MAX_PATH];
-    spool_dir((Config*)settings(app), spool);  // data_dir does not change while the program runs
+    spool_dir(spool);
     sqlite3* db = 0;
     whisper_context* ctx = 0;  // our model, while it may use the GPU
     char ctx_model[128] = "";
@@ -658,6 +673,8 @@ static DWORD WINAPI supervisor_thread(void* p) {
     f64 quiet_from = 0;  // when the last game closed, in auto mode; 0 if none has
     bool had_game = false, first = true, count = true;
     char trouble[256] = "";  // why the last try failed, while waiting to try again
+    WorkerOptions o = {};
+    LONG version = 0;
     WorkerSeen seen = {}, last = {};
     memset(&seen, 0, sizeof(seen));  // compared with memcmp: no stray padding bytes
     memset(&last, 0, sizeof(last));
@@ -670,23 +687,23 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
 
         bool load = false, unload = false, work = false;
-        char state[256], model[128], language[16];
+        char state[256];
         Target t = {};
-        const Config* c = settings(app);
-        bool yours = c->worker.endpoint[0] != 0;
-        bool ready = yours || whisper_ready(c, c->worker.model);
+        worker_options_take(app, &o, &version);
+        const WorkerOptions* c = &o;
+        const char* model = c->model;
+        bool yours = c->endpoint[0] != 0;
+        bool ready = yours || whisper_ready(c->ai_dir, c->model);
         if (ready == seen.missing || first) {
             if (!ready) WARN("transcription is not set up (Settings, Transcription): audio will queue up untranscribed");
             else if (!first) LOG("transcription is set up");
         }
         seen.missing = !ready;
         first = false;
-        bool game = c->processing.pause_for_games && atomic_get(&app->apps.game_on);
+        bool game = c->pause_for_games && atomic_get(&app->apps.game_on);
         if (had_game && !game) quiet_from = now;
         had_game = game;
-        SET(model, str(c->worker.model));
-        SET(language, str(c->worker.language));
-        bool want = ready && worker_allowed(app, quiet_from, state, sizeof(state));
+        bool want = ready && worker_allowed(app, c, quiet_from, state, sizeof(state));
         // The model leaves the GPU when it has to wait, when your server is used instead, or
         // when another model is chosen.
         if (ctx && (!want || yours || strcmp(ctx_model, model) != 0)) {
@@ -700,12 +717,12 @@ static DWORD WINAPI supervisor_thread(void* p) {
         if (can && seen.queued > 0 && now >= retry_at) {
             work = true;
             if (yours) {
-                Str url = str_trim(str(c->worker.endpoint));
+                Str url = str_trim(str(c->endpoint));
                 while (url.len && url.ptr[url.len - 1] == '/') url.len--;
                 SET(t.url, url);
-                SET(t.key, str_trim(str(c->worker.api_key)));
+                SET(t.key, str_trim(str(c->api_key)));
                 SET(t.model, str(model));
-                SET(t.language, str(language));
+                SET(t.language, str(c->language));
             }
         }
         // A countdown or a retry shows its seconds, so meanwhile it looks again each second.
@@ -724,7 +741,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             }
         } else {
             if (!ready) snprintf(state, sizeof(state), "not set up yet");
-            ticking = quiet_from > 0 && now - quiet_from < (f64)c->processing.resume_after_secs + 1;
+            ticking = quiet_from > 0 && now - quiet_from < (f64)c->resume_after_secs + 1;
         }
         SET(seen.state, str(state));
         seen.game = strcmp(state, GAME_STATE) == 0;
@@ -739,7 +756,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
         if (load) {
             char error[512];
-            ctx = whisper_open(settings(app), model, error, sizeof(error));
+            ctx = whisper_open(c->ai_dir, model, error, sizeof(error));
             if (ctx) {
                 SET(ctx_model, str(model));
             } else {
@@ -764,7 +781,7 @@ static DWORD WINAPI supervisor_thread(void* p) {
             }
             f64 began = now_ts();
             i32 lines = 0;
-            Sent sent = transcribe_file(app, db, yours ? 0 : ctx, language, &t, spool, name, &lines);
+            Sent sent = transcribe_file(app, db, yours ? 0 : ctx, c, &t, spool, name, &lines);
             if (sent == SENT_ABORTED) continue;  // the next round sees why, and frees the model
             if (sent == SENT_RETRY) {
                 SET(trouble, str(yours ? "your server could not be reached" : "the database was busy"));
@@ -799,8 +816,29 @@ void worker_start(App* app) {
     app->worker.done = CreateEventW(0, TRUE, FALSE, 0);
     // Made in run_app, before capture starts: the capture threads wake the supervisor.
     CHECK(app->worker.wake, "the worker's wake event made before worker_start");
+    app->worker.options_lock = SRWLOCK_INIT;
+    worker_options_publish(app);
     start_thread(app, "worker-supervisor", supervisor_thread);
     start_thread(app, "gpu-monitor", gpu_monitor_thread);
+}
+
+void worker_options_publish(App* app) {
+    const Config* c = &app->config;
+    Worker* w = &app->worker;
+    AcquireSRWLockExclusive(&w->options_lock);
+    WorkerOptions* o = &w->options;
+    o->mode = c->processing.mode;
+    o->gpu_busy_percent = c->processing.gpu_busy_percent;
+    o->pause_for_games = c->processing.pause_for_games;
+    o->resume_after_secs = c->processing.resume_after_secs;
+    SET(o->model, str(c->worker.model));
+    SET(o->language, str(c->worker.language));
+    SET(o->endpoint, str(c->worker.endpoint));
+    SET(o->api_key, str(c->worker.api_key));
+    SET(o->ai_dir, str(c->ai.dir));
+    InterlockedIncrement(&w->options_version);
+    ReleaseSRWLockExclusive(&w->options_lock);
+    worker_wake(app);
 }
 
 void worker_set_mode(App* app, Mode mode) {
@@ -808,6 +846,7 @@ void worker_set_mode(App* app, Mode mode) {
     app->config.processing.mode = mode;
     LOG("transcription mode: %s", mode_name(mode));
     config_save_string("processing", "mode", mode_name(mode));
+    worker_options_publish(app);
 }
 
 void worker_set_gpu_limit(App* app, u32 percent) {
@@ -817,6 +856,7 @@ void worker_set_gpu_limit(App* app, u32 percent) {
     app->config.processing.gpu_busy_percent = percent;
     LOG("a game is running when 3D load is above %u%%", percent);
     config_save_u32("processing", "gpu_busy_percent", percent);
+    worker_options_publish(app);
 }
 
 void worker_set_pause_for_games(App* app, bool on) {
@@ -824,6 +864,7 @@ void worker_set_pause_for_games(App* app, bool on) {
     app->config.processing.pause_for_games = on;
     LOG("auto mode %s while a game runs", on ? "waits" : "doesn't wait");
     config_save_bool("processing", "pause_for_games", on);
+    worker_options_publish(app);
 }
 
 void worker_set_endpoint(App* app, Str url, Str model) {
@@ -836,6 +877,7 @@ void worker_set_endpoint(App* app, Str url, Str model) {
         config_save_string("worker", "model", app->config.worker.model);
     }
     LOG("transcription: %s", url.len ? app->config.worker.endpoint : "lifelog's own whisper.cpp");
+    worker_options_publish(app);
 }
 
 void worker_wake(App* app) {

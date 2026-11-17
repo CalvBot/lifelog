@@ -736,7 +736,7 @@ static void model_row(App* app, SettingsState* s, SetupPart part) {
     const AiModel* models;
     i32 n = ai_models(part, &models);
     const AiModel* cur = ai_model(part, current);
-    bool have = whisper ? whisper_ready(c, current) : summary_ai_ready(c, current);
+    bool have = whisper ? whisper_ready(c->ai.dir, current) : summary_ai_ready(c->ai.dir, current);
 
     row_label("Model");
     ImGui::SetNextItemWidth(px(230));

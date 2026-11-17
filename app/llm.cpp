@@ -119,16 +119,16 @@ static HANDLE kill_with_lifelog(HANDLE process) {
 }
 
 // Starts the server with `model` (a .gguf name in the llm folder) and waits until it has loaded.
-static bool llm_start(App* app, const Config* cfg, const char* model, u32 ctx, Llm* llm, char* error, i32 cap) {
+static bool llm_start(App* app, const char* ai_dir, const char* model, u32 ctx, Llm* llm, char* error, i32 cap) {
     *llm = {};
-    if (!summary_ai_ready(cfg, model)) {
+    if (!summary_ai_ready(ai_dir, model)) {
         snprintf(error, cap, "the summary AI is not set up: see Settings, Summary");
         return false;
     }
     wchar_t dir[MAX_PATH], exe[MAX_PATH], gguf[MAX_PATH];
-    llm_dir(cfg, dir);
-    llm_exe_path(cfg, exe);
-    model_path(cfg, SETUP_SUMMARY_AI, model, gguf);
+    llm_dir(ai_dir, dir);
+    llm_exe_path(ai_dir, exe);
+    model_path(ai_dir, SETUP_SUMMARY_AI, model, gguf);
     u16 port = llm_port();
     wchar_t cmd[2 * MAX_PATH + 256];
     swprintf(cmd, COUNT(cmd), L"\"%ls\" -m \"%ls\" --host %hs --port %u -ngl 999 -c %u --jinja --parallel 1", exe, gguf, LLM_HOST,
@@ -175,17 +175,16 @@ static bool llm_start(App* app, const Config* cfg, const char* model, u32 ctx, L
     }
 }
 
-// The AI the settings ask for: `endpoint` if one is set, else lifelog's own llama.cpp. `cfg` is a
-// copy of the settings (settings()). Not on the main thread: it may wait minutes for the model to
-// load.
-bool llm_open(App* app, const Config* cfg, u32 ctx, Llm* llm, char* error, i32 cap) {
-    Str endpoint = str_trim(str(cfg->summary.endpoint));
+// The AI the options ask for: `endpoint` if one is set, else lifelog's own llama.cpp. Not on the
+// main thread: it may wait minutes for the model to load.
+bool llm_open(App* app, const SummaryOptions* o, u32 ctx, Llm* llm, char* error, i32 cap) {
+    Str endpoint = str_trim(str(o->endpoint));
     while (endpoint.len && endpoint.ptr[endpoint.len - 1] == '/') endpoint.len--;
-    if (!endpoint.len) return llm_start(app, cfg, cfg->summary.model, ctx, llm, error, cap);
+    if (!endpoint.len) return llm_start(app, o->ai_dir, o->model, ctx, llm, error, cap);
     *llm = {};
     SET(llm->url, endpoint);
-    SET(llm->key, str_trim(str(cfg->summary.api_key)));
-    SET(llm->model, str(cfg->summary.model));
+    SET(llm->key, str_trim(str(o->api_key)));
+    SET(llm->model, str(o->model));
     return true;
 }
 

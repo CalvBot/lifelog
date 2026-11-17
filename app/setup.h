@@ -78,20 +78,20 @@ void setup_cleanup(Config* cfg);
 void ai_scan(App* app);
 
 // <ai dir>\whisper: the ggml-*.bin models, and one folder per whisper.cpp build.
-void whisper_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void whisper_dir(const char* ai_dir, wchar_t out[MAX_PATH]);
 // That build's folder (whisper\b5454): whisper.dll, ggml and the CUDA libraries.
-void whisper_bin_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void whisper_bin_dir(const char* ai_dir, wchar_t out[MAX_PATH]);
 // <ai dir>\llm: llama-server.exe, its libraries and the .gguf models.
-void llm_dir(const Config* cfg, wchar_t out[MAX_PATH]);
+void llm_dir(const char* ai_dir, wchar_t out[MAX_PATH]);
 // Where `part`'s `model` (a name as in config.toml) is kept: whisper\ggml-<model>.bin or
 // llm\<model>.gguf.
-void model_path(const Config* cfg, SetupPart part, const char* model, wchar_t out[MAX_PATH]);
+void model_path(const char* ai_dir, SetupPart part, const char* model, wchar_t out[MAX_PATH]);
 // llm\llama-server.exe.
-void llm_exe_path(const Config* cfg, wchar_t out[MAX_PATH]);
+void llm_exe_path(const char* ai_dir, wchar_t out[MAX_PATH]);
 // lifelog's own transcriber is there: whisper.dll, ggml-<model>.bin and the VAD model.
-bool whisper_ready(const Config* cfg, const char* model);
+bool whisper_ready(const char* ai_dir, const char* model);
 // lifelog's own summary AI is there: llama-server.exe and <model>.gguf in the llm folder.
-bool summary_ai_ready(const Config* cfg, const char* model);
+bool summary_ai_ready(const char* ai_dir, const char* model);
 // The worker loaded whisper.cpp from `dir`: it stays in use until lifelog closes. Any thread.
 void whisper_loaded_from(const wchar_t* dir);
 
