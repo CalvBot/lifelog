@@ -74,6 +74,10 @@ struct Segmenter {
     i32 loud_blocks;
     StreamMeta meta;  // copied when a segment opens
     f64 loud_ts;
+    // The failure being retried (a mic that is not there), so it is logged once, not every 5 s.
+    const char* fail_step;
+    HRESULT fail_hr;
+    i32 fail_count;
 };
 
 // `text` as a JSON string, or null when empty.
@@ -492,6 +496,12 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
     TRY(client->SetEventHandle(event), "an event for the audio");
     TRY(client->GetService(__uuidof(IAudioCaptureClient), (void**)&capture), "the capture client");
     TRY(client->Start(), "the stream to start");
+    if (seg->fail_count) {
+        LOG("%s: capturing again after %d tries", seg->name, seg->fail_count);
+        seg->fail_step = 0;
+        seg->fail_hr = 0;
+        seg->fail_count = 0;
+    }
 
     while (!s->stop) {
         // Follow the default mic when it changes (a headset plugged in, or changed in Windows).
@@ -551,7 +561,15 @@ static RunEnd stream_run(Stream* s, Segmenter* seg) {
 #undef TRY
 
 done:
-    if (end == RUN_ERROR) WARN("%s: capture stopped at %s (0x%08lx); trying again in 5 s", seg->name, step, (unsigned long)hr);
+    if (end == RUN_ERROR) {
+        // The same failure again (still no mic) is only counted; it is logged when it changes and
+        // when capture comes back.
+        if (seg->fail_count == 0 || step != seg->fail_step || hr != seg->fail_hr)
+            WARN("%s: capture stopped at %s (0x%08lx); trying again every 5 s", seg->name, step, (unsigned long)hr);
+        seg->fail_step = step;
+        seg->fail_hr = hr;
+        seg->fail_count++;
+    }
     if (client) client->Stop();
     if (capture) capture->Release();
     if (client) client->Release();
