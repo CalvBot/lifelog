@@ -182,6 +182,10 @@ const wchar_t* roaming_dir();
 const wchar_t* local_dir();
 // The folder lifelog.exe is in.
 const wchar_t* exe_dir();
+// Opens `file` (a document, folder, web address or program, with `args`, may be null) the way
+// Explorer would. Waits until the shell has handed it over, which a Store app (Notepad) needs from
+// a thread with no message loop. False if it could not.
+bool shell_open(const wchar_t* file, const wchar_t* args);
 
 // Whole files.
 Str read_file(Arena* a, const wchar_t* path);   // .ptr is null if it could not be read

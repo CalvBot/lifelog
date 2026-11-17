@@ -225,6 +225,16 @@ const wchar_t* roaming_dir() {
     return known_folder(FOLDERID_RoamingAppData, buf);
 }
 
+bool shell_open(const wchar_t* file, const wchar_t* args) {
+    SHELLEXECUTEINFOW info = {sizeof(info)};
+    info.fMask = SEE_MASK_NOASYNC;
+    info.lpVerb = L"open";
+    info.lpFile = file;
+    info.lpParameters = args;
+    info.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&info) != 0;
+}
+
 const wchar_t* local_dir() {
     static wchar_t buf[MAX_PATH];
     return known_folder(FOLDERID_LocalAppData, buf);

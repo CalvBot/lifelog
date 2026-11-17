@@ -478,7 +478,7 @@ static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error
         snprintf(error, cap, "no such file");
     } else if (str_eq(f.kind, str("url"))) {
         if (!as_url(scratch(), f.path).len) snprintf(error, cap, "not a web address");
-        else if ((INT_PTR)ShellExecuteW(0, L"open", wide(scratch(), f.path), 0, 0, SW_SHOWNORMAL) <= 32)
+        else if (!shell_open(wide(scratch(), f.path), 0))
             snprintf(error, cap, "could not open %s", f.path.ptr);
     } else if (!file_full_path(cfg, &f, path)) {
         snprintf(error, cap, "bad path");
@@ -486,11 +486,11 @@ static void file_open_now(const Config* cfg, i64 id, bool in_folder, char* error
         snprintf(error, cap, "the file is gone from %s", narrow(scratch(), path).ptr);
     } else if (in_folder) {
         wchar_t* args = wide(scratch(), str_fmt(scratch(), "/select,\"%s\"", narrow(scratch(), path).ptr));
-        if ((INT_PTR)ShellExecuteW(0, L"open", L"explorer.exe", args, 0, SW_SHOWNORMAL) <= 32)
+        if (!shell_open(L"explorer.exe", args))
             snprintf(error, cap, "could not show %s", narrow(scratch(), path).ptr);
     } else {
         // Whatever is registered: the file's app, or the default file manager for a folder.
-        if ((INT_PTR)ShellExecuteW(0, L"open", path, 0, 0, SW_SHOWNORMAL) <= 32)
+        if (!shell_open(path, 0))
             snprintf(error, cap, "could not open %s", narrow(scratch(), path).ptr);
     }
     rewind(m);

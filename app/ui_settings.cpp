@@ -171,15 +171,13 @@ struct OpenPathJob {
 
 static void open_path_run(Job* job) {
     OpenPathJob* o = (OpenPathJob*)job->data;
-    INT_PTR ok;
     if (o->select) {
         wchar_t args[MAX_PATH + 16];
         swprintf(args, COUNT(args), L"/select,\"%s\"", o->path);
-        ok = (INT_PTR)ShellExecuteW(0, L"open", L"explorer.exe", args, 0, SW_SHOWNORMAL);
+        o->ok = shell_open(L"explorer.exe", args);
     } else {
-        ok = (INT_PTR)ShellExecuteW(0, L"open", o->path, 0, 0, SW_SHOWNORMAL);
+        o->ok = shell_open(o->path, 0);
     }
-    o->ok = ok > 32;
 }
 
 static void open_path_apply(App* app, Job* job) {
