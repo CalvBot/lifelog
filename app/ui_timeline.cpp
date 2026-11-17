@@ -41,6 +41,12 @@ struct TlChip {
     bool visible;  // speaker_visible when the page was last filtered
 };
 
+// A line by its id, for finding it.
+struct TlLineId {
+    i64 id;
+    i32 line;
+};
+
 // A line that just arrived; it writes itself out word by word.
 struct TlFresh {
     i64 id;
@@ -63,9 +69,16 @@ struct TimelineState {
     i32* line_chip;        // per line: its speaker in `chips`
     Slice<TlChip> chips;   // most lines first
     i64 max_id;            // the newest line loaded: anything above it arrived since
+    TlLineId* by_id;       // the lines, by id
+    f64* reach;            // per line: when the last of it and the lines before it is done being said
 
     List<TlRow> rows;
     bool rows_dirty;
+    List<i32> line_row;    // per line: its row, or -1 while its app is hidden
+    List<f32> tops;        // per row, and one past the last: where it starts (the heights before it, summed)
+    bool tops_dirty;       // a height changed
+    f32 measured_w;        // the text width rows are being measured at
+    i32 measure_at;        // rows after it are measured at measured_w; it and those before may not be
     u64 filter_sig;        // the Show filter the rows were built with
     List<TlFresh> fresh;
 
@@ -583,6 +596,27 @@ static void tl_day_run(sqlite3* db, Job* job) {
     d->files = db_files_between(db, &job->arena, from, to);
 }
 
+static int tl_id_order(const void* a, const void* b) {
+    i64 x = ((const TlLineId*)a)->id, y = ((const TlLineId*)b)->id;
+    return x < y ? -1 : x > y;
+}
+
+// Until when a line shows as being said: half a second at least.
+static f64 tl_line_end(Line* l) {
+    return l->end_ts > l->start_ts + 0.5 ? l->end_ts : l->start_ts + 0.5;
+}
+
+// How many of the lines start at or before `ts`.
+static i32 tl_lines_by(TimelineState* s, f64 ts) {
+    i32 a = 0, b = s->lines.count;
+    while (a < b) {
+        i32 m = (a + b) / 2;
+        if (s->lines.items[m].start_ts <= ts) a = m + 1;
+        else b = m;
+    }
+    return a;
+}
+
 // The main thread: the day's lines and files have come.
 static void tl_day_apply(App* app, Job* job) {
     TimelineState* s = g_tl;
@@ -600,6 +634,19 @@ static void tl_day_apply(App* app, Job* job) {
     s->max_id = 0;
     for (i32 i = 0; i < s->lines.count; i++)
         if (s->lines.items[i].id > s->max_id) s->max_id = s->lines.items[i].id;
+    // Indexes: by id, and by time for what is being said at a moment. Lines come in start order;
+    // a line is held to half a second, so a short one still shows as heard.
+    s->by_id = PUSH_ARRAY(&job->arena, TlLineId, s->lines.count + 1);
+    s->reach = PUSH_ARRAY(&job->arena, f64, s->lines.count + 1);
+    f64 reach = 0;
+    for (i32 i = 0; i < s->lines.count; i++) {
+        Line* l = &s->lines.items[i];
+        s->by_id[i] = {l->id, i};
+        f64 end = tl_line_end(l);
+        reach = end > reach ? end : reach;
+        s->reach[i] = reach;
+    }
+    qsort(s->by_id, (size_t)s->lines.count, sizeof(TlLineId), tl_id_order);
     if (same && old_max && tl_is_today(s)) {
         f64 now = now_ts();
         for (i32 i = 0; i < s->lines.count; i++)
@@ -782,6 +829,10 @@ static void tl_build_rows(App* app, TimelineState* s) {
         have_last = true;
         last = r.ts;
     }
+    s->line_row.count = 0;
+    for (i32 i = 0; i < s->lines.count; i++) list_push(&s->line_row, -1);
+    for (i32 i = 0; i < s->rows.count; i++)
+        if (s->rows.items[i].kind == TL_ROW_LINE) s->line_row.items[s->rows.items[i].index] = i;
     // Keep the heights already measured (the old rows are in the same order).
     i32 j = 0;
     for (i32 i = 0; i < s->rows.count; i++) {
@@ -798,6 +849,8 @@ static void tl_build_rows(App* app, TimelineState* s) {
     list_free(&old);
     s->filter_sig = tl_filter_sig(app);
     s->rows_dirty = false;
+    s->tops_dirty = true;
+    s->measure_at = s->rows.count - 1;
 }
 
 static void tl_open_day(App* app, TimelineState* s, const char* day) {
@@ -861,12 +914,10 @@ static bool tl_picked(TimelineState* s, f64* from, f64* to, i32* count) {
     f64 lo = s->pick_a < s->pick_b ? s->pick_a : s->pick_b;
     f64 hi = s->pick_a < s->pick_b ? s->pick_b : s->pick_a;
     f64 end = hi;
-    i32 n = 0;
-    for (i32 i = 0; i < s->lines.count; i++) {
-        Line* l = &s->lines.items[i];
-        if (l->start_ts < lo || l->start_ts > hi) continue;
+    i32 last = tl_lines_by(s, hi), n = 0;
+    for (i32 i = last - 1; i >= 0 && s->lines.items[i].start_ts >= lo; i--) {
         n++;
-        if (l->end_ts > end) end = l->end_ts;
+        if (s->lines.items[i].end_ts > end) end = s->lines.items[i].end_ts;
     }
     *from = lo;
     *to = end;
@@ -918,10 +969,20 @@ static bool would_play(Line* from, PlayMode mode, Line* l) {
     return false;
 }
 
+// The line's index, or -1 if it is not on the page.
+static i32 tl_line_index(TimelineState* s, i64 id) {
+    i32 a = 0, b = s->lines.count;
+    while (a < b) {
+        i32 m = (a + b) / 2;
+        if (s->by_id[m].id < id) a = m + 1;
+        else b = m;
+    }
+    return a < s->lines.count && s->by_id[a].id == id ? s->by_id[a].line : -1;
+}
+
 static Line* tl_line_by_id(TimelineState* s, i64 id) {
-    for (i32 i = 0; i < s->lines.count; i++)
-        if (s->lines.items[i].id == id) return &s->lines.items[i];
-    return 0;
+    i32 i = tl_line_index(s, id);
+    return i >= 0 ? &s->lines.items[i] : 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1777,6 +1838,20 @@ static void tl_measure(App* app, TimelineState* s, TlRow* r, TlLayout* L, TlFram
     r->width = L->text_w;
 }
 
+// Where each row starts, from their heights; rows not measured yet are guessed at.
+static void tl_place(TimelineState* s, f32 u) {
+    s->tops.count = 0;
+    f32 y = 0;
+    for (i32 i = 0; i < s->rows.count; i++) {
+        TlRow* r = &s->rows.items[i];
+        if (r->h <= 0) r->h = r->kind == TL_ROW_GAP ? 24 * u : r->kind == TL_ROW_LINE ? 28 * u : 60 * u;
+        list_push(&s->tops, y);
+        y += r->h;
+    }
+    list_push(&s->tops, y);
+    s->tops_dirty = false;
+}
+
 // Buttons over the list's bottom-right corner: stop and find what is playing, and jump to now.
 static void tl_float_buttons(App* app, TimelineState* s, bool at_bottom, i64 follow) {
     bool playing = app->clips.playing_line != 0;
@@ -1834,16 +1909,17 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         f.play_ts = app->clips.play_ts;
         Line* from = tl_line_by_id(s, app->clips.playing_line);
         f.heard = PUSH_ARRAY(scratch(), i64, 64);
-        for (i32 i = 0; i < s->lines.count && f.heard_count < 64; i++) {
+        // Back from the last line to have started: more than one when people talk at once, and
+        // no further than `reach` says a line could still be going.
+        for (i32 i = tl_lines_by(s, f.play_ts) - 1; i >= 0 && s->reach[i] > f.play_ts && f.heard_count < 64; i--) {
             Line* l = &s->lines.items[i];
-            f64 end = l->end_ts > l->start_ts + 0.5 ? l->end_ts : l->start_ts + 0.5;
-            if (!(l->start_ts <= f.play_ts && f.play_ts < end)) continue;
+            if (f.play_ts >= tl_line_end(l)) continue;
             PlayMode m = app->clips.play_mode;
             if (m == PLAY_LINE && l->id != app->clips.playing_line) continue;
             if (m == PLAY_STREAM_ON && !(from && str_eq(from->speaker, l->speaker))) continue;
             f.heard[f.heard_count++] = l->id;
         }
-        if (f.heard_count) follow = f.heard[f.heard_count - 1];
+        if (f.heard_count) follow = f.heard[0];  // the one that started last
     }
     // Hovering a play button: mark what pressing it would play, following Shift and Ctrl.
     if (s->hover_play && s->hover_play != app->clips.playing_line) {
@@ -1886,22 +1962,25 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     L.small_lh = ImGui::GetTextLineHeight();
     small_end();
 
-    // Heights: rows measured at another width (or never) are measured now, a few thousand a frame;
-    // all of them when a row is to be scrolled to, so it lands where it should.
-    i32 budget = s->scroll_to ? INT32_MAX : 4000;
-    bool more = false;
-    for (i32 i = s->rows.count - 1; i >= 0; i--) {
-        TlRow* r = &s->rows.items[i];
-        if (r->width == L.text_w && r->kind != TL_ROW_FILE) continue;
-        if (budget-- <= 0) {
-            more = true;
-            break;
-        }
-        tl_measure(app, s, r, &L, &f);
+    // Heights: rows measured at another width (or never) are measured now, from the bottom, a few
+    // thousand a frame; all of them when a row is to be scrolled to, so it lands where it should.
+    if (s->measured_w != L.text_w) {
+        s->measured_w = L.text_w;
+        s->measure_at = s->rows.count - 1;
     }
-    if (more) *next_frame_ms = 0;
+    i32 budget = s->scroll_to ? INT32_MAX : 4000;
+    for (; s->measure_at >= 0 && budget > 0; s->measure_at--) {
+        TlRow* r = &s->rows.items[s->measure_at];
+        if (r->width == L.text_w) continue;
+        tl_measure(app, s, r, &L, &f);
+        s->tops_dirty = true;
+        budget--;
+    }
+    if (s->measure_at >= 0) *next_frame_ms = 0;
+    if (s->tops_dirty || s->tops.count != s->rows.count + 1) tl_place(s, u);
 
-    f32 y = 8 * u;
+    f32 top = 8 * u;  // above the first row
+    f32 y = top;
     if (!s->rows.count) {
         y += 40 * u;
         const char* t = !app->storage.ready ? "The database could not be opened. The log says why."
@@ -1911,23 +1990,38 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         ImGui::GetWindowDrawList()->AddText(ImVec2((L.left + L.right - w) / 2, origin.y + y), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
         y += L.lh;
     }
-    f32 margin = 300 * u;
-    for (i32 i = 0; i < s->rows.count; i++) {
-        TlRow* r = &s->rows.items[i];
-        if (r->h <= 0) r->h = r->kind == TL_ROW_GAP ? 24 * u : r->kind == TL_ROW_LINE ? 28 * u : 60 * u;
-        bool target = r->kind == TL_ROW_LINE && r->key == s->scroll_to;
-        if (y + r->h >= view_y - margin && y <= view_y + view_h + margin) {
-            if (r->width != L.text_w) tl_measure(app, s, r, &L, &f);
-            r->h = tl_row(app, s, r, &L, origin.y + y, &f, true);
-        }
-        if (target) {
-            ImGui::SetScrollY(y + r->h / 2 - view_h / 2);
-            s->scroll_to = 0;
+    if (s->scroll_to) {
+        i32 line = tl_line_index(s, s->scroll_to);
+        i32 row = line >= 0 && line < s->line_row.count ? s->line_row.items[line] : -1;  // -1: its app is hidden
+        if (row >= 0) {
+            ImGui::SetScrollY(top + s->tops.items[row] + s->rows.items[row].h / 2 - view_h / 2);
             stick = false;
         }
-        y += r->h;
+        s->scroll_to = 0;
     }
-    s->scroll_to = 0;  // not among the rows (its app is hidden): don't keep looking
+    // Only the rows in view (and a margin) are drawn: the first is found by where the rows start.
+    f32 margin = 300 * u;
+    f32 lo = view_y - margin - top, hi = view_y + view_h + margin - top;
+    i32 first = 0, past = s->rows.count;
+    while (first < past) {
+        i32 m = (first + past) / 2;
+        if (s->tops.items[m + 1] < lo) first = m + 1;
+        else past = m;
+    }
+    bool moved = false;
+    f32 at = s->rows.count ? s->tops.items[first] : 0;
+    for (i32 i = first; i < s->rows.count && at <= hi; i++) {
+        TlRow* r = &s->rows.items[i];
+        if (r->width != L.text_w) tl_measure(app, s, r, &L, &f);
+        f32 h = tl_row(app, s, r, &L, origin.y + top + at, &f, true);
+        if (h != r->h) {
+            r->h = h;  // a preview came: the rows after it move down
+            moved = true;
+        }
+        at += h;
+    }
+    if (moved) tl_place(s, u);
+    if (s->rows.count) y = top + s->tops.items[s->rows.count];
     if (live && app->storage.ready) {
         // Where new lines turn up: what the recorder is doing right now.
         y += 10 * u;
@@ -2065,6 +2159,8 @@ static void timeline_free(TimelineState* s) {
     job_drop(s->days_job);
     job_drop(s->apps_job);
     list_free(&s->rows);
+    list_free(&s->line_row);
+    list_free(&s->tops);
     list_free(&s->fresh);
     // The previews go with the window.
     for (i32 i = 0; i < g_tl_previews.count; i++) {
