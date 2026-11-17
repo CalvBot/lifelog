@@ -256,6 +256,85 @@ static ID3D11ShaderResourceView* texture_from_rgba(const u8* rgba, i32 w, i32 h)
     return view;
 }
 
+// The timeline's layer (ui_timeline.cpp): a texture it is drawn into and then shown from.
+static void layer_free(TlLayer* l) {
+    if (l->pending) IM_DELETE(l->pending);
+    if (l->view) l->view->Release();
+    if (l->target) l->target->Release();
+    if (l->tex) l->tex->Release();
+    *l = {};
+}
+
+// Makes room for w × h; false if there can be no texture (the list is then drawn as it was).
+static bool layer_fit(TlLayer* l, i32 w, i32 h) {
+    if (w <= 0 || h <= 0) return false;
+    if (l->tex && w <= l->tex_w && h <= l->tex_h) return true;
+    layer_free(l);
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = (UINT)((w + 255) & ~255);  // a little over, so resizing does not make one every frame
+    desc.Height = (UINT)((h + 255) & ~255);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(g_gpu.device->CreateTexture2D(&desc, 0, &l->tex)) ||
+        FAILED(g_gpu.device->CreateRenderTargetView(l->tex, 0, &l->target)) ||
+        FAILED(g_gpu.device->CreateShaderResourceView(l->tex, 0, &l->view))) {
+        layer_free(l);
+        return false;
+    }
+    l->tex_w = (i32)desc.Width;
+    l->tex_h = (i32)desc.Height;
+    return true;
+}
+
+// The layer holds colours already multiplied by their alpha (it was drawn onto nothing), so it
+// is laid over the window with ONE, not SRC_ALPHA.
+static ID3D11BlendState* g_premultiplied;
+static void layer_blend(const ImDrawList*, const ImDrawCmd*) {
+    if (!g_premultiplied) {
+        D3D11_BLEND_DESC desc = {};
+        desc.RenderTarget[0].BlendEnable = true;
+        desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+        desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        g_gpu.device->CreateBlendState(&desc, &g_premultiplied);
+    }
+    f32 factor[4] = {};
+    g_gpu.context->OMSetBlendState(g_premultiplied, factor, 0xffffffff);
+}
+
+// Renders the rows the timeline drew this frame into its layer. After ImGui::Render, so the glyphs
+// they use are in the font texture: those are uploaded first.
+static void layer_render(ImDrawData* frame) {
+    TlLayer* l = &g_tl_layer;
+    if (!l->pending || l->ctx != ImGui::GetCurrentContext() || !l->target) return;
+    if (frame->Textures)
+        for (ImTextureData* tex : *frame->Textures)
+            if (tex->Status != ImTextureStatus_OK) ImGui_ImplDX11_UpdateTexture(tex);
+    ImDrawData dd;
+    dd.Valid = true;
+    dd.CmdLists.push_back(l->pending);
+    dd.CmdListsCount = 1;
+    dd.TotalVtxCount = l->pending->VtxBuffer.Size;
+    dd.TotalIdxCount = l->pending->IdxBuffer.Size;
+    dd.DisplayPos = l->pending_pos;
+    dd.DisplaySize = ImVec2((f32)l->w, (f32)l->h);
+    dd.FramebufferScale = ImVec2(1, 1);
+    f32 clear[4] = {};
+    g_gpu.context->OMSetRenderTargets(1, &l->target, 0);
+    g_gpu.context->ClearRenderTargetView(l->target, clear);
+    ImGui_ImplDX11_RenderDrawData(&dd);
+    IM_DELETE(l->pending);
+    l->pending = 0;
+}
+
 static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 static bool surface_open(Surface* s, const wchar_t* title, DWORD style, DWORD ex_style, i32 x, i32 y, i32 w, i32 h) {
@@ -331,6 +410,7 @@ static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
     g_busy--;
 
     ImGui::Render();
+    layer_render(ImGui::GetDrawData());
     ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
     f32 clear[4] = {bg.x, bg.y, bg.z, 1};
     g_gpu.context->OMSetRenderTargets(1, &s->target, 0);

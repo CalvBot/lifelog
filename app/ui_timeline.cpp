@@ -1518,7 +1518,39 @@ enum TlActKind : u8 {
     TL_ACT_UNPICK,
 };
 
+// The rows as they stand, drawn once into a texture and shown from it until something in them
+// changes or the list scrolls past it: a frame then draws only what moves (hover, the picked
+// stretch, the words being heard, buttons) over it. The swap chain keeps nothing between frames.
+struct TlLayer {
+    ID3D11Texture2D* tex;
+    ID3D11RenderTargetView* target;
+    ID3D11ShaderResourceView* view;
+    i32 tex_w, tex_h;      // the texture; what is drawn is its top left w × h
+    i32 w, h;
+    bool ready;
+    ImGuiContext* ctx;     // the window it was drawn for (its fonts and icons)
+    f32 x;                 // its left edge on screen, a whole pixel
+    f32 content_y;         // its top in list content y (it is on a whole pixel when drawn)
+    u64 sig;               // tl_still_sig of what is in it
+    ImDrawList* pending;   // drawn this frame: rendered into it once ImGui has its glyphs (main.cpp)
+    ImVec2 pending_pos;
+};
+static TlLayer g_tl_layer;
+static bool layer_fit(TlLayer* l, i32 w, i32 h);          // main.cpp
+static void layer_free(TlLayer* l);                       // main.cpp
+static void layer_blend(const ImDrawList*, const ImDrawCmd*);  // main.cpp: premultiplied alpha
+
+// Which parts of a row tl_row draws: everything, only what is kept in the layer (still), or only
+// what is drawn every frame over it (live: items, fills, text being heard or written out).
+enum TlPass : u8 {
+    TL_PASS_ALL,
+    TL_PASS_STILL,
+    TL_PASS_LIVE,
+};
+
 struct TlFrame {
+    TlPass pass;
+    ImDrawList* still;  // where the still parts go: the window's list, or the layer's
     TlActKind act;
     ClipKind act_clip;
     i32 act_line;
@@ -1552,18 +1584,39 @@ static bool tl_heard(TlFrame* f, i64 id) {
     return false;
 }
 
-static f32 tl_gap_row(TimelineState* s, TlRow* r, TlLayout* L, f32 y, bool draw) {
+static f32 tl_gap_row(TimelineState* s, TlRow* r, TlLayout* L, f32 y, TlFrame* f, bool draw) {
     (void)s;
     f32 h = 4 * L->u + L->small_lh + 4 * L->u;
-    if (draw) {
+    if (draw && f->pass != TL_PASS_LIVE) {
         small_begin();
         const char* t = tmp("· %s quiet ·", duration_text(scratch(), r->to - r->ts).ptr);
         f32 w = ImGui::CalcTextSize(t).x;
-        ImGui::GetWindowDrawList()->AddText(ImVec2((L->left + L->right - w) / 2, y + 4 * L->u), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
+        f->still->AddText(ImVec2((L->left + L->right - w) / 2, y + 4 * L->u), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
         small_end();
     }
     return h;
 }
+
+// How far a line that just arrived has written itself out (below 1 while it is), or -1.
+static f64 tl_reveal(TimelineState* s, Line* line, Str text) {
+    for (i32 i = 0; i < s->fresh.count; i++) {
+        if (s->fresh.items[i].id != line->id) continue;
+        f64 secs = utf8_count(text) / 30.0;
+        f64 most = line->end_ts - line->start_ts;
+        most = most < 0.6 ? 0.6 : most > 4 ? 4 : most;
+        secs = secs < 0.6 ? 0.6 : secs > most ? most : secs;
+        return (now_ts() - s->fresh.items[i].at) / secs;
+    }
+    return -1;
+}
+
+// A line whose text changes from frame to frame: it is drawn live, not kept in the layer.
+static bool tl_moving(TimelineState* s, TlFrame* f, Line* line, Str text, f64* reveal) {
+    *reveal = tl_reveal(s, line, text);
+    return (f->play_ts > 0 && tl_heard(f, line->id)) || (*reveal >= 0 && *reveal < 1);
+}
+
+static void tl_line_live(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y, f32 h, TlFrame* f);
 
 static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y, TlFrame* f, bool draw) {
     Line* line = &s->lines.items[r->index];
@@ -1575,6 +1628,53 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     f32 h = 3 * u + inner + 3 * u;
     if (!draw) return h;
 
+    f64 reveal;
+    bool moving = tl_moving(s, f, line, text, &reveal);
+    f32 top = y + 3 * u;
+    f32 ty = top + pad;
+    ImVec2 tp = ImVec2(L->x_text, ty);
+    if (f->pass != TL_PASS_STILL) tl_line_live(app, s, r, L, y, h, f);
+    if (f->pass != TL_PASS_LIVE) {
+        // The clock, the app and (unless it is moving) the text, with the search marked.
+        ImDrawList* sl = f->still;
+        const char* clock = hms_text(line->start_ts);
+        f32 cw = ImGui::CalcTextSize(clock).x;
+        sl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
+        f32 is = 16 * u;
+        ImVec2 ic = ImVec2(L->x_app, top + (24 * u - is) / 2);
+        bool me = str_eq(line->speaker, str("me"));
+        ImTextureID tex = me ? 0 : app_icon(app, line->speaker);
+        if (tex) sl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
+        else sl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), me ? ICON_MIC : ICON_APP_WINDOW);
+        Str name = str(fit_text(app_label(app, line->speaker), TL_APP_W * u - is - 8 * u));
+        sl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
+        if (!moving) {
+            Span* found;
+            i32 n = found_spans(text, f->term, &found);
+            draw_spans(sl, tp, text, L->text_w, found, n);
+        }
+    }
+    if (f->pass != TL_PASS_STILL && moving) {
+        // Being heard, or just arrived and writing itself out.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        Span spans[3];
+        i32 n;
+        if (f->play_ts > 0 && tl_heard(f, line->id)) {
+            n = hearing_spans(text, text.ptr - line->text.ptr, line->words, f->play_ts, spans);
+        } else {
+            f->animating = true;
+            n = reveal_spans(text, reveal, spans);
+        }
+        draw_spans(dl, tp, text, L->text_w, spans, n);
+    }
+    return h;
+}
+
+// A line's parts drawn every frame: its hover and click, menu, fill and play button. The fill
+// goes under the layer (channel 0) when there is one.
+static void tl_line_live(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y, f32 h, TlFrame* f) {
+    Line* line = &s->lines.items[r->index];
+    f32 u = L->u;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 rmin = ImVec2(L->left, y), rmax = ImVec2(L->right, y + h);
     ImGui::PushID((int)line->id);
@@ -1638,8 +1738,12 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     if (picked) fill = accent_u32(0.18f);
     else if (hearing || coming) fill = accent_u32(0.10f);
     else if (hovered) fill = ImGui::GetColorU32(ImGuiCol_FrameBg);
-    if (fill) dl->AddRectFilled(ImVec2(rmin.x + 4 * u, rmin.y), ImVec2(rmax.x - 4 * u, rmax.y), fill, 4 * u);
-    if (coming) dl->AddRectFilled(ImVec2(rmin.x + 4 * u, rmin.y + 2 * u), ImVec2(rmin.x + 7 * u, rmax.y - 2 * u), accent_u32(), 1);
+    if (fill || coming) {
+        if (f->pass == TL_PASS_LIVE) dl->ChannelsSetCurrent(0);
+        if (fill) dl->AddRectFilled(ImVec2(rmin.x + 4 * u, rmin.y), ImVec2(rmax.x - 4 * u, rmax.y), fill, 4 * u);
+        if (coming) dl->AddRectFilled(ImVec2(rmin.x + 4 * u, rmin.y + 2 * u), ImVec2(rmin.x + 7 * u, rmax.y - 2 * u), accent_u32(), 1);
+        if (f->pass == TL_PASS_LIVE) dl->ChannelsSetCurrent(2);
+    }
 
     f32 top = y + 3 * u;
     if (line->audio) {
@@ -1659,45 +1763,8 @@ static f32 tl_line_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
             f->play_mode = tl_mode(ImGui::GetIO().KeyShift, ImGui::GetIO().KeyCtrl);
         }
     }
-    const char* clock = hms_text(line->start_ts);
-    f32 cw = ImGui::CalcTextSize(clock).x;
-    f32 ty = top + pad;
-    dl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
-    f32 is = 16 * u;
-    ImVec2 ic = ImVec2(L->x_app, top + (24 * u - is) / 2);
-    ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
-    if (tex) dl->AddImage(ImTextureRef(tex), ic, ImVec2(ic.x + is, ic.y + is));
-    else dl->AddText(ImVec2(ic.x, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), str_eq(line->speaker, str("me")) ? ICON_MIC : ICON_APP_WINDOW);
-    Str name = str(fit_text(app_label(app, line->speaker), TL_APP_W * u - is - 8 * u));
-    dl->AddText(ImVec2(L->x_app + is + 8 * u, ty), ImGui::GetColorU32(ImGuiCol_Text), name.ptr, name.ptr + name.len);
-
-    // The text: being heard, just arrived (writing itself out), or with the search marked.
-    ImVec2 tp = ImVec2(L->x_text, ty);
-    Span spans[3];
-    f64 reveal = -1;
-    for (i32 i = 0; i < s->fresh.count; i++) {
-        if (s->fresh.items[i].id != line->id) continue;
-        f64 secs = utf8_count(text) / 30.0;
-        f64 most = line->end_ts - line->start_ts;
-        most = most < 0.6 ? 0.6 : most > 4 ? 4 : most;
-        secs = secs < 0.6 ? 0.6 : secs > most ? most : secs;
-        reveal = (now_ts() - s->fresh.items[i].at) / secs;
-    }
-    if (hearing) {
-        i32 n = hearing_spans(text, text.ptr - line->text.ptr, line->words, f->play_ts, spans);
-        draw_spans(dl, tp, text, L->text_w, spans, n);
-    } else if (reveal >= 0 && reveal < 1) {
-        f->animating = true;
-        i32 n = reveal_spans(text, reveal, spans);
-        draw_spans(dl, tp, text, L->text_w, spans, n);
-    } else {
-        Span* found;
-        i32 n = found_spans(text, f->term, &found);
-        draw_spans(dl, tp, text, L->text_w, found, n);
-    }
     ImGui::PopID();
     ImGui::PopID();
-    return h;
 }
 
 static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y, TlFrame* f, bool draw) {
@@ -1730,11 +1797,24 @@ static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
     h += 6 * u;
     if (!draw) return h;
 
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     f32 top = y + 6 * u;
-    const char* clock = hms_text(file->ts);
-    f32 cw = ImGui::CalcTextSize(clock).x;
-    dl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, top + (header - L->lh) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
+    f32 below = top + header;  // under the name: the link's path, then the preview
+    if (f->pass != TL_PASS_LIVE) {
+        ImDrawList* sl = f->still;
+        const char* clock = hms_text(file->ts);
+        f32 cw = ImGui::CalcTextSize(clock).x;
+        sl->AddText(ImVec2(L->x_time + (58 * u - cw) / 2, top + (header - L->lh) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), clock);
+        f32 at = below;
+        if (file->link && !url) {
+            small_begin();
+            sl->AddText(ImVec2(L->x_file, at), ImGui::GetColorU32(ImGuiCol_TextDisabled), file->path.ptr, file->path.ptr + file->path.len);
+            small_end();
+            at += L->small_lh;
+        }
+        if (img.y <= 0 && preview.len) draw_wrapped(sl, ImVec2(L->x_file, at), preview, L->file_w, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+    }
+    if (f->pass == TL_PASS_STILL) return h;
+
     ImGui::PushID((int)file->id);
     ImGui::PushID("file");
     ImGui::SetCursorScreenPos(ImVec2(L->x_file, top));
@@ -1804,20 +1884,12 @@ static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
         if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
-    f32 below = top + header;
-    if (file->link && !url) {
-        small_begin();
-        dl->AddText(ImVec2(L->x_file, below), ImGui::GetColorU32(ImGuiCol_TextDisabled), file->path.ptr, file->path.ptr + file->path.len);
-        small_end();
-        below += L->small_lh;
-    }
+    if (file->link && !url) below += L->small_lh;
     if (img.y > 0) {
         ImGui::SetCursorScreenPos(ImVec2(L->x_file, below));
         ImGui::Image(ImTextureRef((ImTextureID)pv->view), img);
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         if (ImGui::IsItemClicked()) f->open_file = file->id;
-    } else if (preview.len) {
-        draw_wrapped(dl, ImVec2(L->x_file, below), preview, L->file_w, ImGui::GetColorU32(ImGuiCol_TextDisabled));
     }
     ImGui::PopID();
     ImGui::PopID();
@@ -1826,7 +1898,7 @@ static f32 tl_file_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y,
 
 static f32 tl_row(App* app, TimelineState* s, TlRow* r, TlLayout* L, f32 y, TlFrame* f, bool draw) {
     switch (r->kind) {
-    case TL_ROW_GAP: return tl_gap_row(s, r, L, y, draw);
+    case TL_ROW_GAP: return tl_gap_row(s, r, L, y, f, draw);
     case TL_ROW_LINE: return tl_line_row(app, s, r, L, y, f, draw);
     case TL_ROW_FILE: return tl_file_row(app, s, r, L, y, f, draw);
     }
@@ -1850,6 +1922,68 @@ static void tl_place(TimelineState* s, f32 u) {
     }
     list_push(&s->tops, y);
     s->tops_dirty = false;
+}
+
+// The first row that reaches below content y `lo` (the rows' own y, from the first row's top).
+static i32 tl_first_row(TimelineState* s, f32 lo) {
+    i32 first = 0, past = s->rows.count;
+    while (first < past) {
+        i32 m = (first + past) / 2;
+        if (s->tops.items[m + 1] < lo) first = m + 1;
+        else past = m;
+    }
+    return first;
+}
+
+// Everything the still parts of the rows in [lo, hi] are drawn from, hashed: when it changes the
+// layer is drawn again. Cheap next to drawing them: no text is laid out.
+static u64 tl_still_sig(App* app, TimelineState* s, TlLayout* L, TlFrame* f, f32 lo, f32 hi) {
+    u64 h = 0xcbf29ce484222325ull;
+    f32 head[] = {L->left - (f32)g_tl_layer.x, L->text_w, L->file_w, L->u, L->lh, L->small_lh, ImGui::GetFontSize()};
+    h = hash_bytes(h, head, sizeof(head));
+    ImFont* font = ImGui::GetFont();
+    ImU32 cols[] = {ImGui::GetColorU32(ImGuiCol_Text), ImGui::GetColorU32(ImGuiCol_TextDisabled)};
+    h = hash_bytes(h, &font, sizeof(font));
+    h = hash_bytes(h, cols, sizeof(cols));
+    h = hash_bytes(h, f->term.ptr, f->term.len);
+#define TL_HASH(v) h = hash_bytes(h, &(v), sizeof(v))
+    for (i32 i = tl_first_row(s, lo); i < s->rows.count && s->tops.items[i] <= hi; i++) {
+        TlRow* r = &s->rows.items[i];
+        i32 kind = r->kind;
+        TL_HASH(kind);
+        TL_HASH(r->index);
+        TL_HASH(s->tops.items[i]);
+        TL_HASH(r->h);
+        TL_HASH(r->ts);
+        TL_HASH(r->to);
+        if (r->kind == TL_ROW_LINE) {
+            Line* line = &s->lines.items[r->index];
+            Str text = str_trim(line->text);
+            f64 reveal;
+            bool moving = tl_moving(s, f, line, text, &reveal);
+            ImTextureID tex = str_eq(line->speaker, str("me")) ? 0 : app_icon(app, line->speaker);
+            Str name = app_label(app, line->speaker);
+            TL_HASH(line->id);
+            TL_HASH(text.ptr);
+            TL_HASH(text.len);
+            TL_HASH(moving);
+            TL_HASH(tex);
+            h = hash_bytes(h, name.ptr, name.len);
+        } else if (r->kind == TL_ROW_FILE) {
+            FileItem* file = &s->files.items[r->index];
+            TlPreview* pv = 0;
+            for (i32 k = 0; k < g_tl_previews.count; k++)
+                if (g_tl_previews[k].id == file->id) pv = &g_tl_previews[k];
+            bool done = pv && pv->done;
+            const char* preview = pv ? pv->text : 0;
+            TL_HASH(file->id);
+            TL_HASH(file->path.ptr);
+            TL_HASH(done);
+            TL_HASH(preview);
+        }
+    }
+#undef TL_HASH
+    return h;
 }
 
 // Buttons over the list's bottom-right corner: stop and find what is playing, and jump to now.
@@ -2000,22 +2134,75 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         s->scroll_to = 0;
     }
     // Only the rows in view (and a margin) are drawn: the first is found by where the rows start.
+    // Their still parts come from the layer, drawn again only when it no longer covers the view
+    // or what it shows has changed; the rest is drawn over it every frame.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
     f32 margin = 300 * u;
-    f32 lo = view_y - margin - top, hi = view_y + view_h + margin - top;
-    i32 first = 0, past = s->rows.count;
-    while (first < past) {
-        i32 m = (first + past) / 2;
-        if (s->tops.items[m + 1] < lo) first = m + 1;
-        else past = m;
-    }
+    TlLayer* ly = &g_tl_layer;
+    f32 lx = floorf(s->list_min.x);
+    i32 lw = (i32)ceilf(s->list_max.x - lx), lh = (i32)ceilf(view_h + 2 * margin);
+    bool layered = s->rows.count && layer_fit(ly, lw, lh);
     bool moved = false;
+    if (layered) {
+        f32 sy = origin.y + ly->content_y;  // the kept layer's top on screen
+        bool keep = ly->ready && ly->ctx == ImGui::GetCurrentContext() && ly->x == lx && ly->w == lw && ly->h == lh &&
+                    fabsf(sy - roundf(sy)) < 0.01f && view_y >= ly->content_y && view_y + view_h <= ly->content_y + ly->h &&
+                    ly->sig == tl_still_sig(app, s, &L, &f, ly->content_y - top, ly->content_y + ly->h - top);
+        if (!keep) {
+            if (ly->pending) IM_DELETE(ly->pending);
+            ly->ready = false;
+            ly->ctx = ImGui::GetCurrentContext();
+            ly->x = lx;
+            ly->w = lw;
+            ly->h = lh;
+            ly->content_y = floorf(origin.y + view_y - margin) - origin.y;  // its top on a whole pixel
+            ImVec2 at0 = ImVec2(lx, origin.y + ly->content_y);
+            ImDrawList* sl = IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData());
+            sl->_ResetForNewFrame();
+            sl->PushClipRect(at0, ImVec2(at0.x + lw, at0.y + lh));
+            sl->PushTexture(ImGui::GetIO().Fonts->TexRef);
+            f.pass = TL_PASS_STILL;
+            f.still = sl;
+            f32 lo = ly->content_y - top, hi = ly->content_y + lh - top;
+            i32 first = tl_first_row(s, lo);
+            f32 at = s->tops.items[first];
+            for (i32 i = first; i < s->rows.count && at <= hi; i++) {
+                TlRow* r = &s->rows.items[i];
+                if (r->width != L.text_w) tl_measure(app, s, r, &L, &f);
+                f32 h = tl_row(app, s, r, &L, origin.y + top + at, &f, true);
+                if (h != r->h) {
+                    r->h = h;  // a preview came: the rows after it move down
+                    moved = true;
+                }
+                at += h;
+            }
+            if (moved) tl_place(s, u);
+            moved = false;
+            ly->sig = tl_still_sig(app, s, &L, &f, lo, hi);
+            ly->pending = sl;
+            ly->pending_pos = at0;
+            ly->ready = true;
+        }
+        f32 y0 = roundf(origin.y + ly->content_y);
+        dl->ChannelsSplit(3);  // 0: fills, 1: the layer, 2: the rest
+        dl->ChannelsSetCurrent(1);
+        dl->AddCallback(layer_blend, 0);
+        dl->AddImage(ImTextureRef((ImTextureID)ly->view), ImVec2(lx, y0), ImVec2(lx + lw, y0 + lh), ImVec2(0, 0),
+                     ImVec2(lw / (f32)ly->tex_w, lh / (f32)ly->tex_h));
+        dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
+        dl->ChannelsSetCurrent(2);
+    }
+    f.pass = layered ? TL_PASS_LIVE : TL_PASS_ALL;
+    f.still = dl;
+    f32 lo = view_y - (layered ? 0 : margin) - top, hi = view_y + view_h + (layered ? 0 : margin) - top;
+    i32 first = tl_first_row(s, lo);
     f32 at = s->rows.count ? s->tops.items[first] : 0;
     for (i32 i = first; i < s->rows.count && at <= hi; i++) {
         TlRow* r = &s->rows.items[i];
         if (r->width != L.text_w) tl_measure(app, s, r, &L, &f);
         f32 h = tl_row(app, s, r, &L, origin.y + top + at, &f, true);
         if (h != r->h) {
-            r->h = h;  // a preview came: the rows after it move down
+            r->h = h;
             moved = true;
         }
         at += h;
@@ -2027,7 +2214,6 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         y += 10 * u;
         f32 rh = 22 * u;
         f32 ty = origin.y + y + (rh - L.lh) / 2;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
         ImU32 weak = ImGui::GetColorU32(ImGuiCol_TextDisabled);
         if (app->capture.paused) {
             dl->AddText(ImVec2(L.x_time, ty), weak, "Paused");
@@ -2043,6 +2229,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
         y += rh;
     }
     y += 16 * u;
+    if (layered) dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
     ImGui::Dummy(ImVec2(1, 0));
     if (stick) ImGui::SetScrollY(y);
@@ -2162,6 +2349,7 @@ static void timeline_free(TimelineState* s) {
     list_free(&s->line_row);
     list_free(&s->tops);
     list_free(&s->fresh);
+    layer_free(&g_tl_layer);
     // The previews go with the window.
     for (i32 i = 0; i < g_tl_previews.count; i++) {
         TlPreview* p = &g_tl_previews[i];
