@@ -411,6 +411,7 @@ static i64 line_end(Str s, i64 pos) {
 }
 
 bool config_save_value(const char* table, const char* key, Str value) {
+    settings_changed();
     disk_save_key(table, key, value);
     return true;
 }

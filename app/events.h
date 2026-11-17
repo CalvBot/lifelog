@@ -67,6 +67,9 @@ inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
 // thread). Each change makes a new copy; old ones are kept until exit, so a thread may hold on
 // to the one it has. Any thread, no lock.
 const Config* settings(App* app);
-// The main thread: makes a new copy if App.config changed, and says so. main.cpp calls it after
-// each frame and each round of events.
+// The main thread: a setting changed (config_save_value calls it, so every setter does). The copy
+// is made when the main thread finishes what it is doing, so changes made together land together.
+void settings_changed();
+// The main thread: makes the new copy if a setting changed since the last one, and says so.
+// main.cpp calls it once it has finished a frame or a round of events; it costs nothing otherwise.
 bool settings_publish(App* app);

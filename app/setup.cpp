@@ -590,6 +590,7 @@ struct MoveJob {
     wchar_t to[MAX_PATH];
     char to_utf8[MAX_PATH];
     f64 total, done, said;
+    HANDLE applied;  // set by the main thread once the settings point at `to`
 };
 
 static f64 tree_bytes(const wchar_t* dir) {
@@ -667,12 +668,15 @@ static bool copy_tree(MoveJob* j, const wchar_t* from, const wchar_t* to, char* 
     return ok;
 }
 
-// text = the new AI folder, all copied there.
+// a = the MoveJob; text = the new AI folder, all copied there. Publishes the settings at once, so
+// every thread reads the new folder from here on, then lets the move thread clear the old one.
 static void move_apply(App* app, Event* e) {
     SET(app->config.ai.dir, str(e->text));
     config_save_string("ai", "dir", app->config.ai.dir);
     cleanup_keep(app, str(app->config.ai.dir));
     LOG("the AI files are now in %s", app->config.ai.dir);
+    if (settings_publish(app)) worker_wake(app);
+    SetEvent(((MoveJob*)e->a)->applied);
 }
 
 static DWORD WINAPI move_thread(void* p) {
@@ -694,7 +698,7 @@ static DWORD WINAPI move_thread(void* p) {
         snprintf(error, sizeof(error), "%s has %.1f GB free; the AI files need %.1f GB", j->to_utf8, (f64)free_bytes.QuadPart / 1e9, j->total / 1e9);
         ok = false;
     }
-    bool moved[2] = {};
+    bool moved[2] = {}, posted = false, applied = false;
     for (i32 i = 0; ok && i < 2; i++) {
         if (!exists(from[i])) continue;
         // On the same drive a folder moves at once, unless something in it is open.
@@ -706,10 +710,13 @@ static DWORD WINAPI move_thread(void* p) {
         ok = copy_tree(j, from[i], to[i], error, sizeof(error));
     }
     if (ok) {
-        while (!event_post(app, move_apply, 0, 0, j->to_utf8))
+        while (!(posted = event_post(app, move_apply, (i64)j, 0, j->to_utf8)))
             if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
-        // Old files go once nothing reads the old folder any more.
-        for (i32 i = 0; i < 100 && !str_eq(str(settings(app)->ai.dir), str(j->to_utf8)); i++) Sleep(50);
+        // Old files go once the settings point at the new folder; if lifelog closes first, they
+        // stay (the settings may still name them).
+        HANDLE waits[2] = {j->applied, app->stop};
+        applied = posted && WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0;
+        if (!applied) moved[0] = moved[1] = true;
         for (i32 i = 0; i < 2; i++) {
             if (moved[i]) continue;
             wchar_t kept[MAX_PATH];
@@ -724,6 +731,10 @@ static DWORD WINAPI move_thread(void* p) {
     }
     while (!event_post(app, setup_done_apply, SETUP_PARTS, ok, error))
         if (WaitForSingleObject(app->stop, 50) == WAIT_OBJECT_0) break;
+    // A posted move_apply that has not run yet still points at the job: lifelog is closing, so
+    // leave it be.
+    if (posted && !applied) return 0;
+    CloseHandle(j->applied);
     free(j);
     return 0;
 }
@@ -752,6 +763,8 @@ void setup_move(App* app, Str dir) {
     MoveJob* j = (MoveJob*)calloc(1, sizeof(MoveJob));
     CHECK(j, "memory for a move");
     j->app = app;
+    j->applied = CreateEventW(0, TRUE, FALSE, 0);
+    CHECK(j->applied, "an event for the move (error %lu)", GetLastError());
     m = mark(scratch());
     wcsncpy_s(j->from, wide(scratch(), old), _TRUNCATE);
     wcsncpy_s(j->to, wide(scratch(), dir), _TRUNCATE);

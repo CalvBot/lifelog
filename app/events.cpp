@@ -85,12 +85,17 @@ void events_apply(App* app) {
 // Settings
 
 static Config* volatile g_settings;
+static bool g_settings_changed;
+
+void settings_changed() { g_settings_changed = true; }
 
 const Config* settings(App*) {
     return (const Config*)InterlockedCompareExchangePointer((PVOID volatile*)&g_settings, 0, 0);
 }
 
 bool settings_publish(App* app) {
+    if (g_settings && !g_settings_changed) return false;
+    g_settings_changed = false;
     Config now;
     memcpy(&now, &app->config, sizeof(Config));
     now.capture.included_apps = {};
