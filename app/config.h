@@ -1,7 +1,7 @@
 // config.h: the settings, from %APPDATA%\lifelog\config.toml.
 //
-// The app lists (included, excluded, games, not games) live in App.apps once loaded; config_save
-// writes them back from there.
+// Each setting is saved on its own when it changes (config_save_value and the helpers below),
+// leaving the rest of the file and its comments as they were.
 
 #pragma once
 

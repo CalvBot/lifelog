@@ -1,5 +1,5 @@
-// ui_settings.cpp: the Settings tab: which apps are recorded and which
-// are games, transcription, the daily summary, and where files live. Ctrl+Z takes back the last
+// ui_settings.cpp: the Settings tab: which apps are recorded and which are games, transcription,
+// the chimes, the daily summary, where files live and the AI models. Ctrl+Z takes back the last
 // change made here.
 
 enum AppsView : u8 {

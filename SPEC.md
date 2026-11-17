@@ -18,7 +18,7 @@ and what the summary writer is doing. The main thread owns it; other threads nev
 below). There are no copies of it.
 
 - The window reads `App` every time it draws, with no lock. Nothing is fetched, polled or turned into JSON.
-- A button calls a method on `App`, for example `app.set_max_words(300)`. The method changes the value in memory,
+- A button calls a method on `App`, for example `summary_set_max_words(app, 300)`. The method changes the value in memory,
   saves `config.toml` if it is a setting, and returns. The next frame draws the new value. There are no optimistic
   updates, because there is no reply to wait for.
 - When a background thread changes something the window shows (a new line is heard, the summary finishes), it
@@ -42,20 +42,20 @@ App
 ```
 
 The program's own job is small: book-keeping around the recording (what came from which app, and when), and
-writing to the database. Transcription and summaries are done by other programs it starts.
+writing to the database. Transcription runs inside it (whisper.cpp's `whisper.dll`, loaded at run time); summaries
+are written by llama.cpp's `llama-server`, a child process it starts.
 
 **Crashes say why.** Nothing stops the program without saying what it expected, what it got instead, and where.
 Something that can go wrong in normal use (a missing drive, a busy port, an app that closed) is handled and shown,
-not a crash. Today the code calls `unwrap()` in many places, and a failure there ends the program with a vague
-message.
+not a crash.
 
 **Slow work stays off the window's thread.** Writing a summary, loading the AI, cutting an audio clip and long
 searches run on a thread. The thread reports its progress into `App` (for example "writing, 2 of 5 hours"), and the
 window draws whatever is there, so it keeps responding even while the AI loads.
 
 **The database.** Lines, files, summaries and reminders live in SQLite. The window reads them directly. A day's
-lines are read once and kept until that day changes. The worker tells the app when it writes new lines (one line on
-its output per batch), and the app tells the window. **(to decide: the worker has no such signal today.)**
+lines are read once and kept until that day changes. The worker posts an event after each file it transcribes,
+and the main thread reloads the lines on screen.
 
 **Outside callers.** The CLI (`lifelog.exe`), a Stream Deck and notification buttons are other processes, so they
 need a way in. A small local HTTP API stays for them only, and each route calls the same `App` methods. The window
@@ -98,22 +98,17 @@ pointer into `App`.
   reminders, skip). Results come back as jobs. The window shows what it had until they arrive.
 - **Files:** a writer thread does `config.toml` saves, `paths.txt` appends, the summary's Markdown file and opening
   files and folders (`ShellExecute`). The main thread hands it the finished text, so a click never waits on the disk.
-- **Small tasks go to a pool, not a thread each.** Today paste, file open, playback, previews, timeline jobs, copy,
-  the folder picker, the journal's days and setup downloads each start their own thread with their own allocated
-  job, and hand results back through globals guarded by `App.lock` (`g_tl_jobs`, `g_tl_previews`, `g_copy`,
-  `g_heard`). Instead a few fixed worker threads take jobs from one queue and post them back as events. Playback
-  keeps its own thread, since it runs for as long as the sound does.
+- **Small tasks go to a pool, not a thread each.** Paste, file open, previews, timeline jobs, copy, the folder
+  picker, the journal's days and setup downloads are jobs on one queue that a few fixed worker threads take, and
+  their results come back as events. Playback keeps its own thread, since it runs for as long as the sound does.
 
 **Fewer, quieter threads.**
 
 - **One process scan.** The apps watcher and the capture watcher both list every process once a second. One watcher
   does it, with the windows and the playing sessions, and posts one job that the main thread uses for both the
   running apps and the streams.
-- **Woken, not polling.** The transcriber's supervisor checks every 500 ms, and each check lists the spool folder.
-  Instead a capture thread posts "new WAV" when it writes one, the main thread keeps the queue count, and the
-  supervisor sleeps until it is told there is work or a setting changed (a long time-out stays as a safety net).
-  The summary thread waits on its own event for "ask now", "snoozed" and settings changes, with a timer for the
-  next ask instead of a 15 s check.
+- **Woken, not polling.** The transcriber sleeps until a capture thread says it wrote a WAV or a setting changed
+  (a one-minute time-out stays as a safety net), and lists the spool folder only then.
 - **UI state belongs to the main thread.** The globals the window files keep (`g_tl_jobs`, `g_copy`, `g_heard`,
   `g_pick_decision` and the rest) are touched only by the main thread; the threads that fill them send events.
 - **Reused job arenas.** A thread that posts a job every second (the watcher) keeps two arenas and uses them in
@@ -184,8 +179,8 @@ C++ built with MSVC, in a plain data-oriented style:
 - Little of the C++ standard library; a few single-file libraries vendored into the repo:
   - Dear ImGui for the window, on Win32 and Direct3D 11;
   - SQLite (the amalgamation);
-  - a small TOML reader for `config.toml`.
-- Windows calls (WASAPI process loopback, the tray icon, notifications) made directly.
+- Windows calls (WASAPI process loopback, the tray icon, notifications) made directly, and a small hand-written
+  TOML reader for `config.toml`.
 - whisper.cpp (whisper.dll, loaded at run time) and llama.cpp (llama-server, a child process), downloaded from Settings.
 - One `lifelog.exe`.
 
@@ -257,8 +252,9 @@ The window only exists while it is open. Closing it frees its memory; the record
 - **Search:** "Search everything heard", across all days, newest first. Ctrl+F goes to the box. Enter and
   Shift+Enter step through matches like a browser's find; a match on another day opens that day. Matches are highlighted. Only shows
   what the Show filter lets through.
-- **Show filter:** a chip per app heard on the page, most lines first. Click to hide or show that app.
-  "All apps…" opens a window with every app ever heard: filter, Show all, Hide all, and "Show excluded apps".
+- **Show filter:** one button saying how many of the day's apps are shown. It opens a list to search and tick:
+  the day's apps first (most lines first), then every other app ever heard. Show all and Hide all act on what the
+  list shows; excluded apps are left out unless "Show excluded apps" is on.
   Hidden apps are also left out of what is copied and played. The filter is kept across restarts.
 - **Picking lines:** click a line, Shift+click another to pick a stretch. Right-click:
   - on a stretch: Copy N selected lines, Copy selected audio, Copy selected as a file (Ctrl+Enter), Copy just this
@@ -304,6 +300,8 @@ The window only exists while it is open. Closing it frees its memory; the record
   Glass (bell-like, heard over a game), Soft (round and short) or Off, a volume, and a button to hear each one.
   They are made in code (`chime.cpp`), not sound files, and lifelog never records its own sound.
 - **Files:** open the recordings folder, the log and the config file.
+- **AI models:** the transcription and summary models on this computer with their sizes; delete one, remove all
+  of lifelog's AI, or move the AI folder to another drive.
 - **Ctrl+Z** undoes the last change on this page (up to 50).
 
 ### Tray
@@ -312,7 +310,7 @@ The window only exists while it is open. Closing it frees its memory; the record
 - **Left-click:** lifelog's own menu by the tray.
   - Listening switch.
   - Copy the last [15] min/h as File, Text or Audio, with a preview of the first lines in that stretch.
-  - Timeline, Paste here, Settings, Restart, Quit.
+  - Timeline, Paste here, Settings.
   - Closes when you click elsewhere or press Esc.
 - **Right-click:** a plain Windows menu: Pause/Resume, Restart, Quit.
 - **Paste here:** saves the files, images or links on the clipboard into the timeline at the current time.

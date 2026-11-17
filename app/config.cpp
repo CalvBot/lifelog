@@ -63,7 +63,7 @@ api_key = ""
 
 [worker]
 # Transcription. The model file (ggml-<model>.bin in the AI folder's whisper), run by
-# lifelog's own whisper.cpp server while the graphics card is free.
+# whisper.cpp inside lifelog (whisper.dll) while the graphics card is free.
 model = "large-v3-turbo"
 # The language spoken, or "" to detect it for each clip.
 language = "en"
