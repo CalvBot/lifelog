@@ -43,8 +43,6 @@ static void json_names(Buf* b, Names* n) {
     buf_cstr(b, "]");
 }
 
-// A string, or null when it is empty.
-
 static void json_wide(Buf* b, const wchar_t* w) {
     Mark m = mark(scratch());
     json_quote(b, narrow(scratch(), w));
@@ -56,9 +54,8 @@ static void status_json(App* app, Buf* b) {
     Config* c = &app->config;
     char today[11];
     day_of(now_ts(), today);
-    const char* today_status = 0;
-    for (i32 i = 0; i < app->summary.days.count; i++)
-        if (strcmp(app->summary.days.items[i].day, today) == 0) today_status = app->summary.days.items[i].status;
+    const SummaryDay* today_row = summary_day_find(app, today);
+    const char* today_status = today_row ? today_row->status : 0;
 
     buf_cstr(b, "{\"excluded_apps\":");
     json_names(b, &c->capture.excluded_apps);
@@ -211,8 +208,8 @@ struct RemindCheck {
 
 static void remind_check_run(sqlite3* db, Job* job) {
     RemindCheck* k = (RemindCheck*)job->data;
-    sqlite3_stmt* st = 0;
-    if (db && sqlite3_prepare_v2(db, "SELECT 1 FROM alerts WHERE id = ?1", -1, &st, 0) == SQLITE_OK) {
+    sqlite3_stmt* st = db ? prepare(db, "SELECT 1 FROM alerts WHERE id = ?1") : 0;
+    if (st) {
         sqlite3_bind_int64(st, 1, k->id);
         k->found = sqlite3_step(st) == SQLITE_ROW;
     }
@@ -325,13 +322,7 @@ static bool api_handle(App* app, ApiCall* c) {
         query_param(a, query, "do", &action);
         query_param(a, query, "day", &day);
         query_param(a, query, "at", &at);
-        const char* known[] = {"now", "later", "until", "skip", "pick"};
-        bool ok = false;
-        for (i32 i = 0; i < COUNT(known); i++) ok |= str_eq(action, str(known[i]));
-        if (!ok) {
-            answer_error(r, 400, "do must be now, later, until, skip or pick");
-            return true;
-        }
+        // summary_act checks the action (ACTED_BAD_ACTION).
         SummaryActResult acted = summary_act(app, action.ptr, day.ptr, at.len ? at.ptr : 0);
         char said[64];
         const char* result = summary_acted_text(acted, said, sizeof(said));

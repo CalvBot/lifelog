@@ -132,6 +132,8 @@ struct SummaryActResult {
 inline bool acted_failed(SummaryActResult r) { return r.what >= ACTED_BAD_DAY; }
 // For a message: "writing", "asking again at 23:30", "skipped", or what was wrong.
 const char* summary_acted_text(SummaryActResult r, char* out, i32 cap);
+// `day`'s entry in Summary.days, or null. The main thread.
+const SummaryDay* summary_day_find(App* app, const char* day);
 
 void summary_start(App* app);
 // Hands the summary threads the settings in App.config now, and wakes the clock. The setters

@@ -173,6 +173,14 @@ void day_of(f64 ts, char out[11]);
 void day_bounds(const char* day, f64* from, f64* to);
 // A day as "YYYY-MM-DD", checked. False if it is not one.
 bool parse_day(const char* day, i32* y, i32* m, i32* d);
+// "Sun 15 Nov" for a day; the day as it is if it is not one.
+Str day_short(Arena* a, const char* day);
+// "Sunday 15 November 2026", or without the year.
+Str day_long(Arena* a, const char* day, bool year);
+// "5 min", "1 h 20 min".
+Str duration_text(Arena* a, f64 secs);
+// `s` without its **bold** and `code` marks.
+Str strip_md(Arena* a, Str s);
 // "14:05", local time.
 void hm_of(f64 ts, char out[6]);
 extern const char* const WEEKDAYS[7];  // "Monday" first, as LocalTime.weekday

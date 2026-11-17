@@ -295,6 +295,48 @@ bool parse_day(const char* day, i32* y, i32* m, i32* d) {
     return *m >= 1 && *m <= 12 && *d >= 1 && *d <= 31;
 }
 
+// The local date of `day` at noon, so a clock change cannot move it.
+static bool day_date(const char* day, LocalTime* t) {
+    i32 y, m, d;
+    if (!parse_day(day, &y, &m, &d)) return false;
+    *t = local_time(local_ts(y, m, d, 12, 0));
+    return true;
+}
+
+Str day_short(Arena* a, const char* day) {
+    LocalTime t;
+    if (!day_date(day, &t)) return str_copy(a, str(day));
+    return str_fmt(a, "%.3s %d %.3s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
+}
+
+Str day_long(Arena* a, const char* day, bool year) {
+    LocalTime t;
+    if (!day_date(day, &t)) return str_copy(a, str(day));
+    if (!year) return str_fmt(a, "%s %d %s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
+    return str_fmt(a, "%s %d %s %d", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1], t.year);
+}
+
+Str duration_text(Arena* a, f64 secs) {
+    i64 m = (i64)floor(secs / 60.0 + 0.5);
+    if (m < 60) return str_fmt(a, "%lld min", m);
+    return str_fmt(a, "%lld h %lld min", m / 60, m % 60);
+}
+
+Str strip_md(Arena* a, Str s) {
+    char* out = PUSH_ARRAY(a, char, s.len + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        if (s.ptr[i] == '`') continue;
+        if (s.ptr[i] == '*' && i + 1 < s.len && s.ptr[i + 1] == '*') {
+            i++;
+            continue;
+        }
+        out[n++] = s.ptr[i];
+    }
+    out[n] = 0;
+    return {out, n};
+}
+
 void hm_of(f64 ts, char out[6]) {
     LocalTime t = local_time(ts);
     snprintf(out, 6, "%02d:%02d", t.hour, t.minute);

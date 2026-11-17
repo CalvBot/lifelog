@@ -79,9 +79,6 @@ static void popup_say(PopupState* s, bool ok, const char* text) {
     s->message_ts = now_ts();
 }
 
-static void popup_wait(f32* next_frame_ms, f32 ms) {
-    if (*next_frame_ms < 0 || *next_frame_ms > ms) *next_frame_ms = ms;
-}
 
 
 static void message_label(PopupState* s) {
@@ -216,7 +213,7 @@ static bool tray_draw(App* app, PopupState* s, f32* next_frame_ms) {
             job->data = p;
             db_post_latest(job, preview_run, &g_preview_wanted, p->asked);
         } else {
-            popup_wait(next_frame_ms, (f32)(left * 1000) + 10);
+            want_frame(next_frame_ms, (f32)(left * 1000) + 10);
         }
     }
 
@@ -370,11 +367,11 @@ static bool popup_draw(App* app, PopupState* s, f32* next_frame_ms) {
     if (s->message[0]) {
         f64 left = s->message_ts + 4 - now;
         if (left <= 0) s->message[0] = 0;
-        else popup_wait(next_frame_ms, (f32)(left * 1000) + 10);
+        else want_frame(next_frame_ms, (f32)(left * 1000) + 10);
     }
     if (s->close_ts) {
         if (now >= s->close_ts) return false;
-        popup_wait(next_frame_ms, (f32)((s->close_ts - now) * 1000) + 10);
+        want_frame(next_frame_ms, (f32)((s->close_ts - now) * 1000) + 10);
     }
 
     bool keep = app->ui.want_popup == POPUP_DELAY ? delay_draw(app, s) : tray_draw(app, s, next_frame_ms);

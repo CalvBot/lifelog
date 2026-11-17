@@ -106,10 +106,6 @@ static void journal_free(JournalState* s) {
 // ---------------------------------------------------------------------------------------------
 // Small helpers
 
-static void want_frame(f32* next_frame_ms, f32 ms) {
-    if (*next_frame_ms < 0 || *next_frame_ms > ms) *next_frame_ms = ms;
-}
-
 // A turning arc at text height, for "writing".
 static void spinner(f32* next_frame_ms) {
     f32 size = ImGui::GetTextLineHeight();
@@ -158,35 +154,10 @@ static bool slot_button(f32 x, f32 y, const char* glyph, const char* tip) {
     return hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 }
 
-// Drops **bold** and `code` marks. Into scratch.
-static Str strip_md(Str s) {
-    char* out = PUSH_ARRAY(scratch(), char, s.len + 1);
-    i64 n = 0;
-    for (i64 i = 0; i < s.len; i++) {
-        if (s.ptr[i] == '`') continue;
-        if (s.ptr[i] == '*' && i + 1 < s.len && s.ptr[i + 1] == '*') {
-            i++;
-            continue;
-        }
-        out[n++] = s.ptr[i];
-    }
-    out[n] = 0;
-    return {out, n};
-}
-
 // "Today" or "Wed 12 Nov", for the day list.
 static const char* list_name(const char* day, const char* today) {
     if (strcmp(day, today) == 0) return "Today";
-    f64 from, to;
-    day_bounds(day, &from, &to);
-    LocalTime t = local_time(from + 12 * 3600);
-    return tmp("%.3s %d %.3s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
-}
-
-static SummaryDay* summary_day(App* app, const char* day) {
-    for (i32 i = 0; i < app->summary.days.count; i++)
-        if (strcmp(app->summary.days[i].day, day) == 0) return &app->summary.days[i];
-    return 0;
+    return day_short(scratch(), day).ptr;
 }
 
 static i32 month_of(const char* day) {
@@ -254,7 +225,7 @@ static void calendar(App* app, JournalState* s, const char* today) {
         if (t.month != mon) break;
         char key[11];
         snprintf(key, sizeof(key), "%04d-%02d-%02d", year, mon, d);
-        SummaryDay* sd = summary_day(app, key);
+        const SummaryDay* sd = summary_day_find(app, key);
         bool done = sd && strcmp(sd->status, "done") == 0;
         i32 todo = sd ? sd->reminders : 0;
         bool heard = heard_lines(key) > 0;
@@ -313,14 +284,14 @@ static void day_list(App* app, JournalState* s, const char* today) {
         l->reminders = d->reminders;
     }
     // Today is always there, so it can be written.
-    if (month_of(today) == month && !summary_day(app, today)) {
+    if (month_of(today) == month && !summary_day_find(app, today)) {
         ListDay* l = list_push(&list);
         SET(l->day, str(today));
         l->status = "none";
     }
     for (i32 i = 0; i < g_heard.days.count; i++) {
         DayCount* d = &g_heard.days.items[i];
-        if (d->lines <= 0 || month_of(d->day) != month || summary_day(app, d->day) || strcmp(d->day, today) == 0) continue;
+        if (d->lines <= 0 || month_of(d->day) != month || summary_day_find(app, d->day) || strcmp(d->day, today) == 0) continue;
         ListDay* l = list_push(&list);
         SET(l->day, str(d->day));
         l->status = "none";
@@ -445,7 +416,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             f32 width = col_w - (ImGui::GetCursorScreenPos().x - row_min.x) - slot_w - px(8);
             if (width < px(80)) width = px(80);
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
-            Str shown = strip_md(it->text);
+            Str shown = strip_md(scratch(), it->text);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
             ImGui::PopTextWrapPos();
             ImVec2 row_max = ImVec2(row_min.x + col_w, ImGui::GetItemRectMax().y);
@@ -492,7 +463,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             ImGui::PopID();
         } else {
             if (i && label_text(it->text)) ImGui::Dummy(ImVec2(0, 0));
-            Str shown = strip_md(it->text);
+            Str shown = strip_md(scratch(), it->text);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
         }
     }

@@ -147,10 +147,7 @@ static const char* day_name(f64 ts) {
     i32 ago = days_ago(day);
     if (ago == 0) return "Today";
     if (ago == 1) return "Yesterday";
-    f64 from, to;
-    day_bounds(day, &from, &to);
-    LocalTime t = local_time(from + 12 * 3600);
-    return tmp("%.3s %d %.3s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
+    return day_short(scratch(), day).ptr;
 }
 
 // "Today", "Yesterday" or "Wednesday 12 November" (with the year when it isn't this one).
@@ -158,19 +155,14 @@ static const char* page_name(const char* day) {
     i32 ago = days_ago(day);
     if (ago == 0) return "Today";
     if (ago == 1) return "Yesterday";
-    f64 from, to;
-    day_bounds(day, &from, &to);
-    LocalTime t = local_time(from + 12 * 3600);
-    LocalTime now = local_time(now_ts());
-    if (t.year != now.year) return tmp("%s %d %s %d", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1], t.year);
-    return tmp("%s %d %s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
+    i32 y, m, d;
+    bool other_year = parse_day(day, &y, &m, &d) && y != local_time(now_ts()).year;
+    return day_long(scratch(), day, other_year).ptr;
 }
 
-// "5 min", "1 h 20 min"
-static const char* duration_text(f64 secs) {
-    i64 m = (i64)floor(secs / 60.0 + 0.5);
-    if (m < 60) return tmp("%lld min", m);
-    return tmp("%lld h %lld min", m / 60, m % 60);
+// Asks for the next frame in `ms` at the latest.
+static void want_frame(f32* next_frame_ms, f32 ms) {
+    if (*next_frame_ms < 0 || *next_frame_ms > ms) *next_frame_ms = ms;
 }
 
 // `text` cut with "…" to fit `width`, whole UTF-8 characters only. Always a zero-terminated copy
@@ -208,7 +200,7 @@ static const char* copy_message(const ClipResult* r, ClipKind kind) {
     if (kind == CLIP_TEXT) return tmp("Copied %d lines", r->lines);
     if (kind == CLIP_FILE) return tmp("Copied %d lines as a file", r->lines);
     if (r->seconds < 60) return tmp("Copied %.0f s of audio", ceil(r->seconds));
-    return tmp("Copied %s of audio", duration_text(r->seconds));
+    return tmp("Copied %s of audio", duration_text(scratch(), r->seconds).ptr);
 }
 // "now", "5 min ago", "3 h ago", "12 Nov"
 static const char* ago_text(f64 ts) {

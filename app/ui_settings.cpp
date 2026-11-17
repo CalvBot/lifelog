@@ -1198,7 +1198,7 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     // What the AI folder has: looked at again every few seconds, and after a change.
     if (now - app->setup.scanned_ts > 5) ai_scan(app);
     f32 next = (f32)((s->loaded_ts + 10 - now) * 1000) + 10;
-    if (*next_frame_ms < 0 || *next_frame_ms > next) *next_frame_ms = next;
+    want_frame(next_frame_ms, next);
 
     f32 avail = ImGui::GetContentRegionAvail().x;
     f32 width = avail < px(760) ? avail : px(760);

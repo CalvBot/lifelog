@@ -1031,7 +1031,7 @@ static void tl_search_bar(App* app, TimelineState* s, f32 left, f32 right, f32* 
         if (left_s <= 0) tl_run_search(app, s);
         else {
             f32 ms = (f32)(left_s * 1000) + 10;
-            if (*next_frame_ms < 0 || *next_frame_ms > ms) *next_frame_ms = ms;
+            want_frame(next_frame_ms, ms);
         }
     }
     if (step) tl_find_step(app, s, step > 0);
@@ -1414,7 +1414,7 @@ static f32 tl_gap_row(TimelineState* s, TlRow* r, TlLayout* L, f32 y, bool draw)
     f32 h = 4 * L->u + L->small_lh + 4 * L->u;
     if (draw) {
         small_begin();
-        const char* t = tmp("· %s quiet ·", duration_text(r->to - r->ts));
+        const char* t = tmp("· %s quiet ·", duration_text(scratch(), r->to - r->ts).ptr);
         f32 w = ImGui::CalcTextSize(t).x;
         ImGui::GetWindowDrawList()->AddText(ImVec2((L->left + L->right - w) / 2, y + 4 * L->u), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
         small_end();
@@ -1863,7 +1863,7 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
             const char* t = queued > 0 ? tmp("Listening · writing up %d more…", queued) : "Listening";
             dl->AddText(ImVec2(L.x_time + 14 * u + 8 * u, ty), weak, t);
             bool on_screen = y <= view_y + view_h && y + rh >= view_y;
-            if (on_screen && (*next_frame_ms < 0 || *next_frame_ms > 60)) *next_frame_ms = 60;
+            if (on_screen) want_frame(next_frame_ms, 60);
         }
         y += rh;
     }
@@ -1880,9 +1880,9 @@ static void tl_list(App* app, TimelineState* s, f32* next_frame_ms) {
     s->hover_play = f.hover_play;
     // Shift and Ctrl change what would play, and the word being heard moves: keep drawing.
     if (f.hover_play || app->clips.playing_line) {
-        if (*next_frame_ms < 0 || *next_frame_ms > 50) *next_frame_ms = 50;
+        want_frame(next_frame_ms, 50);
     }
-    if (f.animating && (*next_frame_ms < 0 || *next_frame_ms > 30)) *next_frame_ms = 30;
+    if (f.animating) want_frame(next_frame_ms, 30);
 
     if (f.clicked) {
         f64 ts = f.clicked_ts;

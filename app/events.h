@@ -125,3 +125,13 @@ void events_apply(App* app);
 // Atomics for the flags threads share.
 inline LONG atomic_get(volatile LONG* v) { return InterlockedCompareExchange(v, 0, 0); }
 inline void atomic_set(volatile LONG* v, LONG x) { InterlockedExchange(v, x); }
+inline LONG64 atomic_get64(volatile LONG64* v) { return InterlockedCompareExchange64(v, 0, 0); }
+// Lowers *v to x if x is smaller.
+inline void atomic_min64(volatile LONG64* v, LONG64 x) {
+    LONG64 old = atomic_get64(v);
+    while (x < old) {
+        LONG64 was = InterlockedCompareExchange64(v, x, old);
+        if (was == old) break;
+        old = was;
+    }
+}

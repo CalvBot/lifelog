@@ -188,30 +188,6 @@ static LocalTime day_plus(i32 y, i32 m, i32 d, i32 n) { return local_time(local_
 
 static void day_text(LocalTime t, char out[11]) { snprintf(out, 11, "%04d-%02d-%02d", t.year, t.month, t.day); }
 
-// "Sunday 15 November 2026" (chrono's "%A %-d %B %Y").
-static Str long_date(Arena* a, const char* day) {
-    i32 y, m, d;
-    if (!parse_day(day, &y, &m, &d)) return str_copy(a, str(day));
-    LocalTime t = day_plus(y, m, d, 0);
-    return str_fmt(a, "%s %d %s %d", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1], t.year);
-}
-
-// "Sun 15 Nov" (chrono's "%a %-d %b").
-static Str short_date(Arena* a, const char* day) {
-    i32 y, m, d;
-    if (!parse_day(day, &y, &m, &d)) return str_copy(a, str(day));
-    LocalTime t = day_plus(y, m, d, 0);
-    return str_fmt(a, "%.3s %d %.3s", WEEKDAYS[t.weekday], t.day, MONTHS[t.month - 1]);
-}
-
-
-// When to ask about `day`: ask_at on that day (times before 04:00 fall on the next morning).
-static f64 ask_moment(const char* day, const char* ask_at) {
-    i32 h = 21, mi = 0, y, m, d;
-    if (!parse_hhmm(str(ask_at), &h, &mi)) h = 21, mi = 0;
-    CHECK(parse_day(day, &y, &m, &d), "a day as YYYY-MM-DD, not \"%s\"", day);
-    return local_ts(y, m, d + (h < 4 ? 1 : 0), h, mi);
-}
 
 // The next time the clock shows h:m: today, or tomorrow if that has passed.
 static f64 next_at(i32 h, i32 m) {
@@ -246,6 +222,12 @@ static f64 said_ts(const char* day, Str time) {
     return local_ts(y, m, d + (h < 4 ? 1 : 0), h, mi);
 }
 
+// When to ask about `day`: ask_at on that day (21:00 if it is not a time).
+static f64 ask_moment(const char* day, const char* ask_at) {
+    i32 h, mi;
+    return said_ts(day, str(parse_hhmm(str(ask_at), &h, &mi) ? ask_at : "21:00"));
+}
+
 // When a reminder is due: its `when` ("YYYY-MM-DD HH:MM", local), if that is after it was said
 // and within two months. 0 when it did not say when.
 static f64 due_of(const char* day, const Json* r) {
@@ -264,11 +246,6 @@ static f64 due_of(const char* day, const Json* r) {
 // The next 09:00, for a reminder that did not say when.
 static f64 next_morning() { return next_at(9, 0); }
 
-static Str minutes(Arena* a, f64 secs) {
-    u64 m = (u64)floor(secs / 60.0 + 0.5);
-    if (m >= 60) return str_fmt(a, "%llu h %llu min", m / 60, m % 60);
-    return str_fmt(a, "%llu min", m);
-}
 
 // ---------------------------------------------------------------------------------------------
 // The window's state
@@ -385,7 +362,7 @@ static void day_put(App* app, const SummaryDay* row) {
     }
 }
 
-static const SummaryDay* day_find(App* app, const char* day) {
+const SummaryDay* summary_day_find(App* app, const char* day) {
     for (i32 i = 0; i < app->summary.days.count; i++)
         if (strcmp(app->summary.days.items[i].day, day) == 0) return &app->summary.days.items[i];
     return 0;
@@ -401,13 +378,7 @@ static SummaryDay day_row(const char* day, const char* status, i32 reminders) {
 
 // Any thread, after a reminder is set to show at `due`: the clock wakes for it then.
 static void alert_due_at(App* app, f64 due) {
-    volatile LONG64* next = &app->summary.next_alert_ms;
-    LONG64 ms = (LONG64)(due * 1000.0), old = InterlockedCompareExchange64(next, 0, 0);
-    while (ms < old) {
-        LONG64 was = InterlockedCompareExchange64(next, ms, old);
-        if (was == old) break;
-        old = was;
-    }
+    atomic_min64(&app->summary.next_alert_ms, (LONG64)(due * 1000.0));
     if (app->summary.wake) SetEvent(app->summary.wake);
 }
 
@@ -467,7 +438,8 @@ static Str point_time(Str text) {
     text = str_trim(text);
     if (text.len < 7 || text.ptr[text.len - 1] != ')' || text.ptr[text.len - 7] != '(') return {};
     Str t = str_sub(text, text.len - 6, 5);
-    return t.ptr[2] == ':' ? t : Str{};
+    i32 h, m;
+    return parse_hhmm(t, &h, &m) ? t : Str{};
 }
 
 static bool tx(sqlite3* db, const char* what) {
@@ -680,7 +652,7 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
 static bool write_markdown(App* app, const char* day, Slice<ItemRow> rows) {
     Mark m = mark(scratch());
     Buf text = {};
-    buf_fmt(&text, "# %s\n\n", long_date(scratch(), day).ptr);
+    buf_fmt(&text, "# %s\n\n", day_long(scratch(), day, true).ptr);
     buf_add(&text, items_summary(scratch(), rows));
     buf_cstr(&text, "\n");
     bool any = false;
@@ -975,7 +947,7 @@ static Str summary_prompt(Arena* a, const char* day, u32 max_words, Str material
             "important things first, each bullet with its concrete details. Leave out what others said or what played "
             "unless you talked about it, and no list of songs, videos or artists. Do not repeat the flagged moments in the "
             "summary; they get their own list. Write less rather than pad: a quiet day can be two bullets.",
-            long_date(scratch(), day).ptr, max_words);
+            day_long(scratch(), day, true).ptr, max_words);
     buf_add(&b, never);
     buf_cstr(&b, " ");
     buf_cstr(&b, REMINDERS_RULE);
@@ -1018,7 +990,7 @@ static Str history(sqlite3* db, Arena* a, const char* day, Str* never, i32 never
             while (cut > 0 && ((u8)joined.ptr[cut] & 0xC0) == 0x80) cut--;
             joined = str_fmt(scratch(), "%.*s…", (int)cut, joined.ptr);
         }
-        if (joined.len) buf_fmt(&out, "- %s: %s\n", short_date(scratch(), row_day.ptr).ptr, joined.ptr);
+        if (joined.len) buf_fmt(&out, "- %s: %s\n", day_short(scratch(), row_day.ptr).ptr, joined.ptr);
         rewind(mk);
     }
     sqlite3_finalize(st);
@@ -1240,7 +1212,8 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         ToastJob t = {};
         snprintf(t.tag, sizeof(t.tag), "remind-%lld", id);
         set(t.title, sizeof(t.title), str_fmt(scratch(), "Remind you %s?", when_text(scratch(), due).ptr));
-        set(t.body, sizeof(t.body), str_fmt(scratch(), "%.*s. You said: “%.*s”", (int)text.len, text.ptr, (int)said.len, said.ptr));
+        Str shown = strip_md(scratch(), text);
+        set(t.body, sizeof(t.body), str_fmt(scratch(), "%.*s. You said: “%.*s”", (int)shown.len, shown.ptr, (int)said.len, said.ptr));
         char yes[160], no[160];
         remind_link(yes, sizeof(yes), "yes", id);
         remind_link(no, sizeof(no), "no", id);
@@ -1286,7 +1259,7 @@ static void alerts_show_due(App* app, sqlite3* db) {
         Str when = parse_day(d->day, &y, &mo, &dd) ? str(WEEKDAYS[day_plus(y, mo, dd, 0).weekday]) : str(d->day);
         ToastJob t = {};
         snprintf(t.tag, sizeof(t.tag), "remind-%lld", d->id);
-        set(t.title, sizeof(t.title), d->text);
+        set(t.title, sizeof(t.title), strip_md(scratch(), d->text));
         if (!d->said.len) set(t.body, sizeof(t.body), str_fmt(scratch(), "From %s", when.ptr));
         else
             set(t.body, sizeof(t.body),
@@ -1324,12 +1297,7 @@ static void alerts_check(App* app) {
         f64 next = sqlite3_column_double(st, 0);
         // One still due could not be marked shown: try again in a minute, not straight away.
         if (next <= now_ts()) next = now_ts() + 60;
-        LONG64 ms = (LONG64)(next * 1000.0), old = InterlockedCompareExchange64(&app->summary.next_alert_ms, 0, 0);
-        while (ms < old) {
-            LONG64 was = InterlockedCompareExchange64(&app->summary.next_alert_ms, ms, old);
-            if (was == old) break;
-            old = was;
-        }
+        atomic_min64(&app->summary.next_alert_ms, (LONG64)(next * 1000.0));
     }
     sqlite3_finalize(st);
     sqlite3_close(db);
@@ -1862,7 +1830,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
                 phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
                 Buf prompt = {};
                 buf_fmt(&prompt, "Transcript from %s to %s on %s (times after midnight are the next morning):\n\n", t0, t1,
-                        long_date(a, day).ptr);
+                        day_long(a, day, true).ptr);
                 buf_add(&prompt, c->text);
                 buf_cstr(&prompt,
                          "\n\nReturn JSON. notes = 1 to 6 short bullet points on what you "
@@ -1945,13 +1913,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         while (taken < 3 && next_line(&rest, &line)) {
             if (!str_trim(line).len) continue;
             if (taken++) buf_cstr(&plain, " ");
-            for (i64 i = 0; i < line.len; i++) {
-                if (i + 1 < line.len && line.ptr[i] == '*' && line.ptr[i + 1] == '*') {
-                    i++;
-                    continue;
-                }
-                list_push(&plain.chars, line.ptr[i]);
-            }
+            buf_add(&plain, strip_md(a, line));
         }
         Str text = buf_take(&plain, a);
         ToastJob t = {};
@@ -2050,7 +2012,7 @@ static void ask(App* app, const char* day, f64 mine, f64 apps) {
     SET(t.title, str("Your summary starts in 5 minutes"));
     set(t.body, sizeof(t.body),
              str_fmt(scratch(), "It uses the graphics card for a few minutes. Today: %s of you talking, %s from apps.",
-                     minutes(scratch(), mine).ptr, minutes(scratch(), apps).ptr));
+                     duration_text(scratch(), mine).ptr, duration_text(scratch(), apps).ptr));
     static const char* ACTIONS[][2] = {{"Start now", "now"}, {"In an hour", "later"}, {"Delay until…", "pick"}, {"Skip today", "skip"}};
     for (i32 i = 0; i < COUNT(ACTIONS); i++) {
         char link[160];
@@ -2089,6 +2051,7 @@ const char* summary_acted_text(SummaryActResult r, char* out, i32 cap) {
 
 SummaryActResult summary_act(App* app, const char* action, const char* day_in, const char* at) {
     SummaryActResult r = {};
+    if (!action) action = "";
     char day[11];
     i32 y, m, d;
     if (day_in && day_in[0]) {
@@ -2211,7 +2174,7 @@ static void summary_tick(App* app, Event* e) {
     bool look = !counting && app->config.summary.enabled && !s->writing && now_ts() >= ask_moment(day, app->config.summary.ask_at) &&
                 now_ts() >= s->snooze_ts;
     // Not done or skipped yet: Summary.days has every saved day.
-    if (!look || !s->lists_ready || day_find(app, day)) return;
+    if (!look || !s->lists_ready || summary_day_find(app, day)) return;
     if (s->last_game_ts && now_ts() - s->last_game_ts < AFTER_GAME_SECS) {
         // Never during a game: wait until it has been closed for a while.
         phase_set(app, "waiting until you stop playing");
@@ -2235,7 +2198,7 @@ static DWORD WINAPI summary_main(void* param) {
     f64 next_tick = 0;
     for (;;) {
         f64 now = now_ts();
-        if (now * 1000.0 >= (f64)InterlockedCompareExchange64(&s->next_alert_ms, 0, 0)) alerts_check(app);
+        if (now * 1000.0 >= (f64)atomic_get64(&s->next_alert_ms)) alerts_check(app);
         if (now >= next_tick) {
             SummaryTick t = {};
             day_of(now, t.day);
@@ -2243,7 +2206,7 @@ static DWORD WINAPI summary_main(void* param) {
             latest_send(app, &s->tick, summary_tick, t);
             next_tick = now + 15;
         }
-        f64 until = next_tick, alert = (f64)InterlockedCompareExchange64(&s->next_alert_ms, 0, 0) / 1000.0;
+        f64 until = next_tick, alert = (f64)atomic_get64(&s->next_alert_ms) / 1000.0;
         if (alert < until) until = alert;
         now = now_ts();
         DWORD ms = until <= now ? 0 : (DWORD)((until - now) * 1000.0) + 1;
