@@ -491,7 +491,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
             }
             ImGui::PopID();
         } else {
-            if (i && it->text.len > 4 && str_starts(it->text, str("**"))) ImGui::Dummy(ImVec2(0, 0));  // a label
+            if (i && label_text(it->text)) ImGui::Dummy(ImVec2(0, 0));
             Str shown = strip_md(it->text);
             ImGui::TextUnformatted(shown.ptr, shown.ptr + shown.len);
         }
@@ -502,7 +502,7 @@ static void day_view(App* app, JournalState* s, f32 col_w, bool writing, f32* ne
         sized_text(18, text_color(), str("You said you'd"));
         for (i32 n = 0; n < sum->reminder_count; n++) {
             Reminder* r = &sum->reminders[n];
-            bool set = str_eq(r->alert_state, str("set"));
+            bool set = r->alert_set;
             ImGui::PushID((i32)r->id);
             ImVec2 row_min = ImGui::GetCursorScreenPos();
             ImGui::TextColored(weak_text(), "%.*s", (int)r->time.len, r->time.ptr);

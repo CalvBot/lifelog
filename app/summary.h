@@ -15,7 +15,6 @@
 struct SummaryDay {
     char day[11];        // "YYYY-MM-DD"
     char status[12];     // "done" | "skipped"
-    f64 created_ts;
     i32 reminders;       // how many "to do" points
 };
 
@@ -34,16 +33,13 @@ struct Reminder {
     Str time;    // "HH:MM" when it was said
     Str text;    // the to-do
     Str said;    // my words
-    // Its notification: none, asked, set (with when it will show), shown or no (declined).
-    // Empty when it has none and said no time.
-    Str alert_state;
+    bool alert_set;  // its notification is set to show (at alert_due)
     Str alert_when;  // "tomorrow at 09:00"
     f64 alert_due;   // when it shows (or would), unix seconds; 0 if not known
 };
 
 struct StoredSummary {
     bool found;
-    char day[11];
     Str status;
     f64 created_ts;
     Str model;
@@ -82,8 +78,6 @@ struct Notify {
 
 // What the summary threads (and llm.cpp) need of the settings.
 struct SummaryOptions {
-    bool enabled;
-    char ask_at[8];       // "HH:MM"
     u32 max_words;
     bool ask_reminders;
     char model[128];
@@ -178,7 +172,7 @@ void summary_remove_never(App* app, i64 id);
 // These change the database on its thread (db_post) and return at once. Each reports what it
 // did (the row, topic or due time it changed); the main thread updates Summary's lists from that
 // and the window says what happened. The main thread.
-void reminder_set(App* app, const char* day, i64 item, bool on, bool quiet = false);
+void reminder_set(App* app, const char* day, i64 item, bool on);
 // A reminder notification's buttons: "yes", "no", "done", "snooze".
 void reminder_answer(App* app, i64 id, const char* action);
 

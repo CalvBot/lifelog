@@ -108,15 +108,17 @@ static bool bullet_text(Str line, Str* out) {
     return true;
 }
 
-// Removes bold labels ("**Evening**") left with no bullets under them.
+// A bold label line ("**Evening**") that groups the points under it.
+static bool label_text(Str t) { return t.len > 4 && str_starts(t, str("**")) && str_ends(t, str("**")); }
+
+// Removes bold labels left with no bullets under them.
 static Str drop_empty_labels(Arena* a, Str text) {
     Buf out = {};
     Str rest = text, line = {};
     bool first = true;
     while (next_line(&rest, &line)) {
         Str t = str_trim(line);
-        bool is_label = str_starts(t, str("**")) && str_ends(t, str("**")) && t.len > 4;
-        if (is_label) {
+        if (label_text(t)) {
             Str ahead = rest, next = {};
             bool bullet_next = false;
             while (next_line(&ahead, &next)) {
@@ -318,14 +320,13 @@ static i32 sql_done(sqlite3* db, sqlite3_stmt* st) {
 }
 
 static void lists_read(sqlite3* db, List<SummaryDay>* days, List<NeverTopic>* never) {
-    sqlite3_stmt* st = prepare(db, "SELECT day, status, created_ts, (SELECT COUNT(*) FROM summary_items i WHERE i.day = s.day AND "
+    sqlite3_stmt* st = prepare(db, "SELECT day, status, (SELECT COUNT(*) FROM summary_items i WHERE i.day = s.day AND "
                                "i.kind = 'reminder' AND i.dismissed = 0) FROM summaries s ORDER BY day DESC LIMIT 400");
     while (st && sqlite3_step(st) == SQLITE_ROW) {
         SummaryDay d = {};
         SET(d.day, str((const char*)sqlite3_column_text(st, 0)));
         SET(d.status, str((const char*)sqlite3_column_text(st, 1)));
-        d.created_ts = sqlite3_column_double(st, 2);
-        d.reminders = sqlite3_column_int(st, 3);
+        d.reminders = sqlite3_column_int(st, 2);
         list_push(days, d);
     }
     sqlite3_finalize(st);
@@ -390,11 +391,10 @@ static const SummaryDay* day_find(App* app, const char* day) {
     return 0;
 }
 
-static SummaryDay day_row(const char* day, const char* status, f64 created_ts, i32 reminders) {
+static SummaryDay day_row(const char* day, const char* status, i32 reminders) {
     SummaryDay d = {};
     SET(d.day, str(day));
     SET(d.status, str(status));
-    d.created_ts = created_ts;
     d.reminders = reminders;
     return d;
 }
@@ -427,35 +427,17 @@ static bool save(sqlite3* db, const char* day, const char* status, f64 ts, const
     return sql_done(db, st) >= 0;
 }
 
-// The alert for `day`'s reminder `text`: false if there is none.
-static bool alert_find(sqlite3* db, Arena* a, const char* day, Str text, i64* id, f64* due, Str* state) {
-    sqlite3_stmt* st = prepare(db, "SELECT id, due_ts, state FROM alerts WHERE day = ?1 AND text = ?2");
-    if (!st) return false;
-    bind_str(st, 1, str(day));
-    bind_str(st, 2, text);
-    bool found = sqlite3_step(st) == SQLITE_ROW;
-    if (found) {
-        *id = sqlite3_column_int64(st, 0);
-        *due = sqlite3_column_double(st, 1);
-        *state = col_str(st, 2, a);
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-// A day's saved row: its summary text and its reminders as JSON.
+// A day's saved row (its lines are in summary_items).
 struct SavedRow {
     bool found;
     Str status;
     f64 created_ts;
     Str model;
-    Str summary;
-    Json reminders;
 };
 
 static SavedRow saved_row(sqlite3* db, Arena* a, const char* day) {
     SavedRow row = {};
-    sqlite3_stmt* st = prepare(db, "SELECT status, created_ts, model, summary, reminders FROM summaries WHERE day = ?1");
+    sqlite3_stmt* st = prepare(db, "SELECT status, created_ts, model FROM summaries WHERE day = ?1");
     if (!st) return row;
     bind_str(st, 1, str(day));
     if (sqlite3_step(st) == SQLITE_ROW) {
@@ -463,11 +445,6 @@ static SavedRow saved_row(sqlite3* db, Arena* a, const char* day) {
         row.status = col_str(st, 0, a);
         row.created_ts = sqlite3_column_double(st, 1);
         row.model = col_str(st, 2, a);
-        row.summary = col_str(st, 3, a);
-        if (!json_parse(a, col_str(st, 4, a), &row.reminders, 0, 0) || row.reminders.type != JSON_ARRAY) {
-            row.reminders = {};
-            row.reminders.type = JSON_ARRAY;
-        }
     }
     sqlite3_finalize(st);
     return row;
@@ -596,10 +573,7 @@ struct ItemRow {
 };
 
 // A line that is only bold text: a label ("**To remember**") over the points after it.
-static bool is_label(const ItemRow* r) {
-    Str t = r->text;
-    return r->kind == ITEM_TEXT && t.len > 4 && str_starts(t, str("**")) && str_ends(t, str("**"));
-}
+static bool is_label(const ItemRow* r) { return r->kind == ITEM_TEXT && label_text(r->text); }
 
 // Whether a heading or label at `i` has a line under it still shown.
 static bool has_lines_under(Slice<ItemRow> rows, i32 i) {
@@ -664,7 +638,6 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
     SavedRow row = saved_row(db, a, day);
     if (!row.found) return out;
     out.found = true;
-    SET(out.day, str(day));
     out.status = row.status;
     out.created_ts = row.created_ts;
     out.model = row.model;
@@ -689,10 +662,10 @@ StoredSummary summary_get(sqlite3* db, Arena* a, const char* day) {
         if (st) sqlite3_bind_int64(st, 1, it->id);
         if (st && sqlite3_step(st) == SQLITE_ROW) {
             due = sqlite3_column_double(st, 0);
-            r->alert_state = col_str(st, 1, a);
+            const char* state = (const char*)sqlite3_column_text(st, 1);
+            r->alert_set = state && strcmp(state, "set") == 0;
         } else {
             due = it->due;
-            if (due) r->alert_state = str("none");
         }
         sqlite3_finalize(st);
         if (due) {
@@ -1244,16 +1217,11 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         if (!due) continue;
         Str text = str_trim(json_text(json_get(r, "text")));
         if (due <= now_ts() + 60 || !text.len || asked >= MAX_ASKS) continue;
-        // Already asked, set or turned down (an earlier run of this day's summary): leave it.
         Mark m = mark(scratch());
-        i64 id = 0;
-        f64 old_due = 0;
-        Str state = {};
-        bool known = alert_find(db, scratch(), day, text, &id, &old_due, &state);
-        rewind(m);
-        if (known) continue;
         Str said = str_trim(json_text(json_get(r, "said")));
-        sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'asked', "
+        // Already asked, set or turned down (an earlier run of this day's summary): it is left
+        // as it is (UNIQUE (day, text)).
+        sqlite3_stmt* st = prepare(db, "INSERT OR IGNORE INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'asked', "
                                    "(SELECT id FROM summary_items WHERE day = ?1 AND kind = 'reminder' AND text = ?2))");
         if (!st) return;
         bind_str(st, 1, str(day));
@@ -1261,8 +1229,13 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         bind_str(st, 3, said);
         bind_str(st, 4, json_text(json_get(r, "time")));
         sqlite3_bind_double(st, 5, due);
-        if (sql_done(db, st) < 0) return;
-        id = sqlite3_last_insert_rowid(db);
+        i32 added = sql_done(db, st);
+        if (added < 0) return;
+        if (added == 0) {
+            rewind(m);
+            continue;
+        }
+        i64 id = sqlite3_last_insert_rowid(db);
 
         ToastJob t = {};
         snprintf(t.tag, sizeof(t.tag), "remind-%lld", id);
@@ -1370,10 +1343,8 @@ enum EditOutcome : u8 {
     EDIT_DONE,
     EDIT_NO_DB,         // the database could not be opened
     EDIT_FAILED,        // a statement failed (it is in the log)
-    EDIT_NO_DAY,        // no summary for that day
     EDIT_NO_REMINDER,
     EDIT_NO_ITEM,       // that line is not in the summary (any more)
-    EDIT_BAD_DAY,
     EDIT_BAD_ACTION,
 };
 
@@ -1392,7 +1363,6 @@ struct SummaryEdit {
     char day[11];
     i64 id;           // EDIT_ANSWER: the alert; EDIT_NEVER_REMOVE: the topic; else the item (summary_items), 0 for none
     bool on;          // EDIT_REMIND: turn it on
-    bool quiet;       // EDIT_REMIND: say nothing
     char action[16];  // EDIT_ANSWER
     Str text;         // EDIT_NEVER_ADD: the topic
     // What came of it, for the main thread (edit_apply).
@@ -1545,7 +1515,7 @@ static void edit_dismiss(App* app, sqlite3* db, Arena* a, SummaryEdit* e, i64 it
     i32 reminders = 0;
     for (i32 i = 0; i < rows.count; i++) reminders += rows.items[i].kind == ITEM_REMINDER;
     e->has_row = true;
-    e->row = day_row(day, row.status.ptr, row.created_ts, reminders);
+    e->row = day_row(day, row.status.ptr, reminders);
     e->changed = true;
 }
 
@@ -1589,7 +1559,7 @@ static void edit_run(sqlite3* db, Job* job) {
             break;
         }
         e->has_row = true;
-        e->row = day_row(e->day, "skipped", ts, 0);
+        e->row = day_row(e->day, "skipped", 0);
         e->changed = true;
         break;
     }
@@ -1620,13 +1590,11 @@ static void edit_apply(App* app, Job* job) {
         break;
     case EDIT_NO_DB: say = "The database could not be opened"; break;
     case EDIT_FAILED: say = e->kind == EDIT_SKIP ? "Could not save the skip" : "Could not save that (see the log)"; break;
-    case EDIT_NO_DAY: say = "No summary for that day"; break;
     case EDIT_NO_REMINDER: say = "No such reminder"; break;
     case EDIT_NO_ITEM: say = "That point is already gone"; break;
-    case EDIT_BAD_DAY: say = "Bad day"; break;
     case EDIT_BAD_ACTION: break;  // a link from an old notification: in the log
     }
-    if (say && !e->quiet) ui_say(app, "%s", say);
+    if (say) ui_say(app, "%s", say);
     wake_window(app);
 }
 
@@ -1651,12 +1619,11 @@ void reminder_answer(App* app, i64 id, const char* action) {
     db_post(job, edit_run);
 }
 
-void reminder_set(App* app, const char* day, i64 item, bool on, bool quiet) {
+void reminder_set(App* app, const char* day, i64 item, bool on) {
     Job* job;
     SummaryEdit* e = edit_new(app, &job, EDIT_REMIND, day);
     e->id = item;
     e->on = on;
-    e->quiet = quiet;
     db_post(job, edit_run);
 }
 
@@ -1695,8 +1662,6 @@ void summary_options_publish(App* app) {
     Summary* s = &app->summary;
     AcquireSRWLockExclusive(&s->options_lock);
     SummaryOptions* o = &s->options;
-    o->enabled = c->summary.enabled;
-    SET(o->ask_at, str(c->summary.ask_at));
     o->max_words = c->summary.max_words;
     o->ask_reminders = c->summary.ask_reminders;
     SET(o->model, str(c->summary.model));
@@ -1967,7 +1932,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         Slice<ItemRow> rows = items_read(db, a, day);
         i32 shown_reminders = 0;
         for (i32 i = 0; i < rows.count; i++) shown_reminders += rows.items[i].kind == ITEM_REMINDER;
-        *saved = day_row(day, "done", saved_ts, shown_reminders);
+        *saved = day_row(day, "done", shown_reminders);
         if (cfg->ask_reminders) alerts_offer(app, db, day, &reminders);
         if (!write_markdown(app, day, rows)) WARN("could not write the summary file for %s", day);
         i32 count = reminders.count;
