@@ -46,7 +46,7 @@ To build it yourself: `app\build.bat` builds `app\build\lifelog.exe` (Visual Stu
   paste files or links into the timeline). Right-click to pause, restart or quit.
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
 - **Journal:** the daily summaries, a calendar, and reminders for things you said you'd do.
-- **Settings:** which apps to record, which are games, when to transcribe, the summary time, and the chimes.
+- **Settings:** which apps to record, which are games, when to transcribe, the summary time, and the voice command chimes.
 
 From a terminal or a Stream Deck:
 
@@ -70,8 +70,3 @@ The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`
 
 GitHub is a mirror that is overwritten on every sync. To send a change, fork it and open a pull request; it gets
 merged on the main copy. Don't merge pull requests on GitHub.
-
-## Credits
-
-- The chime sounds are recordings from [VCSL](https://github.com/sgossner/VCSL) by Versilian Studios (CC0).
-- Icons are from [Lucide](https://lucide.dev) (ISC licence).

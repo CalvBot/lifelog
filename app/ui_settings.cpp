@@ -1,5 +1,5 @@
 // ui_settings.cpp: the Settings tab: which apps are recorded and which are games, transcription,
-// the chimes, the daily summary, where files live and the AI models. Ctrl+Z takes back the last
+// voice commands, the daily summary, where files live and the AI models. Ctrl+Z takes back the last
 // change made here.
 
 enum AppsView : u8 {
@@ -896,17 +896,16 @@ static void transcription_card(App* app, SettingsState* s, f32 width) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Chimes: the sounds voice commands make (chime.h).
+// Voice commands. For now, the chimes they make (chime.h).
 
-static void chimes_card(App* app, SettingsState* s, f32 width) {
+static void voice_card(App* app, SettingsState* s, f32 width) {
     Config* c = &app->config;
-    settings_card("chimes", width);
-    title("Chimes");
-    status_right("for voice commands");
+    settings_card("voice", width);
+    title("Voice commands");
 
-    row_label("Style");
-    const char* names[] = {"Vibes", "Marimba", "Kalimba", "Bells", "Off"};
-    i32 style = segments("chimes", names, COUNT(names), (i32)c->chimes.style, px(76));
+    row_label("Chimes");
+    const char* names[] = {"Glass", "Soft", "Synth", "Off"};
+    i32 style = segments("chimes", names, COUNT(names), (i32)c->chimes.style, px(70));
     if (style >= 0) {
         SettingsUndo* u = remember(s, UNDO_CHIME_STYLE, "chimes %s", names[style]);
         u->n = (u32)c->chimes.style;
@@ -914,11 +913,11 @@ static void chimes_card(App* app, SettingsState* s, f32 width) {
         chime_play(app, CHIME_DONE);
     }
     ImGui::SameLine();
-    const char* hints[] = {"vibraphone, soft mallets", "marimba, soft mallets", "a plucked kalimba", "hand chimes", "silent"};
+    const char* hints[] = {"a warm bell, like an electric piano", "a low marimba", "a mellow synth", "silent"};
     weak(fit(hints[c->chimes.style], ImGui::GetContentRegionAvail().x));
 
     bool off = c->chimes.style == CHIME_OFF;
-    row_label("Volume");
+    row_label("Chime volume");
     ImGui::BeginDisabled(off);
     ImGui::SetNextItemWidth(px(64));
     ImGui::DragInt("##chime_volume", &s->chime_volume, 0.3f, 0, 100, "%d %%", ImGuiSliderFlags_AlwaysClamp);
@@ -1224,7 +1223,7 @@ static void settings_draw(App* app, SettingsState* s, f32* next_frame_ms) {
     summary_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
-    chimes_card(app, s, width);
+    voice_card(app, s, width);
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::SetCursorPosX(x);
     files_card(app, width);

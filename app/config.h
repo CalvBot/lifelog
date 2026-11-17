@@ -13,13 +13,11 @@ enum Mode : i32 {
 const char* mode_name(Mode m);
 bool mode_parse(Str s, Mode* out);
 
-// How the chimes sound (chime.h): which recorded instrument plays them, or none. Saved by name,
-// so the order may change.
+// How the chimes sound (chime.h): three sets, or none. Saved by name, so the order may change.
 enum ChimeStyle : i32 {
-    CHIME_VIBES,    // vibraphone, soft mallets
-    CHIME_MARIMBA,  // marimba, soft mallets
-    CHIME_KALIMBA,  // a plucked kalimba
-    CHIME_BELLS,    // hand chimes
+    CHIME_GLASS,  // a warm bell, like an electric piano
+    CHIME_SOFT,   // a low marimba
+    CHIME_SYNTH,  // a mellow synth: detuned saws, a filter, a sine below
     CHIME_OFF,
 };
 const char* chime_style_name(ChimeStyle s);
