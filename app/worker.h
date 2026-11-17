@@ -31,8 +31,6 @@ struct WorkerOptions {
 
 struct Worker {
     char state[160];      // what it is doing, for the window: "transcribing", "waiting for the game to close", ...
-    bool running;         // transcribing is possible now: our model is loaded, or an endpoint is set and allowed
-    bool missing;         // nothing to transcribe with: no endpoint, and whisper.cpp is not set up
     i32 queued;           // WAV files waiting in the spool folder
     f64 queued_secs;      // how much audio that is
     // Atomics (events.h): the GPU monitor writes the first two itself.
@@ -45,7 +43,6 @@ struct Worker {
     HANDLE gpu_free;      // manual-reset: set while our model is not on the GPU; the summary
                           // waits for it after setting summary_needs_gpu
     u64 lines_version;    // bumped each time lines are written, so the timeline reloads
-    f64 waiting_since;    // when transcription last had to stop and wait; 0 while it may run
     HANDLE done;          // set when the supervisor has stopped and freed the model
     HANDLE wake;          // auto-reset: something the supervisor waits on changed (worker_wake)
     Latest seen;          // the supervisor's newest status, for the main thread (events.h)

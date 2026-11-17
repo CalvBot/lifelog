@@ -14,8 +14,8 @@
 // tomorrow at 09:00?"); the journal's bell sets one too. The clock thread shows them on time, or
 // at the next start if the PC was off then.
 //
-// Every database call opens its own short-lived connection, as the old version did, so the
-// threads never share one.
+// The window's changes run on the database thread (db_post). The writer and the clock open
+// their own connection (db_open) for as long as they need it, so no two threads share one.
 
 static const char* TOAST_TAG = "summary";
 // About 4 000 tokens of transcript per request, leaving room for a month of earlier days (~1 500
@@ -2213,7 +2213,7 @@ static DWORD WINAPI summary_main(void* param) {
         HANDLE waits[2] = {app->stop, s->wake};
         DWORD got = WaitForMultipleObjects(2, waits, FALSE, ms);
         if (got == WAIT_OBJECT_0) break;
-        if (got == WAIT_OBJECT_0 + 1) next_tick = 0;  // the settings changed: look again now
+        if (got == WAIT_OBJECT_0 + 1) next_tick = 0;  // the settings changed or a reminder was set: look again now
     }
     return 0;
 }

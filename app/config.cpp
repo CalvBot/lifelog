@@ -48,11 +48,13 @@ games = []
 not_games = []
 
 [summary]
-# Each evening a notification asks whether the local AI may write the day's summary (it needs the
-# graphics card for a few minutes): write it now, in an hour, or skip today.
+# Each evening a notification says the local AI will write the day's summary in 5 minutes (it
+# needs the graphics card for a few minutes): start now, in an hour, delay until, or skip today.
 enabled = true
 ask_at = "21:00"
 max_words = 250
+# After a summary, offer each reminder that said when ("tomorrow at 5") as a notification.
+ask_reminders = true
 # The model file (<model>.gguf in the AI folder's llm). Its server runs only while a summary is written.
 model = "qwen3-14b"
 # Or use an AI you already run: any OpenAI-compatible endpoint, e.g. "http://127.0.0.1:11434/v1" for
@@ -85,6 +87,12 @@ cleanup = ""
 style = "vibes"
 # 0 to 100.
 volume = 60
+
+[ui]
+# Speakers hidden in the timeline (and left out of copies and playback).
+hidden = []
+# Show the lines of excluded apps.
+show_dismissed = false
 )toml";
 
 const char* mode_name(Mode m) {

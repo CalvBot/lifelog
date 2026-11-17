@@ -7,10 +7,10 @@ CREATE TABLE IF NOT EXISTS segments (
     end_ts   REAL NOT NULL,
     source   TEXT NOT NULL,   -- 'mic' | 'app'
     speaker  TEXT NOT NULL,   -- 'me' for the mic; exe name for apps until phase 2 adds real speakers
-    exe      TEXT,
+    exe      TEXT,            -- exe and pid: kept as a record; lifelog does not read them back
     pid      INTEGER,
     title    TEXT,            -- window title when the audio started
-    device   TEXT,            -- capture device name (mic only)
+    device   TEXT,            -- capture device name (mic only); a record, not read back
     text     TEXT NOT NULL,
     audio    TEXT,            -- the clip it came from, 'YYYY-MM-DD/<file>.wav' under <data_dir>/audio (kept capture.keep_audio_days)
     audio_offset REAL         -- seconds into that clip where the line starts
@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS summaries (
     created_ts REAL NOT NULL,
     model      TEXT,
     summary    TEXT,              -- markdown, as shown (made from summary_items)
-    reminders  TEXT               -- JSON array of {"time": "HH:MM", "text": "..."}, as the model wrote them
+    reminders  TEXT               -- JSON array of {"time": "HH:MM", "said": "...", "text": "...", "when": "YYYY-MM-DD HH:MM"},
+                                  -- as the model wrote them (summary_items is what is shown)
 );
 
 -- Each summary's lines and reminders, in order: what the journal shows, and what its buttons
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS summary_never (
     id         INTEGER PRIMARY KEY,
     topic      TEXT NOT NULL,
-    created_ts REAL NOT NULL
+    created_ts REAL NOT NULL   -- a record; not read back
 );
 
 CREATE TRIGGER IF NOT EXISTS segments_au AFTER UPDATE OF text ON segments BEGIN

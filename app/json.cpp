@@ -1,5 +1,5 @@
-// json.cpp: a text JSON reader and writer, for the summary AI's HTTP calls and the summaries'
-// reminders column. Parsed values live in the arena they are read into; a missing key or index
+// json.cpp: a text JSON reader and writer, for the AI's HTTP calls, the API and the reminders
+// the summary AI writes. Parsed values live in the arena they are read into; a missing key or index
 // reads as a zeroed (null) value, so lookups can be chained without checks.
 
 enum JsonType : u8 {

@@ -1,6 +1,7 @@
 // db.h: the database (lifelog.db under data_dir; schema.sql).
-// Each thread opens its own connection with db_open. The query functions put their results in
-// the arena they are given, so a whole day's lines are freed at once.
+// The window's requests run on the database thread (db_post); a thread with long work of its own
+// opens a connection with db_open. The query functions put their results in the arena they are
+// given, so a whole day's lines are freed at once.
 
 #pragma once
 

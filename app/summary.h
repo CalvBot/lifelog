@@ -1,6 +1,7 @@
 // summary.h: the daily summary and the reminders in it.
 //
-// At ask_at a notification asks whether to write today's summary (now, in an hour, later, skip).
+// At ask_at a notification says today's summary starts in 5 minutes (start now, in an hour,
+// delay until, skip today).
 // It is written by lifelog's own llama.cpp server (started only while it writes) or an
 // OpenAI-compatible endpoint. Reminders ("I'll call Sam tomorrow") are offered as notifications
 // and shown when due. Settings live in App.config.summary; the functions below change them there

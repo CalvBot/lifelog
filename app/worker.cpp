@@ -625,7 +625,9 @@ struct WorkerSeen {
     char state[256];
     i32 queued;
     f64 queued_secs;
-    bool running, missing, waiting, game;
+    bool running;  // transcribing is possible now: the model is loaded, or an endpoint is set and allowed
+    bool missing;  // nothing to transcribe with: no endpoint, and whisper.cpp is not set up
+    bool game;
 };
 
 // The main thread.
@@ -634,10 +636,6 @@ static void worker_seen_apply(App* app, Event* e) {
     WorkerSeen seen = latest_take<WorkerSeen>(e);
     w->queued = seen.queued;
     w->queued_secs = seen.queued_secs;
-    w->running = seen.running;
-    w->missing = seen.missing;
-    if (!seen.waiting) w->waiting_since = 0;
-    else if (!w->waiting_since) w->waiting_since = now_ts();
     Str game = strip_exe(str(app->apps.game_running));
     if (seen.game && game.len) {
         snprintf(w->state, sizeof(w->state), "waiting for %.*s to close", (int)game.len, game.ptr);
@@ -748,7 +746,6 @@ static DWORD WINAPI supervisor_thread(void* p) {
         }
         SET(seen.state, str(state));
         seen.game = strcmp(state, GAME_STATE) == 0;
-        seen.waiting = !want;
         seen.running = can;
         worker_post_seen(app, &seen, &last);
 
