@@ -20,9 +20,6 @@ const char* chime_label(Chime c);
 // Nothing when chimes are off.
 void chime_play(App* app, Chime c);
 
-// Plays `c` as `style` at `volume` (0-100), whatever is configured: Settings' previews.
-void chime_play_as(Chime c, ChimeStyle style, u32 volume);
-
 // Main thread: change and save the settings.
 void chime_set_style(App* app, ChimeStyle style);
 void chime_set_volume(App* app, u32 volume);

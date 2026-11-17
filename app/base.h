@@ -187,6 +187,12 @@ const wchar_t* exe_dir();
 // a thread with no message loop. False if it could not.
 bool shell_open(const wchar_t* file, const wchar_t* args);
 
+// The header of a 16-bit mono PCM WAV holding `data_bytes` of samples at `rate`. Every WAV lifelog
+// writes (spool, kept audio, copies, chimes) has exactly this header, so its samples start at
+// WAV_HEADER.
+static const i32 WAV_HEADER = 44;
+void wav_header(u8 out[WAV_HEADER], u32 rate, u32 data_bytes);
+
 // Whole files.
 Str read_file(Arena* a, const wchar_t* path);   // .ptr is null if it could not be read
 bool write_file(const wchar_t* path, Str data);

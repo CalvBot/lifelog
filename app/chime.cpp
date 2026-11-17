@@ -34,22 +34,13 @@ const char* chime_label(Chime c) {
 
 // The WAV PlaySound is playing from: it reads it while it plays, so it stays put until the next one.
 struct ChimeWav {
-    char riff[4];
-    u32 riff_size;
-    char wave[4];
-    char fmt[4];
-    u32 fmt_size;
-    u16 format, channels;
-    u32 rate, byte_rate;
-    u16 block_align, bits;
-    char data[4];
-    u32 data_size;
+    u8 header[WAV_HEADER];
     i16 samples[CHIME_MAX];
 };
 static ChimeWav g_chime_wav;
 static f32 g_chime_mix[CHIME_MAX];
 
-void chime_play_as(Chime c, ChimeStyle style, u32 volume) {
+static void chime_play_as(Chime c, ChimeStyle style, u32 volume) {
     if (c < 0 || c >= CHIME_COUNT || style == CHIME_OFF || volume == 0) return;
     if (volume > 100) volume = 100;
     PlaySoundW(0, 0, 0);  // stop the last one before its samples are written over
@@ -95,21 +86,8 @@ void chime_play_as(Chime c, ChimeStyle style, u32 volume) {
         g_chime_wav.samples[i] = (i16)(x * 32767);
     }
 
-    ChimeWav* w = &g_chime_wav;
-    memcpy(w->riff, "RIFF", 4);
-    memcpy(w->wave, "WAVE", 4);
-    memcpy(w->fmt, "fmt ", 4);
-    memcpy(w->data, "data", 4);
-    w->fmt_size = 16;
-    w->format = WAVE_FORMAT_PCM;
-    w->channels = 1;
-    w->rate = CHIME_RATE;
-    w->bits = 16;
-    w->block_align = 2;
-    w->byte_rate = CHIME_RATE * 2;
-    w->data_size = (u32)count * 2;
-    w->riff_size = 36 + w->data_size;
-    PlaySoundW((LPCWSTR)w, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    wav_header(g_chime_wav.header, CHIME_RATE, (u32)count * 2);
+    PlaySoundW((LPCWSTR)&g_chime_wav, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 }
 
 void chime_play(App* app, Chime c) { chime_play_as(c, app->config.chimes.style, app->config.chimes.volume); }

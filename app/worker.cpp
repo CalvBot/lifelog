@@ -120,7 +120,7 @@ static void count_queue(const wchar_t* spool, i32* files, f64* secs) {
         if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         u64 size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
         (*files)++;
-        if (size > 44) *secs += (f64)(size - 44) / 32000.0;
+        if (size > WAV_HEADER) *secs += (f64)(size - WAV_HEADER) / 32000.0;  // 16 kHz, 16-bit
     } while (FindNextFileW(h, &f));
     FindClose(h);
 }

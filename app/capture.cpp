@@ -122,7 +122,7 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
         return;
     }
     u32 data_len = (u32)seg->n * 2;
-    u8* wav = PUSH_ARRAY(a, u8, 44 + data_len);
+    u8* wav = PUSH_ARRAY(a, u8, WAV_HEADER + data_len);
     f32 gain = 1, peak = 0;
     for (i32 i = 0; i < seg->n; i++) peak = fabsf(seg->samples[i]) > peak ? fabsf(seg->samples[i]) : peak;
     f32 loud_rms = (f32)sqrt(seg->loud_sum / ((f64)seg->loud_blocks * BLOCK));
@@ -130,23 +130,18 @@ static void seg_write(Segmenter* seg, f64 end_ts) {
     if (gain > MAX_GAIN) gain = MAX_GAIN;
     if (peak > 0 && gain * peak > MAX_PEAK) gain = MAX_PEAK / peak;
     if (gain < 1) gain = 1;
-    u8* p = wav;
-    auto put = [&](const void* v, u32 len) { memcpy(p, v, len), p += len; };
-    u32 riff = 36 + data_len, fmt_len = 16, rate = RATE, bytes_per_sec = RATE * 2;
-    u16 pcm = 1, mono = 1, align = 2, bits = 16;
-    put("RIFF", 4), put(&riff, 4), put("WAVEfmt ", 8), put(&fmt_len, 4), put(&pcm, 2), put(&mono, 2);
-    put(&rate, 4), put(&bytes_per_sec, 4), put(&align, 2), put(&bits, 2), put("data", 4), put(&data_len, 4);
+    wav_header(wav, RATE, data_len);
+    i16* pcm = (i16*)(wav + WAV_HEADER);
     for (i32 i = 0; i < seg->n; i++) {
         f32 s = seg->samples[i] * gain;
         s = s < -1 ? -1 : s > 1 ? 1 : s;
-        i16 v = (i16)(s * 32767.0f);
-        put(&v, 2);
+        pcm[i] = (i16)(s * 32767.0f);
     }
     swprintf(part, MAX_PATH, L"%s.wav.part", stem);
     swprintf(path, MAX_PATH, L"%s.wav", stem);
     HANDLE f = CreateFileW(part, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
     DWORD wrote = 0;
-    bool ok = f != INVALID_HANDLE_VALUE && WriteFile(f, wav, 44 + data_len, &wrote, 0) && wrote == 44 + data_len;
+    bool ok = f != INVALID_HANDLE_VALUE && WriteFile(f, wav, WAV_HEADER + data_len, &wrote, 0) && wrote == WAV_HEADER + data_len;
     if (f != INVALID_HANDLE_VALUE) {
         FlushFileBuffers(f);
         CloseHandle(f);

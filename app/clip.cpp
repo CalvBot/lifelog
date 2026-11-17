@@ -60,7 +60,7 @@ static bool audio_file_path(const wchar_t* audio_dir, Str rel, wchar_t out[MAX_P
 }
 
 static bool is_worker_wav(Str wav) {
-    return wav.len >= 44 && memcmp(wav.ptr, "RIFF", 4) == 0 && memcmp(wav.ptr + 36, "data", 4) == 0;
+    return wav.len >= WAV_HEADER && memcmp(wav.ptr, "RIFF", 4) == 0 && memcmp(wav.ptr + 36, "data", 4) == 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -136,8 +136,8 @@ static bool mix_audio(sqlite3* db, const wchar_t* audio_dir, f64 from, f64 to, K
         if (!keeps(keep, speaker) || !audio_file_path(audio_dir, file, path)) continue;
         Str wav = read_file(&files, path);
         if (!wav.ptr || !is_worker_wav(wav)) continue;  // deleted after a week
-        const i16* pcm = (const i16*)(wav.ptr + 44);
-        i64 n = (wav.len - 44) / 2;
+        const i16* pcm = (const i16*)(wav.ptr + WAV_HEADER);
+        i64 n = (wav.len - WAV_HEADER) / 2;
         f64 end = start + (f64)n / AUDIO_RATE;
         f64 a = start > from ? start : from, b = end < to ? end : to;
         if (a >= b) continue;
@@ -254,7 +254,7 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
         else if (!(wav = read_file(scratch(), path)).ptr) snprintf(error, cap, "the audio was deleted (kept for a week)");
         else if (!is_worker_wav(wav)) snprintf(error, cap, "unexpected audio file");
         else {
-            i64 n = (wav.len - 44) / 2;
+            i64 n = (wav.len - WAV_HEADER) / 2;
             f64 a_secs = offset - 0.3, b_secs = offset + length + 0.4;
             i64 a = a_secs > 0 ? (i64)(a_secs * AUDIO_RATE) : 0;
             i64 b = b_secs > 0 ? (i64)(b_secs * AUDIO_RATE) : 0;
@@ -264,7 +264,7 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
             out->count = b - a;
             out->samples = (i16*)malloc((size_t)(out->count ? out->count : 1) * sizeof(i16));
             CHECK(out->samples, "memory for %lld samples of audio", out->count);
-            if (out->count) memcpy(out->samples, wav.ptr + 44 + a * 2, (size_t)out->count * 2);
+            if (out->count) memcpy(out->samples, wav.ptr + WAV_HEADER + a * 2, (size_t)out->count * 2);
             list_push(&out->jumps, {0.0, start_ts - 0.3});
             ok = true;
         }
@@ -280,27 +280,14 @@ static bool line_audio(sqlite3* db, const wchar_t* audio_dir, i64 id, Mix* out, 
 // 16 kHz mono 16-bit samples as a WAV file.
 static bool wav_write(const wchar_t* path, const i16* samples, i64 count) {
     u32 data = (u32)(count * 2);
-    u8 h[44];
-    u32 v;
-    u16 s;
-    memcpy(h, "RIFF", 4);
-    v = 36 + data;   memcpy(h + 4, &v, 4);
-    memcpy(h + 8, "WAVEfmt ", 8);
-    v = 16;          memcpy(h + 16, &v, 4);
-    s = 1;           memcpy(h + 20, &s, 2);  // PCM
-    s = 1;           memcpy(h + 22, &s, 2);  // mono
-    v = 16000;       memcpy(h + 24, &v, 4);
-    v = 32000;       memcpy(h + 28, &v, 4);
-    s = 2;           memcpy(h + 32, &s, 2);
-    s = 16;          memcpy(h + 34, &s, 2);
-    memcpy(h + 36, "data", 4);
-    memcpy(h + 40, &data, 4);
+    u8 h[WAV_HEADER];
+    wav_header(h, 16000, data);
     HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
     if (f == INVALID_HANDLE_VALUE) return false;
     DWORD wrote = 0, wrote2 = 0;
-    BOOL ok = WriteFile(f, h, 44, &wrote, 0) && WriteFile(f, samples, data, &wrote2, 0);
+    BOOL ok = WriteFile(f, h, WAV_HEADER, &wrote, 0) && WriteFile(f, samples, data, &wrote2, 0);
     CloseHandle(f);
-    return ok && wrote == 44 && wrote2 == data;
+    return ok && wrote == WAV_HEADER && wrote2 == data;
 }
 
 static void temp_path(Str name, wchar_t out[MAX_PATH]) {
