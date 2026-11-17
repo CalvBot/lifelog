@@ -462,7 +462,7 @@ static void folders_view(App* app, SettingsState* s) {
     // As tall as a full page of apps, so switching tabs never moves the card's edge.
     f32 full = APPS_PER_PAGE * (row_h + ImGui::GetStyle().ItemSpacing.y);
     f32 used = ImGui::GetCursorPosY() - rows_top;
-    if (used < full) ImGui::Dummy(ImVec2(0, full - used - ImGui::GetStyle().ItemSpacing.y));
+    if (used < full) ImGui::SetCursorPosY(rows_top + full);
     ImGui::BeginDisabled(g_picking);
     for (i32 k = 0; k < 2; k++) {
         if (k) ImGui::SameLine();
@@ -635,7 +635,7 @@ static void apps_card(App* app, SettingsState* s, f32 width) {
         // when there is one page), so switching tabs or pages never moves the card's edge.
         f32 full = APPS_PER_PAGE * (row_h + ImGui::GetStyle().ItemSpacing.y);
         f32 used = ImGui::GetCursorPosY() - rows_top;
-        if (used < full) ImGui::Dummy(ImVec2(0, full - used - ImGui::GetStyle().ItemSpacing.y));
+        if (used < full) ImGui::SetCursorPosY(rows_top + full);
         ImGui::BeginDisabled(s->page == 0);
         if (ImGui::Button(ICON_CHEVRON_LEFT "##prev")) { s->page--; s->stale = true; }
         ImGui::EndDisabled();
