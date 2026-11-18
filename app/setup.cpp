@@ -1,6 +1,6 @@
 // setup.cpp: see setup.h.
 
-// Pinned like scripts\get-llm.ps1; bump both together.
+// The llama.cpp and whisper.cpp releases Settings downloads; bump to update.
 static const wchar_t* LLAMA_BUILD = L"b11873";
 static const wchar_t* WHISPER_BUILD = L"b5454";
 static const wchar_t* WHISPER_ZIP = L"whisper-bin-win-cuda-12.4.0-x64.zip";

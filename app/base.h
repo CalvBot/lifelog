@@ -1,6 +1,6 @@
 // base.h: the few things every file uses. Types, CHECK, arenas, strings, lists, time and the log.
 //
-// The rules for the whole program (see SPEC.md):
+// The rules for the whole program:
 //   - plain structs and free functions; no classes with behaviour, no inheritance, no virtuals;
 //   - nothing is cleaned up in a destructor: memory comes from arenas, handles are closed by hand;
 //   - every struct is valid when zeroed (`Foo foo = {};`), so a missing value reads as zero;

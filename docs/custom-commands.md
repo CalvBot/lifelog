@@ -5,8 +5,6 @@ For example, "Jarvis, play Bad Guy" can go to a Spotify script, "Jarvis, downloa
 and "Jarvis, turn on my lights" to Home Assistant. lifelog knows nothing about those services; each one is a
 folder with a script in it.
 
-Status: step 1 (the core) works. Steps 1b to 4 are plans.
-
 To start, copy [commands/example](../commands/example) from this repo into `%APPDATA%\lifelog\commands\`, open
 Settings, and allow it. Then "lifelog, say hi to Sam" shows "Hello, Sam!" at the bottom right of the screen.
 
@@ -161,54 +159,3 @@ A "Custom commands" card lists each command. For each one it shows:
 
 Below the list are Open folder, Reload, and a box to type a sentence and see what it matches, with a button to
 run it.
-
-## Planned, step 1b: an AI for loose wording, and "that"
-
-Phrase matching cannot cope with everything:
-
-- "Jarvis, what's that song, it goes like... it's Bad Guy by Billie Eilish I think"
-- "...Living on a Prayer, that'd be a good one... Jarvis, can you play that song?"
-- "I need to take the pizza out in ten minutes. Jarvis, can you set an alarm for that?"
-
-When the wake word was said and no phrase matched, or the sentence says "that" or "it" where a slot should be,
-a small local AI picks the command instead. It gets:
-
-- the sentence;
-- the last two minutes of what you said into the mic, so "that" can be found;
-- the list of commands, built-in and custom, with each action's description and slots.
-
-It answers in JSON: which command, which action and which slots, or none. Its answer goes through the same path
-as a matched phrase, and the banner shows what it chose.
-
-The last two minutes come from the voice listener, which already runs every mic sentence through Whisper to
-look for the wake word. They are kept in memory only, never saved, and cleared in private mode.
-This works while the main transcription waits for the GPU. Only the local AI sees them.
-
-The AI is a small model (about 2 to 4 billion parameters) that runs on the processor, so it does not wait for
-the GPU while a game runs. It should answer in 2 to 5 seconds. The listening chime plays while it thinks.
-
-## Planned, step 2: "what's playing" and Home Assistant
-
-- Built in, with no script: "what's playing", for any player, through the Windows media controls. (Pause,
-  play, skip and previous are built in already, as media keys.)
-- A Home Assistant template sends the sentence to Home Assistant's own Assist API with a long-lived token. Home
-  Assistant then understands "turn on my lights", "set the bedroom to 20 degrees" and so on without a mapping.
-
-## Planned, step 3: Spotify
-
-- A one-time sign-in in the browser using Spotify's PKCE login flow. It needs a client ID from a free Spotify
-  developer app, but no client secret. The script keeps a refresh token in its `data_dir`.
-- "Play X" searches Spotify and plays the top track on this PC, starting Spotify first if it is not running.
-- "The song that goes X" searches Genius by lyrics (a free token), then plays the top match on Spotify.
-- Queue, like this song, what's playing, volume.
-- Playback control needs Spotify Premium.
-
-## Planned, step 4: Jellyfin downloads
-
-"Jarvis, download Iron Man":
-
-1. The script searches Jellyfin for the title, using a Jellyfin API key.
-2. If it is there: "Iron Man (2008) is already in Jellyfin".
-3. If not, it asks the downloader to queue the top match: "Queued Iron Man (2008)".
-
-This needs the downloader to have an API that takes a token. That is a separate piece of work on the server.
