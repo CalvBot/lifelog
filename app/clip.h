@@ -25,7 +25,7 @@ ClipResult clip_copy(AppLabels* labels, f64 from, f64 to, Names* exclude, ClipKi
                      const char* label = 0);
 // [from, to]'s lines as a clip's text, into `a`, with `lines` set to how many; "" with `error`
 // set if the database could not be read. Any thread but the main one.
-Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* error, i32 cap);
+Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* error, i32 cap, Names* exclude = 0);
 // The main thread: clip_copy on the pool, then `done(app, result, kind, ctx)` back on the main
 // thread. Takes `exclude` (freed after).
 typedef void ClipDone(App* app, ClipResult* r, ClipKind kind, i64 ctx);

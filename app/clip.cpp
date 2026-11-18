@@ -415,7 +415,7 @@ static i32 clip_lines(sqlite3* db, AppLabels* labels, f64 from, f64 to, Names* e
     return st ? lines.count : -1;
 }
 
-Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* error, i32 cap) {
+Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* error, i32 cap, Names* exclude) {
     *lines = 0;
     sqlite3* db = db_open_path(true);
     if (!db) {
@@ -423,7 +423,7 @@ Str clip_text(AppLabels* labels, Arena* a, f64 from, f64 to, i32* lines, char* e
         return {"", 0};
     }
     Buf text = {};
-    i32 count = clip_lines(db, labels, from, to, 0, &text);
+    i32 count = clip_lines(db, labels, from, to, exclude, &text);
     sqlite3_close(db);
     Str out = str_copy(a, {text.chars.items, text.chars.count});
     buf_free(&text);

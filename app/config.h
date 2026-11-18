@@ -99,6 +99,10 @@ struct Config {
         Names hidden;        // speakers hidden in the timeline (and left out of copies and playback)
         bool show_dismissed;  // show the lines of excluded apps
     } ui;
+
+    struct {
+        char reach[16];  // how far back `lifelog mcp` lets agents read: 15m, 1h, 7d, today; empty: all of it
+    } mcp;
 };
 
 const wchar_t* config_path();

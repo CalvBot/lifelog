@@ -26,10 +26,13 @@ static const char* MCP_TOOLS =
     "\"to\":{\"type\":\"string\",\"description\":\"YYYY-MM-DD HH:MM, local time; now when left out\"}}},"
     "\"annotations\":{\"readOnlyHint\":true}},"
     "{\"name\":\"search\",\"title\":\"Search the transcript\","
-    "\"description\":\"Lines that contain the words (the last word may be the start of one), newest first, with "
-    "their date and time. Use it to find when something was talked about, then transcript around that time.\","
+    "\"description\":\"Lines that have all of the words, in any order (the last word may be the start of one), "
+    "newest first, with their date and time. Give a few plain words, such as: song spotify. Use it to find when "
+    "something was talked about, then transcript around that time. from and to narrow it to a stretch.\","
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
-    "\"query\":{\"type\":\"string\"},"
+    "\"query\":{\"type\":\"string\",\"description\":\"words to look for\"},"
+    "\"from\":{\"type\":\"string\",\"description\":\"YYYY-MM-DD HH:MM, local time\"},"
+    "\"to\":{\"type\":\"string\",\"description\":\"YYYY-MM-DD HH:MM, local time\"},"
     "\"limit\":{\"type\":\"integer\",\"description\":\"most lines to return, 30 when left out, up to 200\"}},"
     "\"required\":[\"query\"]},"
     "\"annotations\":{\"readOnlyHint\":true}},"
@@ -93,6 +96,25 @@ static bool mcp_time(Str s, f64* out) {
     return true;
 }
 
+// What the user lets agents see: lines from `earliest` on (0: all of them), and not the speakers
+// hidden in the timeline. A reach that does not parse shares nothing rather than everything.
+struct McpReach {
+    f64 earliest;
+    Names* hidden;
+};
+
+static McpReach mcp_reach() {
+    McpReach r = {0, &g_cli.config.ui.hidden};
+    const char* reach = g_cli.config.mcp.reach;
+    if (reach[0] && !clip_range(str(reach), now_ts(), &r.earliest)) r.earliest = now_ts();
+    return r;
+}
+
+// The note an answer carries when the reach cut some of it off.
+static Str mcp_reach_note(Arena* a) {
+    return str_fmt(a, "(lifelog shares only the last %s with agents; older lines are not shown)", g_cli.config.mcp.reach);
+}
+
 // Names for the people in calls. The Discord plugin gives each one a stream of their own, named
 // "discord-<user>-<id>.exe"; the window names them from its app list, which this program does not
 // have, so they are named "<user>" from that here.
@@ -139,12 +161,20 @@ static void mcp_transcript(const Json* args, Arena* a, Buf* result) {
     } else if (!clip_range(range.len ? range : str("15m"), now, &from)) {
         return mcp_text(result, str("range must look like 15m, 1h, 90s, 2d or today"), true);
     }
+    McpReach reach = mcp_reach();
+    bool reached = from < reach.earliest;
+    if (reached) from = reach.earliest;
+    if (to <= from) return mcp_text(result, mcp_reach_note(a), false);
     char error[256] = {};
     i32 lines = 0;
     AppLabels labels = mcp_labels(a);
-    Str text = clip_text(&labels, a, from, to, &lines, error, sizeof(error));
+    Str text = clip_text(&labels, a, from, to, &lines, error, sizeof(error), reach.hidden);
     if (error[0]) return mcp_text(result, str(error), true);
-    if (!lines) return mcp_text(result, str_fmt(a, "%.*s(nothing was heard then)", (int)text.len, text.ptr), false);
+    if (!lines) {
+        Str note = reached ? mcp_reach_note(a) : Str{"", 0};
+        return mcp_text(result, str_fmt(a, "%.*s%s%.*s(nothing was heard then)", (int)note.len, note.ptr, note.len ? "\n" : "",
+                                        (int)text.len, text.ptr), false);
+    }
     if (text.len > MCP_MOST) {
         // Keep the heading line and the latest lines, from the start of a line.
         i64 head = 0;
@@ -153,6 +183,10 @@ static void mcp_transcript(const Json* args, Arena* a, Buf* result) {
         while (cut < text.len && text.ptr[cut] != '\n') cut++;
         text = str_fmt(a, "%.*s\n(earlier lines left out: ask for a shorter stretch to see them)\n%.*s", (int)head, text.ptr,
                        (int)(text.len - cut - 1), text.ptr + cut + 1);
+    }
+    if (reached) {
+        Str note = mcp_reach_note(a);
+        text = str_fmt(a, "%.*s\n%.*s", (int)note.len, note.ptr, (int)text.len, text.ptr);
     }
     mcp_text(result, text, false);
 }
@@ -164,12 +198,54 @@ static void mcp_search(const Json* args, Arena* a, Buf* result) {
     if (limit < 1) limit = 1;
     if (limit > 200) limit = 200;
     if (!query.len) return mcp_text(result, str("say what to search for"), true);
+    f64 from = 0, to = now_ts();
+    Str from_s = json_text(json_get(args, "from")), to_s = json_text(json_get(args, "to"));
+    if (from_s.len && !mcp_time(from_s, &from)) return mcp_text(result, str("from must look like 2026-11-18 13:54"), true);
+    if (to_s.len && !mcp_time(to_s, &to)) return mcp_text(result, str("to must look like 2026-11-18 14:10"), true);
+    McpReach reach = mcp_reach();
+    bool cut = from < reach.earliest;
+    if (cut) from = reach.earliest;
+
+    // Each word quoted (so nothing typed is read as query syntax) and all of them required, in any
+    // order; the last one may be the start of a word.
+    Buf match = {};
+    i32 words = 0;
+    for (i64 i = 0; i < query.len;) {
+        while (i < query.len && !(isalnum((u8)query.ptr[i]) || (u8)query.ptr[i] >= 0x80)) i++;
+        i64 start = i;
+        while (i < query.len && (isalnum((u8)query.ptr[i]) || (u8)query.ptr[i] >= 0x80)) i++;
+        if (i == start) break;
+        buf_fmt(&match, "%s\"%.*s\"", words++ ? " " : "", (int)(i - start), query.ptr + start);
+    }
+    if (!words) return mcp_text(result, str("say what to search for, in words"), true);
+    buf_cstr(&match, " *");
     sqlite3* db = db_open_path(true);
-    if (!db) return mcp_text(result, str("could not open the database"), true);
-    Slice<Line> found = db_search(db, a, query, limit);
+    if (!db) {
+        buf_free(&match);
+        return mcp_text(result, str("could not open the database"), true);
+    }
+    sqlite3_stmt* st = prepare(db, "SELECT " LINE_COLUMNS " FROM segments_fts f JOIN segments s ON s.id = f.rowid "
+                                   "WHERE segments_fts MATCH ?1 AND s.start_ts >= ?2 AND s.start_ts <= ?3 "
+                                   "ORDER BY s.start_ts DESC LIMIT 5000");
+    Slice<Line> all = {};
+    if (st) {
+        sqlite3_bind_text(st, 1, match.chars.items, (int)match.chars.count, SQLITE_TRANSIENT);
+        sqlite3_bind_double(st, 2, from);
+        sqlite3_bind_double(st, 3, to);
+        all = read_lines(st, a, 5000);
+    }
     sqlite3_close(db);
+    buf_free(&match);
+    if (!st) return mcp_text(result, str("could not read the database"), true);
+    Slice<Line> found = {PUSH_ARRAY(a, Line, all.count), 0};
+    for (i32 i = 0; i < all.count && found.count < limit; i++)
+        if (!names_has(reach.hidden, all.items[i].speaker)) found.items[found.count++] = all.items[i];
     AppLabels labels = mcp_labels(a);
     Buf t = {};
+    if (cut) {
+        Str note = mcp_reach_note(a);
+        buf_fmt(&t, "%.*s\n", (int)note.len, note.ptr);
+    }
     for (i32 i = 0; i < found.count; i++) {
         Line* l = &found.items[i];
         LocalTime lt = local_time(l->start_ts);
@@ -180,7 +256,7 @@ static void mcp_search(const Json* args, Arena* a, Buf* result) {
         if (l->source != SOURCE_MIC && l->title.len) buf_fmt(&t, " (%.*s)", (int)l->title.len, l->title.ptr);
         buf_fmt(&t, ": %.*s\n", (int)text.len, text.ptr);
     }
-    if (!found.count) buf_cstr(&t, "(no lines have those words)");
+    if (!found.count) buf_cstr(&t, "(no lines have all of those words)");
     mcp_text(result, {t.chars.items, t.chars.count}, false);
     buf_free(&t);
 }
@@ -192,6 +268,12 @@ static void mcp_summary(const Json* args, Arena* a, Buf* result) {
     else day_of(now_ts() - 86400, day);
     i32 y, m, d;
     if (!parse_day(day, &y, &m, &d)) return mcp_text(result, str("day must look like 2026-11-18"), true);
+    // A summary tells of its whole day, so it is shared only when all of the day is within reach.
+    f64 day_from = 0, day_to = 0;
+    day_bounds(day, &day_from, &day_to);
+    if (day_from < mcp_reach().earliest)
+        return mcp_text(result, str_fmt(a, "lifelog shares only the last %s with agents, so not the summary of %s",
+                                        g_cli.config.mcp.reach, day), false);
     sqlite3* db = db_open_path(true);
     if (!db) return mcp_text(result, str("could not open the database"), true);
     sqlite3_stmt* st = prepare(db, "SELECT status, summary FROM summaries WHERE day = ?1");
@@ -236,7 +318,10 @@ static void mcp_handle(Str line, Arena* a) {
         buf_cstr(&result, ",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"lifelog\",\"title\":\"lifelog\","
                           "\"version\":\"1\"},\"instructions\":\"lifelog is an always-on transcript of this computer: "
                           "the user's mic (speaker 'me') and the apps and calls it hears. Use search to find when something "
-                          "was said, and transcript to read around it. Times are the computer's local time.\"}");
+                          "was said, and transcript to read around it. Times are the computer's local time.");
+        if (g_cli.config.mcp.reach[0])
+            buf_fmt(&result, " The user shares only the last %s with agents.", g_cli.config.mcp.reach);
+        buf_cstr(&result, "\"}");
     } else if (str_eq(method, str("ping"))) {
         buf_cstr(&result, "{}");
     } else if (str_eq(method, str("tools/list"))) {

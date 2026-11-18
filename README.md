@@ -88,9 +88,13 @@ claude mcp add lifelog -- "C:\Program Files\lifelog\lifelog.exe" mcp
 It has four tools, and all of them only read:
 
 - `transcript`: the lines of the last stretch (`15m`, `1h`, `today`), of a day, or between two times.
-- `search`: the lines that contain some words, newest first.
+- `search`: the lines that have all of some words, in any order, newest first, optionally between two times.
 - `summary`: a day's summary.
 - `status`: what the running lifelog is doing.
+
+To limit what agents can read, set `reach` under `[mcp]` in `config.toml`, such as `reach = "15m"` for only the
+last 15 minutes (or `1h`, `7d`, `today`). The server enforces it: older lines and the summaries of older days are
+not shared, whatever the agent asks for. Speakers hidden in the timeline are never shared.
 
 It reads the database directly, so it works while lifelog is closed, except for `status`. It opens no network
 port; only the agent that started it can use it. An agent with a cloud model sends what it reads to that

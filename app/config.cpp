@@ -115,6 +115,11 @@ disabled = []
 hidden = []
 # Show the lines of excluded apps.
 show_dismissed = false
+
+[mcp]
+# How far back AI agents may read through `lifelog mcp`: "15m", "1h", "7d", "today", or "" for all
+# of it. Speakers hidden in the timeline are left out too.
+reach = ""
 )toml";
 
 const char* mode_name(Mode m) {
@@ -451,6 +456,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
         } else if (str_eq(tb, str("ui"))) {
             if (str_eq(k, str("hidden"))) take_names(&cfg->ui.hidden, &v);
             if (str_eq(k, str("show_dismissed"))) take_bool(&cfg->ui.show_dismissed, &v);
+        } else if (str_eq(tb, str("mcp"))) {
+            if (str_eq(k, str("reach"))) take_string(cfg->mcp.reach, sizeof(cfg->mcp.reach), &v);
         }
         list_free(&v.array);
     }
