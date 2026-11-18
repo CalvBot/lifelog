@@ -371,6 +371,17 @@ bool clipboard_set_text(Str text) {
 // ---------------------------------------------------------------------------------------------
 // Copying
 
+// One transcript line, "[stamp] who (title): text", as clips and the MCP server write them. The
+// title is only given for apps.
+static void line_format(Buf* t, const char* stamp, Str who, const Line* l) {
+    Str text = str_trim(l->text);
+    if (l->source != SOURCE_MIC && l->title.len)
+        buf_fmt(t, "[%s] %.*s (%.*s): %.*s\n", stamp, (int)who.len, who.ptr, (int)l->title.len, l->title.ptr, (int)text.len,
+                 text.ptr);
+    else
+        buf_fmt(t, "[%s] %.*s: %.*s\n", stamp, (int)who.len, who.ptr, (int)text.len, text.ptr);
+}
+
 // The text of a clip: a header, then one line per transcribed line.
 static void clip_format(Buf* t, Slice<Line> lines, f64 from, f64 to) {
     LocalTime a = local_time(from), b = local_time(to);
@@ -383,12 +394,7 @@ static void clip_format(Buf* t, Slice<Line> lines, f64 from, f64 to) {
         char stamp[32];
         if (many_days) snprintf(stamp, sizeof(stamp), "%02d-%02d %02d:%02d:%02d", t0.month, t0.day, t0.hour, t0.minute, t0.second);
         else snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d", t0.hour, t0.minute, t0.second);
-        Str text = str_trim(l->text);
-        if (l->source != SOURCE_MIC && l->title.len)
-            buf_fmt(t, "[%s] %.*s (%.*s): %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)l->title.len,
-                     l->title.ptr, (int)text.len, text.ptr);
-        else
-            buf_fmt(t, "[%s] %.*s: %.*s\n", stamp, (int)l->speaker.len, l->speaker.ptr, (int)text.len, text.ptr);
+        line_format(t, stamp, l->speaker, l);
     }
 }
 

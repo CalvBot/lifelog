@@ -365,15 +365,6 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
         return cli_commands(has_arg ? args[1] : str(""), argc > 3 ? args[2] : str(""), argc > 4 ? args[3] : str(""));
     if (str_eq(cmd, str("command"))) return cli_command(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("mcp"))) return cli_mcp();
-    // For developers: shows the voice banner for its 2.5 s, as a command that worked would.
-    if (str_eq(cmd, str("banner"))) {
-        if (!cli_config(&g_cli.config)) return 1;
-        char who[64];
-        banner_who(&g_cli.config, who);
-        banner_show(who, has_arg ? args[1].ptr : "Alarm set: 4 minutes");
-        Sleep((DWORD)(BANNER_MS + BANNER_FADE_MS + 200));
-        return 0;
-    }
     if (str_eq(cmd, str("icon"))) return cli_icon(has_arg ? args[1] : str(""));
     if (str_eq(cmd, str("config"))) {
         if (!cli_config(&g_cli.config)) return 1;

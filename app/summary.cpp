@@ -1377,6 +1377,21 @@ static void edit_answer(sqlite3* db, SummaryEdit* e) {
     }
 }
 
+// A reminder that is set: due at `due`, from summary item `item` (0 for a voice command's, which
+// has none). The caller runs it with sql_done. Null if it could not be prepared.
+static sqlite3_stmt* alert_insert(sqlite3* db, Str day, Str text, Str said, Str said_time, f64 due, i64 item) {
+    sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'set', ?6)");
+    if (!st) return 0;
+    bind_str(st, 1, day);
+    bind_str(st, 2, text);
+    bind_str(st, 3, said);
+    bind_str(st, 4, said_time);
+    sqlite3_bind_double(st, 5, due);
+    if (item) sqlite3_bind_int64(st, 6, item);
+    else sqlite3_bind_null(st, 6);
+    return st;
+}
+
 static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
     const char* day = e->day;
     sqlite3_stmt* st = prepare(db, "SELECT text, said, said_time, COALESCE(due_ts, 0) FROM summary_items "
@@ -1426,15 +1441,7 @@ static void edit_remind(sqlite3* db, Arena* a, SummaryEdit* e) {
             sqlite3_bind_int64(st, 3, e->id);
         }
     } else {
-        st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'set', ?6)");
-        if (st) {
-            bind_str(st, 1, str(day));
-            bind_str(st, 2, text);
-            bind_str(st, 3, said);
-            bind_str(st, 4, said_time);
-            sqlite3_bind_double(st, 5, due);
-            sqlite3_bind_int64(st, 6, e->id);
-        }
+        st = alert_insert(db, str(day), text, said, said_time, due, e->id);
     }
     if (sql_done(db, st) < 0) {
         e->outcome = EDIT_FAILED;
@@ -2280,14 +2287,7 @@ bool reminder_add(App* app, Str text, Str said, f64 due, char* error, i32 cap) {
     LocalTime t = local_time(now);
     char said_time[8];
     snprintf(said_time, sizeof(said_time), "%02d:%02d", t.hour, t.minute);
-    sqlite3_stmt* st = prepare(db, "INSERT INTO alerts (day, text, said, said_time, due_ts, state, item) VALUES (?1, ?2, ?3, ?4, ?5, 'set', NULL)");
-    if (st) {
-        bind_str(st, 1, str(day));
-        bind_str(st, 2, text);
-        bind_str(st, 3, said);
-        bind_str(st, 4, str(said_time));
-        sqlite3_bind_double(st, 5, due);
-    }
+    sqlite3_stmt* st = alert_insert(db, str(day), text, said, str(said_time), due, 0);
     bool ok = sql_done(db, st) > 0;
     sqlite3_close(db);
     if (!ok) {

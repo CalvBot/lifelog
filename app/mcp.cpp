@@ -248,12 +248,9 @@ static void mcp_search(const Json* args, Arena* a, Buf* result) {
     for (i32 i = 0; i < found.count; i++) {
         Line* l = &found.items[i];
         LocalTime lt = local_time(l->start_ts);
-        Str text = str_trim(l->text);
-        Str who = label_of(&labels, l->speaker);
-        buf_fmt(&t, "[%04d-%02d-%02d %02d:%02d:%02d] %.*s", lt.year, lt.month, lt.day, lt.hour, lt.minute, lt.second, (int)who.len,
-                who.ptr);
-        if (l->source != SOURCE_MIC && l->title.len) buf_fmt(&t, " (%.*s)", (int)l->title.len, l->title.ptr);
-        buf_fmt(&t, ": %.*s\n", (int)text.len, text.ptr);
+        char stamp[32];
+        snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d:%02d", lt.year, lt.month, lt.day, lt.hour, lt.minute, lt.second);
+        line_format(&t, stamp, label_of(&labels, l->speaker), l);
     }
     if (!found.count) buf_cstr(&t, "(no lines have all of those words)");
     mcp_text(result, {t.chars.items, t.chars.count}, false);
