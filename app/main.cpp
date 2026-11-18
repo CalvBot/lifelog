@@ -2,8 +2,11 @@
 //
 // The main thread owns every window: the tray icon's hidden window, the main window while it is
 // open, and the tray menu. Each window that shows ImGui is a Surface with its own ImGui context
-// and swap chain; they share one D3D11 device. A Surface draws only when something happened:
-// input, a wake_window() from another thread, or a frame ui.cpp asked for (an animation).
+// and swap chain. The shared renderer and fonts live from startup until app exit, including
+// --tray: closing every window retains the font data and cached atlas pixels for later windows.
+// A Surface draws only for input, a wake_window() from another thread, or a frame ui.cpp requests.
+
+#include "vendor/imgui/imgui_internal.h"
 
 static App g_app;
 
@@ -108,6 +111,9 @@ struct Gpu {
     ID3D11Device* device;
     ID3D11DeviceContext* context;
     IDXGIFactory2* factory;
+    ImGuiContext* imgui;
+    ImFont* bold;
+    i32 font_frame;
 };
 static Gpu g_gpu;
 
@@ -123,18 +129,6 @@ struct Surface {
 static Surface g_main;
 static Surface g_popup;
 
-static void gpu_init() {
-    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
-    HRESULT hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
-                                   &g_gpu.device, 0, &g_gpu.context);
-    if (FAILED(hr))  // no GPU driver (a VM, a remote desktop): software rendering still works
-        hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_WARP, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
-                               &g_gpu.device, 0, &g_gpu.context);
-    CHECK(SUCCEEDED(hr), "a Direct3D 11 device (0x%08lx)", (unsigned long)hr);
-    hr = CreateDXGIFactory1(__uuidof(IDXGIFactory2), (void**)&g_gpu.factory);
-    CHECK(SUCCEEDED(hr), "a DXGI factory (0x%08lx)", (unsigned long)hr);
-}
-
 static void surface_make_target(Surface* s) {
     ID3D11Texture2D* back = 0;
     s->swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back);
@@ -143,9 +137,8 @@ static void surface_make_target(Surface* s) {
     back->Release();
 }
 
-static void load_fonts(f32 scale) {
+static void load_fonts() {
     ImGuiIO& io = ImGui::GetIO();
-    io.Fonts->Clear();
     wchar_t fonts[MAX_PATH];
     GetWindowsDirectoryW(fonts, MAX_PATH);
     Mark m = mark(scratch());
@@ -163,10 +156,50 @@ static void load_fonts(f32 scale) {
         io.Fonts->AddFontFromFileTTF(icons.ptr, 16.0f, &cfg);
     }
     Str bold = str_fmt(scratch(), "%.*s\\Fonts\\seguisb.ttf", (int)segoe.len, segoe.ptr);
-    // The second font, where ui_common.cpp's bold_font() finds it.
-    if (font && GetFileAttributesA(bold.ptr) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(bold.ptr, 16.0f);
+    if (font && GetFileAttributesA(bold.ptr) != INVALID_FILE_ATTRIBUTES) {
+        g_gpu.bold = io.Fonts->AddFontFromFileTTF(bold.ptr, 16.0f);
+    }
     rewind(m);
-    ImGui::GetStyle().FontScaleDpi = scale;
+}
+
+static ImFont* bold_font() {
+    return g_gpu.bold;
+}
+
+static void gpu_init() {
+    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
+    HRESULT hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
+                                 &g_gpu.device, 0, &g_gpu.context);
+    if (FAILED(hr)) {
+        hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_WARP, 0, 0, levels, COUNT(levels), D3D11_SDK_VERSION,
+                               &g_gpu.device, 0, &g_gpu.context);
+    }
+    CHECK(SUCCEEDED(hr), "a Direct3D 11 device (0x%08lx)", (unsigned long)hr);
+    hr = CreateDXGIFactory1(__uuidof(IDXGIFactory2), (void**)&g_gpu.factory);
+    CHECK(SUCCEEDED(hr), "a DXGI factory (0x%08lx)", (unsigned long)hr);
+
+    g_gpu.imgui = ImGui::CreateContext();
+    ImGui::SetCurrentContext(g_gpu.imgui);
+    ImGui::GetIO().IniFilename = 0;
+    ImGui_ImplDX11_Init(g_gpu.device, g_gpu.context);
+    load_fonts();
+}
+
+static void gpu_shutdown() {
+    ImGui::SetCurrentContext(g_gpu.imgui);
+    ImFontAtlas* fonts = ImGui::GetIO().Fonts;
+    CHECK(fonts->RefCount == 1, "all window contexts closed before the renderer");
+
+    // the renderer doesnt builds UI frames, so supply the atlas's complete
+    // texture list for backend teardown, including textures awaiting their first upload
+    ImGui::GetPlatformIO().Textures = fonts->TexList;
+    ImGui_ImplDX11_Shutdown();
+    ImGui::DestroyContext(g_gpu.imgui);
+    g_gpu.context->ClearState();
+    g_gpu.factory->Release();
+    g_gpu.context->Release();
+    g_gpu.device->Release();
+    g_gpu = {};
 }
 
 // Whether Windows' apps are set to dark (Settings > Personalisation > Colours).
@@ -180,6 +213,7 @@ static bool system_dark() {
 static void style_init(f32 scale) {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();
+
     bool dark = system_dark();
     if (dark) ImGui::StyleColorsDark(&st);
     else ImGui::StyleColorsLight(&st);
@@ -195,6 +229,7 @@ static void style_init(f32 scale) {
     st.WindowBorderSize = 0;
     ImVec4 accent = ImVec4(0 / 255.0f, 120 / 255.0f, 212 / 255.0f, 1);
     ImVec4* c = st.Colors;
+
     if (dark) {
         c[ImGuiCol_WindowBg] = ImVec4(0.11f, 0.11f, 0.11f, 1);
         c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
@@ -234,6 +269,7 @@ static void style_init(f32 scale) {
     c[ImGuiCol_TextLink] = accent;
     c[ImGuiCol_NavCursor] = accent;
     st.ScaleAllSizes(scale);
+    st.FontScaleDpi = scale;
 }
 
 // A texture from 32-bit RGBA pixels, for app icons and image previews (ui_common.cpp).
@@ -247,12 +283,14 @@ static ID3D11ShaderResourceView* texture_from_rgba(const u8* rgba, i32 w, i32 h)
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_IMMUTABLE;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
     D3D11_SUBRESOURCE_DATA data = {rgba, (UINT)w * 4, 0};
     ID3D11Texture2D* tex = 0;
     if (FAILED(g_gpu.device->CreateTexture2D(&desc, &data, &tex))) return 0;
     ID3D11ShaderResourceView* view = 0;
     g_gpu.device->CreateShaderResourceView(tex, 0, &view);
     tex->Release();
+    
     return view;
 }
 
@@ -312,12 +350,18 @@ static void layer_blend(const ImDrawList*, const ImDrawCmd*) {
 
 // Renders the rows the timeline drew this frame into its layer. After ImGui::Render, so the glyphs
 // they use are in the font texture: those are uploaded first.
-static void layer_render(ImDrawData* frame) {
+static void layer_render(ImDrawData* frame, ImGuiContext* window_context) {
     TlLayer* l = &g_tl_layer;
-    if (!l->pending || l->ctx != ImGui::GetCurrentContext() || !l->target) return;
-    if (frame->Textures)
-        for (ImTextureData* tex : *frame->Textures)
-            if (tex->Status != ImTextureStatus_OK) ImGui_ImplDX11_UpdateTexture(tex);
+    if (!l->pending || l->ctx != window_context || !l->target) {
+        return;
+    }
+    if (frame->Textures) {
+        for (ImTextureData* tex : *frame->Textures) {
+            if (tex->Status != ImTextureStatus_OK) {
+                ImGui_ImplDX11_UpdateTexture(tex);
+            }
+        }
+    }
     ImDrawData dd;
     dd.Valid = true;
     dd.CmdLists.push_back(l->pending);
@@ -368,28 +412,45 @@ static bool surface_open(Surface* s, const wchar_t* title, DWORD style, DWORD ex
     g_gpu.factory->MakeWindowAssociation(s->hwnd, DXGI_MWA_NO_ALT_ENTER);
     surface_make_target(s);
 
-    s->imgui = ImGui::CreateContext();
+    s->imgui = ImGui::CreateContext(g_gpu.imgui->IO.Fonts);
     ImGui::SetCurrentContext(s->imgui);
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = 0;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // ImGui has to build commands for the shared backends texture updates and vertex offsets
+    io.BackendFlags |= g_gpu.imgui->IO.BackendFlags;
+    ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
+    const ImGuiPlatformIO& renderer_platform = g_gpu.imgui->PlatformIO;
+
+    // the timeline changes blending for its cached layer, then requests a state reset
+    // ImGui resolves that reset marker in the window context; without this callback DX11
+    // would try to call the marker as a function pointer @robustness
+    platform.DrawCallback_ResetRenderState = renderer_platform.DrawCallback_ResetRenderState;
+
+    // Window draw lists use these backend callbacks to request linear or nearest texture filtering
+    platform.DrawCallback_SetSamplerLinear = renderer_platform.DrawCallback_SetSamplerLinear;
+    platform.DrawCallback_SetSamplerNearest = renderer_platform.DrawCallback_SetSamplerNearest;
     s->dpi_scale = ImGui_ImplWin32_GetDpiScaleForHwnd(s->hwnd);
     style_init(s->dpi_scale);
-    load_fonts(s->dpi_scale);
     ImGui_ImplWin32_Init(s->hwnd);
-    ImGui_ImplDX11_Init(g_gpu.device, g_gpu.context);
     s->frames_wanted = 3;
     return true;
 }
 
 static void surface_close(Surface* s) {
-    if (!s->hwnd) return;
+    if (!s->hwnd) {
+        return;
+    }
     ImGui::SetCurrentContext(s->imgui);
-    ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(s->imgui);
-    if (s->target) s->target->Release();
-    if (s->swap) s->swap->Release();
+    if (s->target) {
+        s->target->Release();
+    }
+    if (s->swap) {
+        s->swap->Release();
+    }
     HWND hwnd = s->hwnd;
     *s = {};
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -399,27 +460,41 @@ static void surface_close(Surface* s) {
 // Draws one frame of `s`; `draw` is ui.cpp's function for it. Returns false when the surface
 // asked to close.
 static bool surface_draw(Surface* s, bool (*draw)(App*, f32* next_frame_ms)) {
-    ImGui::SetCurrentContext(s->imgui);
+    g_busy++;
+    ImGui::SetCurrentContext(g_gpu.imgui);
     ImGui_ImplDX11_NewFrame();
+
+    // Use one atlas frame counter because the window contexts advance independently
+    ImGuiIO& renderer_io = ImGui::GetIO();
+    bool renderer_has_textures =
+        (renderer_io.BackendFlags & ImGuiBackendFlags_RendererHasTextures) != 0;
+    g_gpu.font_frame++;
+    ImFontAtlasUpdateNewFrame(renderer_io.Fonts, g_gpu.font_frame, renderer_has_textures);
+    ImGui::SetCurrentContext(s->imgui);
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     f32 next_ms = -1;
-    g_busy++;
     bool keep = draw(&g_app, &next_ms);
-    g_busy--;
 
     ImGui::Render();
-    layer_render(ImGui::GetDrawData());
+    ImDrawData* frame = ImGui::GetDrawData();
     ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
     f32 clear[4] = {bg.x, bg.y, bg.z, 1};
+    ImGui::SetCurrentContext(g_gpu.imgui);
+    layer_render(frame, s->imgui);
     g_gpu.context->OMSetRenderTargets(1, &s->target, 0);
     g_gpu.context->ClearRenderTargetView(s->target, clear);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    ImGui_ImplDX11_RenderDrawData(frame);
     s->swap->Present(1, 0);
+    ImGui::SetCurrentContext(s->imgui);
 
-    if (next_ms == 0) s->frames_wanted = 2;
-    else if (next_ms > 0) SetTimer(s->hwnd, REDRAW_TIMER, (UINT)next_ms, 0);
+    if (next_ms == 0) {
+        s->frames_wanted = 2;
+    } else if (next_ms > 0) {
+        SetTimer(s->hwnd, REDRAW_TIMER, (UINT)next_ms, 0);
+    }
+    g_busy--;
     return keep;
 }
 
@@ -463,7 +538,6 @@ static LRESULT CALLBACK surface_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_DPICHANGED: {
         s->dpi_scale = HIWORD(wp) / 96.0f;
         style_init(s->dpi_scale);
-        load_fonts(s->dpi_scale);
         RECT* r = (RECT*)lp;
         SetWindowPos(hwnd, 0, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
         s->frames_wanted = 2;
@@ -776,6 +850,9 @@ static i32 run_app() {
             CloseHandle(pi.hProcess);
         }
     }
+
+    // renderer teardown can fail a CHECK, so finish persistence and the restart handoff first
+    gpu_shutdown();
     return 0;
 }
 
