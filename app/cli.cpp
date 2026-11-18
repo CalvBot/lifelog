@@ -25,9 +25,12 @@ static const char* CLI_USAGE =
     "  lifelog voice \"TEXT\"    what a voice command would do with TEXT, without doing it\n"
     "  lifelog commands [allow ID]   list the custom voice commands, or allow one to run\n"
     "  lifelog commands secret ID KEY   save a command's secret, typed or piped in (empty removes it)\n"
-    "  lifelog command \"TEXT\"  run the custom command TEXT matches (TEXT without the wake word)\n";
+    "  lifelog command \"TEXT\"  run the custom command TEXT matches (TEXT without the wake word)\n"
+    "  lifelog mcp             an MCP server on stdin/stdout, for AI agents to read the transcript\n"
+    "                          (claude mcp add lifelog -- <path to lifelog.exe> mcp)\n";
 
 static i32 run_app();  // main.cpp, after this file in the unity build
+static i32 cli_mcp();  // mcp.cpp, after this file
 static bool single_instance();  // main.cpp
 
 // The App for commands that work without the running copy (clip, check-ai): only its config.
@@ -361,6 +364,7 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     if (str_eq(cmd, str("commands")))
         return cli_commands(has_arg ? args[1] : str(""), argc > 3 ? args[2] : str(""), argc > 4 ? args[3] : str(""));
     if (str_eq(cmd, str("command"))) return cli_command(has_arg ? args[1] : str(""));
+    if (str_eq(cmd, str("mcp"))) return cli_mcp();
     // For developers: shows the voice banner for its 2.5 s, as a command that worked would.
     if (str_eq(cmd, str("banner"))) {
         if (!cli_config(&g_cli.config)) return 1;

@@ -98,8 +98,48 @@ The script prints one JSON line as its last line of output:
 - `ok: false` plays the error chime and shows `message` in Settings beside the last command.
 - A script that prints no JSON line counts as `ok` when it exits with code 0. The last line it printed is used
   as the message.
-- A script has 20 seconds. After that it is stopped, along with anything it started.
+- A script has 20 seconds. After that it is stopped, along with anything it started. To start something that
+  keeps running after the script ends, start it with the `CREATE_BREAKAWAY_FROM_JOB` flag (see the next section).
 - Python scripts run with `PYTHONUTF8=1`, so standard input and output are UTF-8.
+
+## Handing a request to an AI agent
+
+A command can pass what was said to an AI agent, such as Claude Code, and leave the work to it. With lifelog's
+MCP server added to the agent (`claude mcp add lifelog -- <path to lifelog.exe> mcp`, see the README), the agent
+can read the conversation. So after talking about a song, "Jarvis, ask Claude to play that song" works: the
+agent searches the transcript to find out which song "that song" is.
+
+`command.toml`:
+
+```toml
+name = "Claude"
+description = "Passes a request to Claude Code, which can read the transcript"
+run = "python agent.py"
+
+[ask]
+say = ["ask claude to {request}", "ask claude {request}"]
+description = "Anything; Claude reads the recent conversation when the request refers to it"
+```
+
+`agent.py`:
+
+```python
+import json, shutil, subprocess, sys
+
+job = json.load(sys.stdin)
+prompt = ("Said to my voice assistant just now: " + job["slots"]["request"] + "\n"
+          "Use the lifelog tools to read the recent conversation if the request refers to it.")
+# An agent takes longer than the 20 seconds a script has, so it is started apart from the script's job.
+subprocess.Popen([shutil.which("claude"), "-p", prompt, "--allowedTools", "mcp__lifelog"],
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NO_WINDOW)
+print(json.dumps({"ok": True, "banner": "Asked Claude"}))
+```
+
+Add the agent's own tools to `--allowedTools` for anything else it should be able to do, such as playing music.
+The script ends at once, so the banner only says the request was passed on. Any other agent with a
+command-line mode works the same way. An agent with a cloud model sends what it reads from the transcript to
+that model's provider.
 
 ## Safety
 

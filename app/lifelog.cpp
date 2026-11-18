@@ -64,4 +64,5 @@ struct App;
 #include "voice.cpp"
 #include "commands.cpp"
 #include "cli.cpp"
+#include "mcp.cpp"
 #include "main.cpp"

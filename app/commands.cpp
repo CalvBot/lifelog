@@ -580,10 +580,12 @@ static bool command_exec(const CustomCommand* c, const CmdMatch* m, char* messag
     si.hStdOutput = out_w;
     si.hStdError = out_w;
     PROCESS_INFORMATION pi = {};
-    // Its job ends everything it started when it is stopped (or lifelog ends).
+    // Its job ends everything it started when it is stopped (or lifelog ends). A script may start
+    // something that outlives it on purpose, such as an AI agent that takes minutes, by starting it
+    // with CREATE_BREAKAWAY_FROM_JOB.
     HANDLE job = CreateJobObjectW(0, 0);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit = {};
-    limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit, sizeof(limit));
     wchar_t* line = wide(a, str(c->run));
     bool started = CreateProcessW(0, line, 0, 0, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, 0, c->dir, &si, &pi) != 0;

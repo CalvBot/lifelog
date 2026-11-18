@@ -73,7 +73,29 @@ lifelog status
 lifelog voice "lifelog, summarise the last hour"   # what a voice command would do, without doing it
 lifelog commands             # the custom commands and what to say for each
 lifelog command "play bad guy"                # run the custom command a sentence matches
+lifelog mcp                  # an MCP server for AI agents (below)
 ```
+
+### AI agents (MCP)
+
+`lifelog mcp` is an MCP server that talks on standard input and output. An agent that supports MCP, such as
+Claude Code or Codex, can use it to read the transcript. To add it to Claude Code:
+
+```powershell
+claude mcp add lifelog -- "C:\Program Files\lifelog\lifelog.exe" mcp
+```
+
+It has four tools, and all of them only read:
+
+- `transcript`: the lines of the last stretch (`15m`, `1h`, `today`), of a day, or between two times.
+- `search`: the lines that contain some words, newest first.
+- `summary`: a day's summary.
+- `status`: what the running lifelog is doing.
+
+It reads the database directly, so it works while lifelog is closed, except for `status`. It opens no network
+port; only the agent that started it can use it. An agent with a cloud model sends what it reads to that
+model's provider. A custom voice command can pass a request on to an agent, which then reads the conversation
+to work out what "that song" means; see [docs/custom-commands.md](docs/custom-commands.md#handing-a-request-to-an-ai-agent).
 
 The local API is on `127.0.0.1:47800` (`/status`, `/pause`, `/resume`, `/toggle`, `/clip?range=15m`).
 
