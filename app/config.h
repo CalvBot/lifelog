@@ -105,6 +105,9 @@ struct Config {
     } mcp;
 };
 
+// The wake word, "lifelog" when none is set.
+const char* wake_word(const Config* c);
+
 const wchar_t* config_path();
 // Loads the config, writing the default file first if there is none. False (with `error` set) if
 // the file cannot be read or parsed.

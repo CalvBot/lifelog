@@ -177,7 +177,7 @@ static i32 cli_summarise(Str range) {
 static i32 cli_voice(Str text) {
     if (!cli_config(&g_cli.config)) return 1;
     commands_load(&g_cli.config);
-    const char* wake = g_cli.config.voice.wake[0] ? g_cli.config.voice.wake : "lifelog";
+    const char* wake = wake_word(&g_cli.config);
     Understood u;
     voice_understand(text, wake, false, &u);
     const VoiceCommand* c = &u.c;
@@ -368,10 +368,8 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
     // For developers: shows the voice banner for its 2.5 s, as a command that worked would.
     if (str_eq(cmd, str("banner"))) {
         if (!cli_config(&g_cli.config)) return 1;
-        const char* wake = g_cli.config.voice.wake[0] ? g_cli.config.voice.wake : "lifelog";
         char who[64];
-        SET(who, str(wake));
-        who[0] = (char)toupper((u8)who[0]);
+        banner_who(&g_cli.config, who);
         banner_show(who, has_arg ? args[1].ptr : "Alarm set: 4 minutes");
         Sleep((DWORD)(BANNER_MS + BANNER_FADE_MS + 200));
         return 0;

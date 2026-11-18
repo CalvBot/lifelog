@@ -179,10 +179,9 @@ static void mcp_transcript(const Json* args, Arena* a, Buf* result) {
         // Keep the heading line and the latest lines, from the start of a line.
         i64 head = 0;
         while (head < text.len && text.ptr[head] != '\n') head++;
-        i64 cut = text.len - MCP_MOST;
-        while (cut < text.len && text.ptr[cut] != '\n') cut++;
+        Str tail = str_tail_lines(text, MCP_MOST);
         text = str_fmt(a, "%.*s\n(earlier lines left out: ask for a shorter stretch to see them)\n%.*s", (int)head, text.ptr,
-                       (int)(text.len - cut - 1), text.ptr + cut + 1);
+                       (int)tail.len, tail.ptr);
     }
     if (reached) {
         Str note = mcp_reach_note(a);

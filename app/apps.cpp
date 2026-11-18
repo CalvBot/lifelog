@@ -301,15 +301,7 @@ Str title_for(Str exe, Procs* p, Wins* w) {
 
 static const wchar_t* cache_dir() {
     static wchar_t buf[MAX_PATH];
-    if (buf[0]) return buf;
-    wchar_t env[8];
-    if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", env, COUNT(env)) == 0) {
-        swprintf(buf, MAX_PATH, L"%s", local_dir());
-    } else {
-        swprintf(buf, MAX_PATH, L"%s", config_path());
-        wchar_t* slash = wcsrchr(buf, L'\\');
-        if (slash) *slash = 0;
-    }
+    if (!buf[0]) swprintf(buf, MAX_PATH, L"%s", test_dir() ? test_dir() : local_dir());
     return buf;
 }
 

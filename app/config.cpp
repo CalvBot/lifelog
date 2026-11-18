@@ -122,6 +122,8 @@ show_dismissed = false
 reach = ""
 )toml";
 
+const char* wake_word(const Config* c) { return c->voice.wake[0] ? c->voice.wake : "lifelog"; }
+
 const char* mode_name(Mode m) {
     switch (m) {
         case MODE_ALWAYS: return "always";

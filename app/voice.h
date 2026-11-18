@@ -7,8 +7,9 @@
 //
 // The mic's capture thread has a second segmenter that hears even in private mode and ends a
 // sentence after a 0.7 s pause (capture.cpp); each sentence comes here (voice_heard), and the
-// voice thread runs a small Whisper model (base.en unless changed in Settings) on the processor
-// over it, so it works while the transcriber waits for a game. A sentence that does not start
+// voice thread runs the transcriber's Whisper model over it. While that model is not loaded (it
+// waits for a game, or is paused), a small backup model (voice.model) on the processor hears
+// instead, unless voice.backup is off. A sentence that does not start
 // with the name is dropped at once and never logged. A command is carried out through the API's
 // own handler (api_ask), so it does exactly what the CLI's does, and a chime says how it went. In
 // private mode only "resume lifelog" and the media keys are acted on.
@@ -19,7 +20,7 @@
 
 enum VoiceState : i32 {
     VOICE_OFF,          // listening is off in Settings
-    VOICE_NEEDS_SETUP,  // whisper.cpp or the listener's model (ggml-base.en.bin) is not there
+    VOICE_NEEDS_SETUP,  // whisper.cpp or the model it would listen with is not there
     VOICE_LOADING,
     VOICE_READY,
     VOICE_FAILED,       // the model would not load (see the log)

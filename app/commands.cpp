@@ -6,21 +6,6 @@ Commands g_commands;
 static const f64 CMD_TIMEOUT_SECS = 20;
 static const i32 CMD_OUTPUT_MAX = 64 * 1024;
 
-// A test copy (LIFELOG_CONFIG set) keeps its commands, secrets and data next to its config.
-static const wchar_t* test_dir() {
-    static wchar_t buf[MAX_PATH];
-    static bool looked;
-    if (!looked) {
-        looked = true;
-        if (GetEnvironmentVariableW(L"LIFELOG_CONFIG", buf, MAX_PATH)) {
-            wchar_t* slash = wcsrchr(buf, L'\\');
-            if (slash) *slash = 0;
-            else wcscpy_s(buf, L".");
-        }
-    }
-    return buf[0] ? buf : 0;
-}
-
 const wchar_t* commands_dir() {
     static wchar_t buf[MAX_PATH];
     if (!buf[0]) {

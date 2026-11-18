@@ -1062,7 +1062,7 @@ static void voice_card(App* app, SettingsState* s, f32 width) {
     }
 
     row_label("Wake word");
-    const char* wake = c->voice.wake[0] ? c->voice.wake : "lifelog";
+    const char* wake = wake_word(c);
     if (setting_field("##wake", "lifelog", s->wake, sizeof(s->wake), &s->wake_active, wake, px(160))) {
         char old[64];
         SET(old, str(wake));

@@ -2299,7 +2299,11 @@ bool reminder_add(App* app, Str text, Str said, f64 due, char* error, i32 cap) {
     return true;
 }
 
+// The newest this many characters are summarised (about 6,000 words for the AI's 12,288 tokens).
+static const i64 SUMMARISE_MAX_CHARS = 24000;
+
 bool summary_quick(App* app, Arena* a, Str transcript, Str* out, char* error, i32 cap) {
+    transcript = str_tail_lines(transcript, SUMMARISE_MAX_CHARS);
     SummaryOptions options = summary_options(app);
     Llm llm = {};
     bool ok = gpu_take(app);

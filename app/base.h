@@ -92,6 +92,8 @@ bool str_starts_nocase(Str s, Str prefix);
 bool str_starts(Str s, Str prefix);
 bool str_ends(Str s, Str suffix);
 Str str_trim(Str s);
+// The last `max` bytes of `s` or fewer, starting at a line: the newest lines of a transcript.
+Str str_tail_lines(Str s, i64 max);
 i64 str_find(Str s, Str needle);   // -1 if not there
 Str str_sub(Str s, i64 from, i64 len = -1);
 // `s` without a trailing ".exe" (any case): "Discord.EXE" is "Discord".
@@ -195,6 +197,9 @@ void log_line(const char* level, const char* fmt, ...);
 #define WARN(...) log_line("WARN", __VA_ARGS__)
 #define ERR(...) log_line("ERROR", __VA_ARGS__)
 const wchar_t* log_path();
+// A test copy (LIFELOG_CONFIG set) keeps its log, cache, commands and data in its config's
+// folder: that folder, or null for the real one.
+const wchar_t* test_dir();
 
 // Folders: %APPDATA%\lifelog (settings) and %LOCALAPPDATA%\lifelog (log, models, icons).
 const wchar_t* roaming_dir();

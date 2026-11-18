@@ -162,7 +162,7 @@ A "Custom commands" card lists each command. For each one it shows:
 Below the list are Open folder, Reload, and a box to type a sentence and see what it matches, with a button to
 run it.
 
-## Step 1b: an AI for loose wording, and "that"
+## Planned, step 1b: an AI for loose wording, and "that"
 
 Phrase matching cannot cope with everything:
 
@@ -180,21 +180,21 @@ a small local AI picks the command instead. It gets:
 It answers in JSON: which command, which action and which slots, or none. Its answer goes through the same path
 as a matched phrase, and the banner shows what it chose.
 
-The last two minutes come from the voice listener, which already runs every mic sentence through its small
-Whisper model to look for the wake word. They are kept in memory only, never saved, and cleared in private mode.
+The last two minutes come from the voice listener, which already runs every mic sentence through Whisper to
+look for the wake word. They are kept in memory only, never saved, and cleared in private mode.
 This works while the main transcription waits for the GPU. Only the local AI sees them.
 
 The AI is a small model (about 2 to 4 billion parameters) that runs on the processor, so it does not wait for
 the GPU while a game runs. It should answer in 2 to 5 seconds. The listening chime plays while it thinks.
 
-## Step 2: media keys and Home Assistant
+## Planned, step 2: "what's playing" and Home Assistant
 
-- Built in, with no script: pause, play, skip, previous, and "what's playing", for any player, through the
-  Windows media controls.
+- Built in, with no script: "what's playing", for any player, through the Windows media controls. (Pause,
+  play, skip and previous are built in already, as media keys.)
 - A Home Assistant template sends the sentence to Home Assistant's own Assist API with a long-lived token. Home
   Assistant then understands "turn on my lights", "set the bedroom to 20 degrees" and so on without a mapping.
 
-## Step 3: Spotify
+## Planned, step 3: Spotify
 
 - A one-time sign-in in the browser using Spotify's PKCE login flow. It needs a client ID from a free Spotify
   developer app, but no client secret. The script keeps a refresh token in its `data_dir`.
@@ -203,7 +203,7 @@ the GPU while a game runs. It should answer in 2 to 5 seconds. The listening chi
 - Queue, like this song, what's playing, volume.
 - Playback control needs Spotify Premium.
 
-## Step 4: Jellyfin downloads
+## Planned, step 4: Jellyfin downloads
 
 "Jarvis, download Iron Man":
 

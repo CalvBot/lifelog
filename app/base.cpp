@@ -144,6 +144,14 @@ Str str_trim(Str s) {
     return s;
 }
 
+Str str_tail_lines(Str s, i64 max) {
+    if (s.len <= max) return s;
+    Str tail = {s.ptr + s.len - max, max};
+    const char* nl = (const char*)memchr(tail.ptr, '\n', (size_t)tail.len);
+    if (nl) tail = {nl + 1, tail.len - (nl + 1 - tail.ptr)};
+    return tail;
+}
+
 i64 str_find(Str s, Str n) {
     if (n.len == 0) return 0;
     for (i64 i = 0; i + n.len <= s.len; i++)
@@ -424,21 +432,29 @@ bool write_file(const wchar_t* path, Str data) {
 // ---------------------------------------------------------------------------------------------
 // Log
 
+const wchar_t* test_dir() {
+    static wchar_t buf[MAX_PATH];
+    static bool looked;
+    if (!looked) {
+        looked = true;
+        DWORD n = GetEnvironmentVariableW(L"LIFELOG_CONFIG", buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            wchar_t* slash = wcsrchr(buf, L'\\');
+            if (!slash) slash = wcsrchr(buf, L'/');
+            if (slash) *slash = 0;
+            else wcscpy_s(buf, L".");
+        } else {
+            buf[0] = 0;
+        }
+    }
+    return buf[0] ? buf : 0;
+}
+
 const wchar_t* log_path() {
     static wchar_t buf[MAX_PATH];
     if (buf[0]) return buf;
-    // A test copy (LIFELOG_CONFIG set) logs next to its config, out of the real log.
-    wchar_t config[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"LIFELOG_CONFIG", config, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) {
-        wchar_t* slash = wcsrchr(config, L'\\');
-        if (!slash) slash = wcsrchr(config, L'/');
-        if (slash) *slash = 0;
-        else wcscpy_s(config, L".");
-        swprintf(buf, MAX_PATH, L"%s\\lifelog.log", config);
-    } else {
-        swprintf(buf, MAX_PATH, L"%s\\lifelog.log", local_dir());
-    }
+    // A test copy logs next to its config, out of the real log.
+    swprintf(buf, MAX_PATH, L"%s\\lifelog.log", test_dir() ? test_dir() : local_dir());
     return buf;
 }
 

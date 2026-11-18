@@ -27,13 +27,6 @@ static const ChimeShape CHIME_SHAPES[CHIME_COUNT] = {
     {{{294, 0, 0.6f, 0.8f, -0.3f}, {392, 0.07f, 0.6f, 0.8f, 0}, {494, 0.14f, 0.8f, 0.9f, 0.3f}}, 3},
     // Done: a major chord strummed into bloom, an octave on top.
     {{{262, 0, 1.0f, 0.8f, -0.3f}, {330, 0.035f, 1.0f, 0.7f, 0.05f}, {392, 0.07f, 1.1f, 0.7f, 0.3f}, {523, 0.15f, 1.0f, 0.35f, 0}}, 4},
-    // Clip saved: a run up two octaves, sweeping across.
-    {{{262, 0, 0.45f, 0.8f, -0.5f},
-      {330, 0.06f, 0.45f, 0.75f, -0.25f},
-      {392, 0.12f, 0.45f, 0.75f, 0},
-      {523, 0.18f, 0.55f, 0.7f, 0.25f},
-      {659, 0.24f, 0.9f, 0.55f, 0.5f}},
-     5},
     // Didn't catch: down and back up a little, like "hm?".
     {{{330, 0, 0.4f, 0.9f, 0.2f}, {262, 0.13f, 0.4f, 0.8f, -0.2f}, {294, 0.26f, 0.7f, 0.85f, 0.1f}}, 3},
     // Error: two low knocks, each a rub of two notes a semitone apart.
@@ -43,7 +36,7 @@ static const ChimeShape CHIME_SHAPES[CHIME_COUNT] = {
 };
 
 const char* chime_label(Chime c) {
-    static const char* labels[CHIME_COUNT] = {"Listening", "Done", "Clip saved", "Didn't catch", "Error", "Cancelled"};
+    static const char* labels[CHIME_COUNT] = {"Listening", "Done", "Didn't catch", "Error", "Cancelled"};
     return c >= 0 && c < CHIME_COUNT ? labels[c] : "";
 }
 

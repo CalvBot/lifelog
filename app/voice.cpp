@@ -163,12 +163,11 @@ static bool has_pair(const Words* ws, const char* a, const char* b) {
     return false;
 }
 
-// Letters and digits only, lower case: the wake word as it is matched ("Hey Jarvis" is heyjarvis).
+// The wake word as it is matched (name_key: "Hey Jarvis" is heyjarvis).
 static void wake_key(const char* word, char out[64]) {
-    i32 n = 0;
-    for (const char* c = word; *c && n < 63; c++)
-        if (isalnum((u8)*c)) out[n++] = (char)tolower((u8)*c);
-    out[n] = 0;
+    Mark m = mark(scratch());
+    set(out, 64, name_key(scratch(), str(word)));
+    rewind(m);
 }
 
 // Whether `a` and `b` differ by at most one letter added, dropped or changed.
@@ -271,7 +270,7 @@ static i32 number_at(const Words* ws, i32* i) {
     if (isdigit((u8)w.ptr[0])) {
         i32 n = 0;
         for (i64 k = 0; k < w.len && isdigit((u8)w.ptr[k]); k++) n = n * 10 + (w.ptr[k] - '0');
-        // "15m" or "2h", as Whisper sometimes writes it, leaves the unit for unit_at.
+        // "15m" or "2h", as Whisper sometimes writes it, leaves the unit for unit_of.
         (*i)++;
         return n > 999 ? 999 : n;
     }
@@ -723,13 +722,18 @@ struct VoiceDone {
     char shown[128];  // the banner, when it worked; "" for none
 };
 
+// The banner's name for lifelog: the wake word, capitalised ("Jarvis").
+static void banner_who(const Config* c, char out[64]) {
+    set(out, 64, str(wake_word(c)));
+    out[0] = (char)toupper((u8)out[0]);
+}
+
 static void voice_done_apply(App* app, Event* e) {
     VoiceDone* d = event_record<VoiceDone>(e);
     chime_play(app, d->chime);
     if (d->shown[0]) {
         char who[64];
-        SET(who, str(app->config.voice.wake[0] ? app->config.voice.wake : "lifelog"));
-        who[0] = (char)toupper((u8)who[0]);
+        banner_who(&app->config, who);
         banner_show(who, d->shown);
     }
     if (!d->keep) return;
@@ -786,7 +790,7 @@ static void voice_check_ai_apply(App* app, Event*) {
 // The voice thread
 
 // The API's answer as a line for Settings: its "error", or what it did.
-static void answer_text(Arena* a, const VoiceCommand* c, Answer* r, char* out, i32 cap) {
+static void answer_text(Arena* a, Answer* r, char* out, i32 cap) {
     Str body = buf_take(&r->body, a);
     Json j = {};
     char error[64];
@@ -797,11 +801,8 @@ static void answer_text(Arena* a, const VoiceCommand* c, Answer* r, char* out, i
         return;
     }
     Str result = json_text(json_get(&j, "result"));
-    Str path = json_text(json_get(&j, "path"));
     if (result.len) snprintf(out, cap, "%.*s", (int)result.len, result.ptr);
-    else if (path.len) snprintf(out, cap, "%d lines on the clipboard", (i32)json_get(&j, "lines")->num);
     else snprintf(out, cap, "done");
-    (void)c;
 }
 
 // Summarising the last stretch, on its own thread (the AI can take a while to start).
@@ -814,8 +815,6 @@ static volatile LONG g_voice_summarising;
 static VoiceSummarise g_summarise;
 static Arena g_summarise_arena;
 static AppLabels g_summarise_labels;
-// The newest this many characters are summarised (about 6,000 words for the AI's 12,288 tokens).
-static const i64 SUMMARISE_MAX_CHARS = 24000;
 
 static DWORD WINAPI voice_summarise_main(void* p) {
     App* app = (App*)p;
@@ -828,12 +827,6 @@ static DWORD WINAPI voice_summarise_main(void* p) {
     if (ok && !lines) {
         snprintf(error, sizeof(error), "nothing was heard then");
         ok = false;
-    }
-    if (ok && text.len > SUMMARISE_MAX_CHARS) {
-        Str tail = {text.ptr + text.len - SUMMARISE_MAX_CHARS, SUMMARISE_MAX_CHARS};
-        const char* nl = (const char*)memchr(tail.ptr, '\n', (size_t)tail.len);
-        if (nl) tail = {nl + 1, tail.len - (nl + 1 - tail.ptr)};
-        text = tail;
     }
     Str out = {};
     ok = ok && summary_quick(app, a, text, &out, error, sizeof(error));
@@ -897,8 +890,7 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
     } else if (c->what == DO_SUMMARISE) {
         VoiceSummarise s = {};
         s.to = now_ts();
-        char label[64];
-        bool ok = clip_range(str(c->query), s.to, &s.from, label, sizeof(label));
+        bool ok = clip_range(str(c->query), s.to, &s.from);
         SET(s.said, str(c->said));
         char words[32];
         range_words(c->query, words, sizeof(words));
@@ -919,7 +911,7 @@ static void voice_do(App* app, const VoiceCommand* c, const char* heard) {
         api_ask(app, str(c->method), str(c->path), str(c->query), &r);
         if (r.code == 200 && r.after) event_send(app, api_after_apply, r.after);
         char result[160];
-        answer_text(a, c, &r, result, sizeof(result));
+        answer_text(a, &r, result, sizeof(result));
         buf_free(&r.body);
         bool ok = r.code == 200;
         LOG("voice: \"%s\": %s: %s", heard, c->said, result);

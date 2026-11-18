@@ -6,14 +6,13 @@
 enum Chime : i32 {
     CHIME_LISTENING,    // the wake name was heard: go ahead
     CHIME_DONE,         // the command was carried out
-    CHIME_CLIP_SAVED,   // a clip was saved
     CHIME_DIDNT_CATCH,  // the command could not be made out
-    CHIME_ERROR,        // it could not be carried out (e.g. clipback not running)
+    CHIME_ERROR,        // it could not be carried out (e.g. a script failed)
     CHIME_CANCELLED,    // nothing was said after the wake name
     CHIME_COUNT,
 };
 
-// "Listening", "Clip saved" and so on, for Settings.
+// "Listening", "Done" and so on, for Settings.
 const char* chime_label(Chime c);
 
 // Main thread: plays `c` in the configured style and volume, cutting off any chime still playing.
