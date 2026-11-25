@@ -348,6 +348,7 @@ WHISPER_FN(whisper_full_get_segment_no_speech_prob_from_state)
 WHISPER_FN(whisper_full_n_tokens)
 WHISPER_FN(whisper_full_get_token_data)
 WHISPER_FN(whisper_token_eot)
+WHISPER_FN(whisper_token_beg)
 WHISPER_FN(whisper_token_to_str)
 WHISPER_FN(whisper_vad_default_params)
 WHISPER_FN(whisper_vad_default_context_params)
@@ -416,6 +417,7 @@ static bool whisper_load_now(const wchar_t* dir, char* error, i32 cap) {
     WHISPER_FN(whisper, whisper_full_n_tokens)
     WHISPER_FN(whisper, whisper_full_get_token_data)
     WHISPER_FN(whisper, whisper_token_eot)
+    WHISPER_FN(whisper, whisper_token_beg)
     WHISPER_FN(whisper, whisper_token_to_str)
     WHISPER_FN(whisper, whisper_vad_default_params)
     WHISPER_FN(whisper, whisper_vad_default_context_params)
@@ -770,10 +772,8 @@ static i64 speech_start(Slice<Speech> pieces, i64 cs) {
 // the way whisper.cpp's own voice detection does it (each piece but the last runs a tenth of a
 // second on, so its last word is not cut). False if the detector could not be run.
 //
-// Half a second of silence goes before the first piece and after the last. whisper.cpp's word
-// timing (DTW) asserts, ending the process, when it is handed under 0.14 s of audio: a line that
-// ends that soon after the start of a window (a lone "Bye." with nothing before it did), or the
-// last sliver of audio after a window.
+// Half a second of silence goes before the first piece and after the last, so the first and last
+// words are heard whole.
 static bool speech_only(Arena* a, const char* vad_path, bool mic, Slice<f32> samples, Slice<f32>* heard, Slice<Speech>* pieces) {
     *heard = {};
     *pieces = {};
@@ -814,7 +814,36 @@ static bool speech_only(Arena* a, const char* vad_path, bool mic, Slice<f32> sam
     return true;
 }
 
+// Whisper hears 30 seconds at a time.
+static const i64 WHISPER_WINDOW = 30 * WHISPER_SAMPLE_RATE;
+
+// Whether speech in Whisper's input goes on past sample `s` by more than 0.3 s.
+static bool speech_after(Slice<Speech> pieces, i64 s) {
+    for (i32 i = 0; i < pieces.count; i++)
+        if (pieces.items[i].at + pieces.items[i].len > s + WHISPER_SAMPLE_RATE * 3 / 10) return true;
+    return false;
+}
+
+// A line Whisper gave from `t0` to `t1` (hundredths of a second into its input), with its words
+// from `first_word` on.
+static void heard_line(Arena* a, Heard* lines, i32* count, HeardWord* words, i32* word_count, i32 first_word, Slice<Speech> pieces,
+                       Str text, i64 t0, i64 t1, f64 no_speech, f64 total, i32 text_tokens) {
+    // The average log probability of its tokens, as OpenAI's Whisper reports it (counting the
+    // timestamp that ends it).
+    f64 logprob = total / (text_tokens + 1);
+    // The line starts with its first word: its own start is often back where the one before it ended.
+    f64 from = *word_count > first_word ? words[first_word].start : file_time(pieces, t0, true);
+    hear(a, lines, count, word_count, first_word, text, from, file_time(pieces, t1, false), no_speech, logprob);
+}
+
 // With our own whisper.cpp. In `a`.
+//
+// whisper.cpp's word timing (DTW) asserts, ending the process, when a window it decodes text in is
+// under 0.14 s long. Its own move from one 30-second window to the next can make one: from a line
+// that ends that soon after the window starts, or the sliver left of a clip just over 30 s. So each
+// call gets at most one window, which Whisper keeps whole (single_segment), and the moving on is
+// done here, as whisper.cpp does it: from the last timestamp it gave, while speech is left. Lines
+// are split at its timestamps.
 //
 // Each word's times come from the alignment (DTW) of its tokens with the audio. A token's aligned
 // time falls near its end, so a word starts at the time of the token before it and ends at its
@@ -849,70 +878,115 @@ static Sent transcribe_here(App* app, Arena* a, whisper_context* ctx, const Work
     wp.print_progress = false;
     wp.print_realtime = false;
     wp.print_timestamps = false;
+    wp.single_segment = true;
     AbortCheck* check = PUSH(a, AbortCheck);
     check->app = app;
     wp.abort_callback = whisper_should_abort;
     wp.abort_callback_user_data = check;
 
-    g_whisper_aborting = false;
-    i32 result = p_whisper_full(ctx, wp, heard.items, heard.count);
-    g_whisper_aborting = false;
-    if (check->aborted) return SENT_ABORTED;
-    if (result != 0) {
-        snprintf(error, cap, "whisper.cpp failed on it (%d)", result);
-        return SENT_BAD;
-    }
-    i32 n = p_whisper_full_n_segments(ctx);
-    i32 all_tokens = 0;
-    for (i32 i = 0; i < n; i++) all_tokens += p_whisper_full_n_tokens(ctx, i);
-    Heard* lines = PUSH_ARRAY(a, Heard, n + 1);
-    HeardWord* words = PUSH_ARRAY(a, HeardWord, all_tokens + 1);
+    const i64 per_cs = WHISPER_SAMPLE_RATE / 100;
+    i32 eot = p_whisper_token_eot(ctx), beg = p_whisper_token_beg(ctx);
+    Heard* lines = 0;
+    HeardWord* words = 0;
     i32 count = 0, word_count = 0;
-    i32 eot = p_whisper_token_eot(ctx);
     f64 last_start = 0;
-    for (i32 i = 0; i < n; i++) {
-        i64 t0 = p_whisper_full_get_segment_t0(ctx, i), t1 = p_whisper_full_get_segment_t1(ctx, i);
-        i32 tokens = p_whisper_full_n_tokens(ctx, i);
-        i32 first_word = word_count;
-        // The average log probability of its text tokens, as OpenAI's Whisper reports it.
-        f64 total = 0;
-        i64 before = -1;  // the aligned time of the text token before this one, if it is one
-        for (i32 j = 0; j < tokens; j++) {
-            whisper_token_data t = p_whisper_full_get_token_data(ctx, i, j);
-            if (t.id >= eot) {
-                before = -1;
-                continue;
-            }
-            total += t.plog;
-            Str piece = str(p_whisper_token_to_str(ctx, t.id));
-            i64 end = t.t_dtw >= 0 ? t.t_dtw : t0;
-            if (word_count == first_word || (piece.len && piece.ptr[0] == ' ')) {
-                // A segment's first word has no token before it: it starts with the segment,
-                // which may begin back where the last one ended; after a pause, not before the
-                // speech does.
-                i64 start = before >= 0 ? before : t0;
-                i64 speech = speech_start(pieces, end);
-                start = start > speech ? start : speech;
-                start = start < end ? start : end;
-                f64 s = file_time(pieces, start, true);
-                s = s > last_start ? s : last_start;
-                last_start = s;
-                words[word_count++] = {str_copy(a, piece), s, s};
-            } else {
-                HeardWord* w = &words[word_count - 1];
-                w->text = str_fmt(a, "%.*s%.*s", (int)w->text.len, w->text.ptr, (int)piece.len, piece.ptr);
-            }
-            HeardWord* w = &words[word_count - 1];
-            f64 e = file_time(pieces, end, false);
-            w->end = e > w->start ? e : w->start;
-            before = t.t_dtw;
+    i64 base = 0;  // where this call starts in Whisper's input, in samples
+    while (base < heard.count && speech_after(pieces, base)) {
+        i64 len = heard.count - base < WHISPER_WINDOW ? heard.count - base : WHISPER_WINDOW;
+        bool last = base + len == heard.count;
+        // At least a second, padded with silence.
+        f32* input = heard.items + base;
+        i64 input_len = len;
+        if (len < WHISPER_SAMPLE_RATE) {
+            input_len = WHISPER_SAMPLE_RATE;
+            input = PUSH_ARRAY(a, f32, input_len);
+            memcpy(input, heard.items + base, sizeof(f32) * (size_t)len);
         }
-        f64 logprob = tokens ? total / tokens : 0;
-        // The line starts with its first word: the segment's own start is often back where the
-        // one before it ended.
-        f64 from = word_count > first_word ? words[first_word].start : file_time(pieces, t0, true);
-        hear(a, lines, &count, &word_count, first_word, str(p_whisper_full_get_segment_text(ctx, i)), from,
-             file_time(pieces, t1, false), p_whisper_full_get_segment_no_speech_prob(ctx, i), logprob);
+        g_whisper_aborting = false;
+        i32 result = p_whisper_full(ctx, wp, input, (i32)input_len);
+        g_whisper_aborting = false;
+        if (check->aborted) return SENT_ABORTED;
+        if (result != 0) {
+            snprintf(error, cap, "whisper.cpp failed on it (%d)", result);
+            return SENT_BAD;
+        }
+        i64 next = base + len;  // where the next call starts, unless Whisper stopped short of the end
+        if (p_whisper_full_n_segments(ctx) > 0) {
+            i32 tokens = p_whisper_full_n_tokens(ctx, 0);
+            // Room for this call's lines and words after the ones so far.
+            Heard* more_lines = PUSH_ARRAY(a, Heard, count + tokens + 1);
+            HeardWord* more_words = PUSH_ARRAY(a, HeardWord, word_count + tokens + 1);
+            if (count) memcpy(more_lines, lines, sizeof(Heard) * count);
+            if (word_count) memcpy(more_words, words, sizeof(HeardWord) * word_count);
+            lines = more_lines;
+            words = more_words;
+            f64 no_speech = p_whisper_full_get_segment_no_speech_prob(ctx, 0);
+            i64 offset = base / per_cs;  // this call's start, in hundredths of a second
+            i64 t0 = offset;             // where the line being read starts
+            i64 closed = -1;             // where the last whole line ended
+            i32 first_word = word_count, text_tokens = 0;
+            f64 total = 0;   // the log probabilities of the line's text tokens
+            i64 before = -1;  // the aligned time of the text token before this one, if it is one
+            Str text = {};
+            for (i32 j = 0; j < tokens; j++) {
+                whisper_token_data t = p_whisper_full_get_token_data(ctx, 0, j);
+                if (t.id >= beg) {
+                    // A timestamp ends the line, if it has text, and starts the next.
+                    i64 at = offset + 2 * (i64)(t.id - beg);
+                    if (text.len) {
+                        heard_line(a, lines, &count, words, &word_count, first_word, pieces, text, t0, at, no_speech, total, text_tokens);
+                        closed = at;
+                    }
+                    t0 = at;
+                    first_word = word_count;
+                    text_tokens = 0;
+                    total = 0;
+                    text = {};
+                    before = -1;
+                    continue;
+                }
+                if (t.id >= eot) {
+                    before = -1;
+                    continue;
+                }
+                total += t.plog;
+                text_tokens++;
+                Str piece = str(p_whisper_token_to_str(ctx, t.id));
+                text = str_fmt(a, "%.*s%.*s", (int)text.len, text.ptr, (int)piece.len, piece.ptr);
+                i64 aligned = t.t_dtw >= 0 ? offset + t.t_dtw : -1;
+                i64 end = aligned >= 0 ? aligned : t0;
+                if (word_count == first_word || (piece.len && piece.ptr[0] == ' ')) {
+                    // A line's first word has no token before it: it starts with the line, which
+                    // may begin back where the last one ended; after a pause, not before the
+                    // speech does.
+                    i64 start = before >= 0 ? before : t0;
+                    i64 speech = speech_start(pieces, end);
+                    start = start > speech ? start : speech;
+                    start = start < end ? start : end;
+                    f64 s = file_time(pieces, start, true);
+                    s = s > last_start ? s : last_start;
+                    last_start = s;
+                    words[word_count++] = {str_copy(a, piece), s, s};
+                } else {
+                    HeardWord* w = &words[word_count - 1];
+                    w->text = str_fmt(a, "%.*s%.*s", (int)w->text.len, w->text.ptr, (int)piece.len, piece.ptr);
+                }
+                HeardWord* w = &words[word_count - 1];
+                f64 e = file_time(pieces, end, false);
+                w->end = e > w->start ? e : w->start;
+                before = aligned;
+            }
+            if (text.len && (last || closed <= offset)) {
+                // Text with no timestamp after it: cut off by the end of the window.
+                heard_line(a, lines, &count, words, &word_count, first_word, pieces, text, t0, (base + len) / per_cs, no_speech, total,
+                           text_tokens);
+            } else {
+                // Its words are heard again from the end of the last whole line.
+                word_count = first_word;
+            }
+            if (closed > offset && !(text.len && last)) next = closed * per_cs;
+        }
+        base = next > base ? next : base + len;
     }
     out->lines = {lines, count};
     out->words = {words, word_count};

@@ -877,6 +877,57 @@ static bool single_instance() {
     return !(single && GetLastError() == ERROR_ALREADY_EXISTS);
 }
 
+static bool has_arg(const wchar_t* arg) {
+    for (i32 i = 1; i < __argc; i++)
+        if (wcscmp(__wargv[i], arg) == 0) return true;
+    return false;
+}
+
+// A second start opens the running lifelog's window instead.
+static void open_running() {
+    HWND other = FindWindowW(L"lifelog.tray", 0);
+    if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
+    AllowSetForegroundWindow(ASFW_ANY);  // so its window comes to the front, not behind others
+    if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(TRAY_OPEN_WINDOW, 0));
+}
+
+// The watchdog. The lifelog that was started stays as a small process that runs the real one
+// (with --watched) and starts it again, in the tray, when it crashes: whisper.cpp ends the process
+// when one of its asserts fails. Quit, a restart, `lifelog quit` (all exit code 0) and Task
+// Manager's End task (code 1) end the watchdog as well. It gives up after three crashes, each within
+// two minutes of starting.
+static i32 watch() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(0, exe, MAX_PATH);
+    const wchar_t* given = GetCommandLineW();
+    i64 cap = (i64)wcslen(given) + 32;
+    wchar_t* cmd = PUSH_ARRAY(scratch(), wchar_t, cap);
+    i32 quick = 0;
+    for (bool again = false;; again = true) {
+        swprintf(cmd, (size_t)cap, L"%ls --watched%ls", given, again ? L" --tray" : L"");
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(exe, cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi)) {
+            ERR("could not start lifelog (error %lu)", GetLastError());
+            return 1;
+        }
+        CloseHandle(pi.hThread);
+        f64 began = now_ts();
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        if (code == 0 || code == 1 || GetSystemMetrics(SM_SHUTTINGDOWN)) return 0;
+        quick = now_ts() - began < 120 ? quick + 1 : 0;
+        if (quick >= 3) {
+            ERR("lifelog crashed three times soon after starting (exit code 0x%lX); not starting it again", code);
+            return 1;
+        }
+        WARN("lifelog crashed (exit code 0x%lX); starting it again", code);
+        Sleep(2000);
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     log_open();
     // A notification's button opens a lifelog: link, which starts this exe with it; pass it to
@@ -884,12 +935,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (__argc > 1 && wcsncmp(__wargv[1], L"lifelog", 7) == 0) return notify_forward(__wargv[1]) ? 0 : 1;
     // `lifelog.exe clip 15m` and the other commands: the CLI (options start with "-").
     if (__argc > 1 && __wargv[1][0] != L'-') return cli_main(__argc, __wargv);
-    // One lifelog at a time: a second start opens the first one's window instead.
+    if (!has_arg(L"--watched")) {
+        // One lifelog at a time. After a restart (--after) the old copy is still on its way out.
+        wchar_t name[96];
+        instance_name(name);
+        HANDLE running = has_arg(L"--after") ? 0 : OpenMutexW(SYNCHRONIZE, FALSE, name);
+        if (running) {
+            CloseHandle(running);
+            open_running();
+            return 0;
+        }
+        return watch();
+    }
     if (!single_instance()) {
-        HWND other = FindWindowW(L"lifelog.tray", 0);
-        if (!other) other = FindWindowExW(HWND_MESSAGE, 0, L"lifelog.tray", 0);
-        AllowSetForegroundWindow(ASFW_ANY);  // so its window comes to the front, not behind others
-        if (other) PostMessageW(other, WM_APP_TRAY, 0, MAKELPARAM(TRAY_OPEN_WINDOW, 0));
+        open_running();
         return 0;
     }
     i32 code = run_app();
