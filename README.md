@@ -56,4 +56,4 @@ shared. An agent using a cloud model sends what it reads to that provider.
 
 ## Contributing
 
-GitHub is a mirror and is overwritten on every sync. Open a pull request there; it gets merged on the main copy.
+Open a pull request on GitHub.
