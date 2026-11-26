@@ -778,10 +778,22 @@ static Slice<SLine> context_only(Arena* a, Slice<SLine> lines) {
     return out;
 }
 
+// The parts of the day a summary is grouped under. A day runs from 04:00 (day_bounds), so Night is
+// the hours after midnight.
+static const char* PARTS[] = {"Morning", "Afternoon", "Evening", "Night"};
+static const i32 PART_COUNT = COUNT(PARTS);
+
+static i32 part_of(f64 ts) {
+    i32 h = local_time(ts).hour;
+    return h < 4 ? 3 : h < 12 ? 0 : h < 18 ? 1 : 2;
+}
+
 struct Chunk {
     f64 first;
     f64 last;
+    i32 part;  // PARTS: a chunk never spans two
     Str text;
+    Str who;  // who can be named in its notes, as JSON enum items: "You" and the people in a call
 };
 
 struct RunCount {
@@ -789,13 +801,27 @@ struct RunCount {
     i64 chars;
 };
 
-// The day's lines as compact text, cut into pieces that fit one request. Long stretches of one
-// app (a film, an album) are shortened; what I said is always kept in full.
+// Ends the chunk in `text`: its people as JSON strings, after "You".
+static void chunk_end(Arena* a, List<Chunk>* chunks, Buf* text, f64 first, f64 last, List<Str>* people) {
+    Buf who = {};
+    buf_cstr(&who, "\"You\"");
+    for (i32 i = 0; i < people->count; i++) {
+        buf_cstr(&who, ",");
+        json_quote(&who, people->items[i]);
+    }
+    list_push(chunks, {first, last, part_of(first), buf_take(text, a), buf_take(&who, a)});
+    people->count = 0;
+}
+
+// The day's lines as compact text, cut into pieces that fit one request and never span two parts
+// of the day. Long stretches of one app (a film, an album) are shortened; what I said is always
+// kept in full.
 static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
     Slice<SLine> lines = context_only(a, all);
     struct OutLine {
         f64 start, end;
         Str text;
+        Str person;  // the speaker of a call line
     };
     List<OutLine> out_lines = {};
     // Characters each app has had since I last spoke; past APP_RUN_CHARS the rest is left out.
@@ -810,14 +836,14 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
         hm_of(line->start_ts, at);
         if (is_mic(line)) {
             since_me.count = 0;
-            list_push(&out_lines, {line->start_ts, line->end_ts, str_fmt(a, "[%s] me: %.*s", at, (int)text.len, text.ptr)});
+            list_push(&out_lines, {line->start_ts, line->end_ts, str_fmt(a, "[%s] You: %.*s", at, (int)text.len, text.ptr), {}});
             continue;
         }
         // "call" lines come one person per stream (lifelog-vencord) and are named after the speaker.
         bool call = str_eq(line->source, str("call")) || is_call_app(line->speaker);
-        // Media is marked as playing, so it is never read as someone talking.
+        // Media is marked as such, so it is never read as someone talking.
         Str name = line->name;
-        Str who = call ? str_copy(a, name) : str_fmt(a, "%.*s playing", (int)name.len, name.ptr);
+        Str who = call ? str_copy(a, name) : str_fmt(a, "media in %.*s", (int)name.len, name.ptr);
         RunCount* run = 0;
         for (i32 k = 0; k < since_me.count; k++)
             if (str_eq(since_me.items[k].who, who)) run = &since_me.items[k];
@@ -831,22 +857,28 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
         last_title = line->title;
         have_last = true;
         list_push(&out_lines, {line->start_ts, line->end_ts,
-                               str_fmt(a, "[%s] %.*s: %.*s", at, (int)label.len, label.ptr, (int)text.len, text.ptr)});
+                               str_fmt(a, "[%s] %.*s: %.*s", at, (int)label.len, label.ptr, (int)text.len, text.ptr), call ? who : Str{}});
     }
     list_free(&since_me);
 
     List<Chunk> chunks = {};
+    List<Str> people = {};
     Buf text = {};
     f64 first = 0, last = 0;
     for (i32 i = 0; i < out_lines.count; i++) {
         OutLine* l = &out_lines.items[i];
-        if (buf_len(&text) && buf_len(&text) + l->text.len > CHUNK_CHARS) list_push(&chunks, {first, last, buf_take(&text, a)});
+        if (buf_len(&text) && (buf_len(&text) + l->text.len > CHUNK_CHARS || part_of(l->start) != part_of(first)))
+            chunk_end(a, &chunks, &text, first, last, &people);
         if (!buf_len(&text)) first = l->start;
         last = l->end;
         buf_add(&text, l->text);
         buf_cstr(&text, "\n");
+        bool known = !l->person.len;
+        for (i32 k = 0; k < people.count && !known; k++) known = str_eq(people.items[k], l->person);
+        if (!known) list_push(&people, l->person);
     }
-    if (buf_len(&text)) list_push(&chunks, {first, last, buf_take(&text, a)});
+    if (buf_len(&text)) chunk_end(a, &chunks, &text, first, last, &people);
+    list_free(&people);
     list_free(&out_lines);
     Slice<Chunk> out = {PUSH_ARRAY(a, Chunk, chunks.count), chunks.count};
     if (chunks.count) memcpy(out.items, chunks.items, sizeof(Chunk) * chunks.count);
@@ -854,13 +886,13 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
     return out;
 }
 
-// Words I said (the 'me' lines) in a transcript chunk.
+// Words I said (the 'You' lines) in a transcript chunk.
 static i64 my_words(Str chunk) {
     i64 n = 0;
     Str rest = chunk, line = {};
     while (next_line(&rest, &line)) {
-        i64 at = str_find(line, str("] me: "));
-        if (at >= 0) n += count_words(str_sub(line, at + 6));
+        i64 at = str_find(line, str("] You: "));
+        if (at >= 0) n += count_words(str_sub(line, at + 7));
     }
     return n;
 }
@@ -873,34 +905,31 @@ static const char* quiet_summary(i64 words) { return words == 0 ? "You were quie
 // The rules and schemas below stay in code, as the parsing depends on them.
 
 static const char* SYSTEM =
-    "You help one person keep a diary from an automatic transcript of their day. "
-    "Lines marked 'me' are what they said into their microphone: to people in the room, on calls, or to themselves. "
-    "Lines named after a person or a call app (like 'zaddish' or 'Discord') are other people talking with them. "
-    "Lines marked 'playing' are media on their PC "
-    "(films, videos, music, games): never people they talked to, never their words, only there to show what they reacted "
-    "to. The window title is in brackets. "
-    "The diary is only about what 'me' said and talked about. Other speakers are there only to make sense of it "
-    "(what a question was, who a reply went to); never summarise what others said or what played on its own. "
-    "Only 'me' lines are the person: a video, stream or call in an app is never something they said or did, even when "
-    "it says 'I'. Feelings, opinions, worries and plans come only from their own 'me' words: never say they felt, "
-    "thought or wanted something because a video, film or song said it (a video about cringe is not them feeling "
-    "cringe). If they said little, say so plainly (for example 'You were quiet most of the day') rather than "
-    "filling the diary from app audio. "
-    "The speech recognition makes mistakes, and song lyrics or video dialogue are not the person's own words. "
-    "Be specific, never vague: name the people, games, projects, places, things and numbers that came up, and say what "
-    "was actually said, decided or found out, not just that something was 'discussed'. Vague: 'Talked about work "
-    "frustrations.' Specific: 'Said the build server broke again and you plan to move it to the NAS.' "
-    "Be factual and brief, never invent details, and write to the person as 'you'.";
+    "You help one person keep a diary from an automatic transcript of their day. Write to them as 'you'. "
+    "Lines marked 'You' are the only words they said, into their microphone: to people in the room, on calls, or to "
+    "themselves. Lines named after a person (like 'Sam' or 'Alex') are that person talking to them on a call: their "
+    "words, their stories and their news, never the diary-keeper's. Lines marked 'media in <app>' are audio playing on "
+    "their PC (videos, films, music, games, a voice assistant): never people they talked to, never their words and never "
+    "something they did. The window title is in brackets. "
+    "Who said it matters most. Before writing anything, check whose line it came from. When someone else tells a story, "
+    "shares news or explains something, write it as theirs: 'Sam told you about her job interview', not 'You talked "
+    "about a job interview'. Your short replies ('yeah', 'oh no', 'that's funny', questions) do not make it your story. "
+    "Write 'you said', 'you told', 'you mentioned' only for things in 'You' lines. Feelings, opinions, worries and plans "
+    "are theirs only when their own 'You' words say so; a video or song saying something is never them feeling it. "
+    "The speech recognition makes mistakes: guess the likely word only when it is obvious, and never build a story on a "
+    "garbled line. "
+    "Be specific, never vague: name the people, games, projects, places, things and numbers, and say what was actually "
+    "said, decided or found out, not just that something was 'discussed'. Be factual and brief and never invent details.";
 
 static const char* REMEMBER_RULE =
     "remember = one item per flagged moment, in order: time (HH:MM of the flag) and "
     "point (what you wanted to remember, one short sentence from your own words around the flag; keep names, numbers "
-    "and dates exact). An empty list when there are no flagged moments.";
+    "and dates exact).";
 
 static const char* REMINDERS_RULE =
     "reminders = only clear plans or promises you made out loud for later: "
     "\"I'll…\", \"I need to…\", \"I have to…\", \"I'm going to…\", \"remind me to…\", \"don't let me forget…\", \"we should…\", "
-    "\"let's… tomorrow\". For each: time (HH:MM), said (your exact words from a 'me' line), text (a short to-do, "
+    "\"let's… tomorrow\". For each: time (HH:MM), said (your exact words from a 'You' line), text (a short to-do, "
     "like \"Call the dentist\"), when (\"YYYY-MM-DD HH:MM\" if you said when to do it: \"tomorrow\", \"tonight\", "
     "\"at 5\", \"on Monday\", \"in an hour\"; counted from the time you said it, using the date given; tomorrow with no "
     "time is 09:00, tonight is 20:00; \"\" if you did not say when). Comments, questions, feelings, game chatter and anything from videos or songs are NOT "
@@ -910,13 +939,19 @@ static const char* REMINDERS_RULE =
     "{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"time\":{\"type\":\"string\"},\"said\":" \
     "{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"when\":{\"type\":\"string\"}},\"required\":"          \
     "[\"time\",\"said\",\"text\",\"when\"]}}"
-static const char* SUMMARY_SCHEMA =
-    "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"reminders\":" REMINDERS_SCHEMA
-    ",\"remember\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"time\":{\"type\":\"string\"},"
-    "\"point\":{\"type\":\"string\"}},\"required\":[\"time\",\"point\"]}}},\"required\":[\"summary\",\"reminders\",\"remember\"]}";
+// A part of the transcript: notes, each named after whose lines it came from (%s: Chunk.who).
 static const char* NOTES_SCHEMA =
-    "{\"type\":\"object\",\"properties\":{\"notes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"reminders\":" REMINDERS_SCHEMA
-    "},\"required\":[\"notes\",\"reminders\"]}";
+    "{\"type\":\"object\",\"properties\":{\"notes\":{\"type\":\"array\",\"maxItems\":6,\"items\":{\"type\":\"object\","
+    "\"properties\":{\"who\":{\"type\":\"string\",\"enum\":[%s]},\"note\":{\"type\":\"string\"}},\"required\":[\"who\",\"note\"]}},"
+    "\"reminders\":" REMINDERS_SCHEMA "},\"required\":[\"notes\",\"reminders\"]}";
+// A part of the day in the summary: up to %d points, each on its own topic.
+static const char* POINTS_SCHEMA =
+    "{\"type\":\"object\",\"properties\":{\"points\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":%d,\"items\":{\"type\":"
+    "\"object\",\"properties\":{\"topic\":{\"type\":\"string\",\"maxLength\":40},\"text\":{\"type\":\"string\",\"maxLength\":300}},"
+    "\"required\":[\"topic\",\"text\"]}}},\"required\":[\"points\"]}";
+static const char* REMEMBER_SCHEMA =
+    "{\"type\":\"object\",\"properties\":{\"remember\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":"
+    "{\"time\":{\"type\":\"string\"},\"point\":{\"type\":\"string\"}},\"required\":[\"time\",\"point\"]}}},\"required\":[\"remember\"]}";
 
 // Tells the model what it must leave out, from the never-list.
 static Str never_rule(Arena* a, Str* never, i32 count) {
@@ -931,70 +966,53 @@ static Str never_rule(Arena* a, Str* never, i32 count) {
     return buf_take(&b, a);
 }
 
-static Str summary_prompt(Arena* a, const char* day, u32 max_words, Str material, Str history, Str never) {
+// Step 1, for each chunk: notes on it, each saying whose lines it came from, so another person's
+// story is never written as mine.
+static Str notes_prompt(Arena* a, const char* day, const Chunk* c, Str never) {
+    char t0[6], t1[6];
+    hm_of(c->first, t0);
+    hm_of(c->last, t1);
     Buf b = {};
-    if (history.len) {
-        buf_cstr(&b, "Your earlier days, newest first (context only: use it to recognise recurring people and projects and "
-                     "to notice follow-ups, like finishing something from earlier; never retell those days):\n");
-        buf_add(&b, history);
-        buf_cstr(&b, "\n");
-    }
-    buf_add(&b, material);
-    buf_fmt(&b,
-            "\n\nReturn JSON. summary = %s only, in at most %u words, in Markdown: short "
-            "bullet points grouped under bold labels for the parts of the day (Morning, Afternoon, Evening, Night — only "
-            "those with something in them, each label once and in order), about what you said: topics you talked about, plans, what you worked on, the "
-            "important things first, each bullet with its concrete details. Leave out what others said or what played "
-            "unless you talked about it, and no list of songs, videos or artists. Do not repeat the flagged moments in the "
-            "summary; they get their own list. Write less rather than pad: a quiet day can be two bullets.",
-            day_long(scratch(), day, true).ptr, max_words);
+    buf_fmt(&b, "Transcript from %s to %s on %s (times after midnight are the next morning):\n\n", t0, t1, day_long(a, day, true).ptr);
+    buf_add(&b, c->text);
+    buf_cstr(&b,
+             "\n\nReturn JSON. notes = up to 6 notes on this part of the day, one per topic (never two notes on the same "
+             "thing); a short or quiet part needs only one or two. For each: who = whose lines the topic came from: 'You' "
+             "only when the 'You' lines tell it (your story, your plan, your work), or the name of the person whose lines "
+             "tell it, even when you replied ('yeah', questions, jokes); note = one sentence with its concrete details "
+             "(names, things, numbers, what was decided), written as 'You …' or 'Sam told you …' to match who. Keep what "
+             "matters for a diary: what you did, made, planned, promised or decided, what you told people, and the main "
+             "news or stories people told you. Leave out small talk, bare reactions and media you only watched or "
+             "listened to; the plot of a film or video is never a note (at most: \"Watched Avatar with friends on "
+             "Discord\").");
     buf_add(&b, never);
     buf_cstr(&b, " ");
     buf_cstr(&b, REMINDERS_RULE);
-    buf_cstr(&b, " Merge duplicates. ");
-    buf_cstr(&b, REMEMBER_RULE);
     return buf_take(&b, a);
 }
 
-// The month before `day`, for context: the last week's summaries in full (up to ~500 characters
-// each), older days as one line.
-static Str history(sqlite3* db, Arena* a, const char* day, Str* never, i32 never_count) {
-    i32 y, m, d;
-    if (!parse_day(day, &y, &m, &d)) return {"", 0};
-    char from[11];
-    day_text(day_plus(y, m, d, -30), from);
-    sqlite3_stmt* st = prepare(db, "SELECT day, summary FROM summaries WHERE status = 'done' AND day < ?1 AND day >= ?2 ORDER BY day DESC");
-    if (!st) return {"", 0};
-    bind_str(st, 1, str(day));
-    bind_str(st, 2, str(from));
-    Buf out = {};
-    for (i32 i = 0; sqlite3_step(st) == SQLITE_ROW; i++) {
-        Mark mk = mark(scratch());
-        Str row_day = col_str(st, 0, scratch());
-        Str text = strip_never(scratch(), col_str(st, 1, scratch()), never, never_count);
-        // Bullets only (no labels or "To remember" heading), one per line.
-        Buf line = {};
-        Str rest = text, l = {};
-        bool first = true;
-        while (next_line(&rest, &l)) {
-            Str b = {};
-            if (!bullet_text(l, &b)) continue;
-            if (!first) buf_cstr(&line, "; ");
-            buf_add(&line, b);
-            first = false;
-        }
-        i64 budget = i < 7 ? 500 : 110;
-        Str joined = buf_take(&line, scratch());
-        if (joined.len > budget) {
-            i64 cut = budget;
-            while (cut > 0 && ((u8)joined.ptr[cut] & 0xC0) == 0x80) cut--;
-            joined = str_fmt(scratch(), "%.*s…", (int)cut, joined.ptr);
-        }
-        if (joined.len) buf_fmt(&out, "- %s: %s\n", day_short(scratch(), row_day.ptr).ptr, joined.ptr);
-        rewind(mk);
-    }
-    sqlite3_finalize(st);
-    return buf_take(&out, a);
+// Step 2, for each part of the day: its notes (`notes`, under each chunk's times) cut down to at
+// most `points` bullets.
+static Str points_prompt(Arena* a, const char* day, i32 part, f64 first, f64 last, Str notes, i32 points, Str never) {
+    char t0[6], t1[6];
+    hm_of(first, t0);
+    hm_of(last, t1);
+    Buf b = {};
+    Str name = str_lower(a, str(PARTS[part]));
+    buf_fmt(&b, "Notes on the %s of %s (%s–%s), in order:\n", name.ptr, day_long(a, day, true).ptr, t0, t1);
+    buf_add(&b, notes);
+    buf_fmt(&b,
+            "\nReturn JSON. points = the diary for this part of the day: 1 to %d bullets, each with topic (2 to 4 words "
+            "naming the story or subject, like 'dog at the vet' or 'new laptop') and text (one plain sentence of at "
+            "most 30 words with its concrete details: names, things, numbers). Every bullet has a different topic: notes "
+            "about the same story, even from different times, become one bullet. Cover the whole span, from the first "
+            "time range to the last, not just its start. Most important first: plans, promises and decisions, then what "
+            "you did, made or told people, then the main things people told you. Drop small talk and bare reactions; "
+            "fewer bullets rather than padding. Each note starts with [who] it came from; keep that exactly: 'you …' only "
+            "for your own words, 'Sam told you …' for what someone else said. No list of songs or videos.",
+            points);
+    buf_add(&b, never);
+    return buf_take(&b, a);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1024,7 +1042,7 @@ static Slice<Flag> flagged_moments(Arena* a, Slice<SLine> lines) {
             SLine* l = &lines.items[k];
             if (!(l->end_ts >= line->start_ts - 30.0 && l->start_ts <= line->end_ts + 45.0)) continue;
             if (buf_len(&context) >= 2000) continue;
-            Str who = is_mic(l) ? str("me") : l->name;
+            Str who = is_mic(l) ? str("You") : l->name;
             Str text = str_trim(l->text);
             char at[6];
             hm_of(l->start_ts, at);
@@ -1789,7 +1807,6 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         if (is_mic(&lines.items[i])) mine.items[mine.count++] = word_set(a, lines.items[i].text);
     i64 words = 0;
     for (i32 i = 0; i < chunks.count; i++) words += my_words(chunks.items[i].text);
-    Str flagged = flags_material(a, flags);
     List<Str> never = {};
     {
         sqlite3_stmt* st = prepare(db, "SELECT topic FROM summary_never ORDER BY id");
@@ -1798,9 +1815,10 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
     }
     List<Str> never_low = {};
     for (i32 i = 0; i < never.count; i++) list_push(&never_low, str_lower(a, never.items[i]));
-    Str past = history(db, a, day, never_low.items, never_low.count);
     Str rule = never_rule(a, never.items, never.count);
-    Json result = {};
+    Str written = {};          // the summary, in Markdown
+    Json remember = {};        // the model's points for the flagged moments
+    List<Json> candidates = {};  // reminders from the notes
     Str system = system_prompt(a);
 
     if (!chunks.count) {
@@ -1810,91 +1828,103 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
     phase_post(app, "starting the AI");
     if (words < QUIET_DAY_WORDS) {
         // Barely a word said: that is the summary; the apps' audio is not the day.
-        Str quiet = str_fmt(a, "{\"summary\":\"%s\",\"reminders\":[],\"remember\":[]}", quiet_summary(words));
-        json_parse(a, quiet, &result, 0, 0);
+        written = str(quiet_summary(words));
     } else {
         if (!llm_open(app, cfg, 12288, &llm, error, cap)) goto done;
-        if (chunks.count == 1) {
-            phase_post(app, "writing the summary");
-            Str material = str_fmt(a, "Transcript of your day (you said %lld words in it):\n\n%s%s", words, chunks.items[0].text.ptr, flagged.ptr);
-            Str prompt = summary_prompt(a, day, cfg->max_words, material, past, rule);
-            if (!llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap)) goto done;
-        } else {
-            // Long day: notes for each part, then the summary from the notes.
-            Buf material = {};
-            buf_fmt(&material, "Notes from your day, in order (you said %lld words in all):\n", words);
-            List<Json> candidates = {};
-            bool parts_ok = true;
-            for (i32 i = 0; i < chunks.count && parts_ok; i++) {
-                Chunk* c = &chunks.items[i];
-                char t0[6], t1[6];
-                hm_of(c->first, t0);
-                hm_of(c->last, t1);
-                if (my_words(c->text) < QUIET_PART_WORDS) {
-                    buf_fmt(&material, "\n%s–%s\n- You said almost nothing (only apps playing).\n", t0, t1);
-                    continue;
-                }
-                phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
-                Buf prompt = {};
-                buf_fmt(&prompt, "Transcript from %s to %s on %s (times after midnight are the next morning):\n\n", t0, t1,
-                        day_long(a, day, true).ptr);
-                buf_add(&prompt, c->text);
-                buf_cstr(&prompt,
-                         "\n\nReturn JSON. notes = 1 to 6 short bullet points on what you "
-                         "talked about and did in this part, from your own lines (others only as context; skip small talk and "
-                         "trivia), each with its concrete details (names, things, numbers, what was decided). Every note must come "
-                         "from your own 'me' lines; a topic only others or media brought up is left out, and the plot of a "
-                         "film or video is never a note (at most: \"Watched Avatar with friends on Discord\").");
-                buf_add(&prompt, rule);
-                buf_cstr(&prompt, " ");
-                buf_cstr(&prompt, REMINDERS_RULE);
-                Json part = {};
-                if (!llm_json(&llm, a, system, buf_take(&prompt, a), str(NOTES_SCHEMA), &part, error, cap)) {
-                    parts_ok = false;
-                    break;
-                }
-                buf_fmt(&material, "\n%s–%s\n", t0, t1);
-                const Json* notes = json_get(&part, "notes");
-                for (i32 k = 0; k < json_len(notes); k++) {
-                    const Json* note = json_at(notes, k);
-                    if (note->type == JSON_STRING) buf_fmt(&material, "- %s\n", note->str.ptr);
-                }
-                Json kept = keep_real_reminders(a, json_get(&part, "reminders"), mine);
-                for (i32 k = 0; k < kept.count; k++) list_push(&candidates, kept.items[k]);
+        // 1. Notes on each chunk, filed under its part of the day with its times and whose they are.
+        Buf notes[PART_COUNT] = {};
+        i64 said[PART_COUNT] = {};
+        f64 first[PART_COUNT] = {}, last[PART_COUNT] = {};
+        bool ok_parts = true;
+        for (i32 i = 0; i < chunks.count && ok_parts; i++) {
+            Chunk* c = &chunks.items[i];
+            i64 n = my_words(c->text);
+            if (n < QUIET_PART_WORDS) continue;
+            phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
+            Json part = {};
+            Str schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr);
+            if (!llm_json(&llm, a, system, notes_prompt(a, day, c, rule), schema, &part, error, cap)) {
+                ok_parts = false;
+                break;
             }
-            if (parts_ok) {
-                if (candidates.count) {
-                    buf_cstr(&material, "\nPossible reminders (time, your words):\n");
-                    for (i32 k = 0; k < candidates.count; k++) {
-                        Str t = json_text(json_get(&candidates.items[k], "time"));
-                        Str s = json_text(json_get(&candidates.items[k], "said"));
-                        buf_fmt(&material, "- %.*s \"%.*s\"\n", (int)t.len, t.ptr, (int)s.len, s.ptr);
-                    }
-                }
-                buf_add(&material, flagged);
-                phase_post(app, "writing the summary");
-                Str prompt = summary_prompt(a, day, cfg->max_words, buf_take(&material, a), past, rule);
-                parts_ok = llm_json(&llm, a, system, prompt, str(SUMMARY_SCHEMA), &result, error, cap);
+            const Json* list = json_get(&part, "notes");
+            if (!json_len(list)) continue;
+            Buf* b = &notes[c->part];
+            if (!buf_len(b)) first[c->part] = c->first;
+            last[c->part] = c->last;
+            said[c->part] += n;
+            char t0[6], t1[6];
+            hm_of(c->first, t0);
+            hm_of(c->last, t1);
+            buf_fmt(b, "\n%s–%s\n", t0, t1);
+            for (i32 k = 0; k < json_len(list); k++) {
+                Str who = json_text(json_get(json_at(list, k), "who"));
+                Str note = str_trim(json_text(json_get(json_at(list, k), "note")));
+                if (note.len) buf_fmt(b, "- [%.*s] %.*s\n", (int)who.len, who.ptr, (int)note.len, note.ptr);
             }
-            buf_free(&material);
-            list_free(&candidates);
-            if (!parts_ok) goto done;
+            Json kept = keep_real_reminders(a, json_get(&part, "reminders"), mine);
+            for (i32 k = 0; k < kept.count; k++) list_push(&candidates, kept.items[k]);
         }
+
+        // 2. Each part's notes cut down to its share of the bullets (about one per 20 words of
+        // max_words), each on its own topic. The labels come from here, never from the model.
+        i64 total = 0;
+        for (i32 p = 0; p < PART_COUNT; p++) total += said[p];
+        Buf out = {};
+        for (i32 p = 0; p < PART_COUNT && ok_parts; p++) {
+            if (!buf_len(&notes[p])) continue;
+            i32 points = (i32)((cfg->max_words / 20.0) * (f64)said[p] / (f64)(total ? total : 1) + 0.5);
+            points = points < 2 ? 2 : points > 8 ? 8 : points;
+            phase_post(app, "writing the %s", str_lower(a, str(PARTS[p])).ptr);
+            Json got = {};
+            Str prompt = points_prompt(a, day, p, first[p], last[p], buf_take(&notes[p], a), points, rule);
+            if (!llm_json(&llm, a, system, prompt, str_fmt(a, POINTS_SCHEMA, points), &got, error, cap)) {
+                ok_parts = false;
+                break;
+            }
+            const Json* list = json_get(&got, "points");
+            i32 shown = 0;
+            for (i32 k = 0; k < json_len(list); k++) {
+                Str text = str_trim(json_text(json_get(json_at(list, k), "text")));
+                Str topic = str_trim(json_text(json_get(json_at(list, k), "topic")));
+                bool again = false;  // a topic already written: the model repeating itself
+                for (i32 j = 0; j < k && !again; j++)
+                    again = str_eq_nocase(topic, str_trim(json_text(json_get(json_at(list, j), "topic"))));
+                if (!text.len || again) continue;
+                if (!shown++) buf_fmt(&out, "%s**%s**\n", buf_len(&out) ? "\n" : "", PARTS[p]);
+                buf_fmt(&out, "- %.*s\n", (int)text.len, text.ptr);
+            }
+        }
+        for (i32 p = 0; p < PART_COUNT; p++) buf_free(&notes[p]);
+        written = buf_take(&out, a);
+
+        // 3. The flagged moments, in my own words around each.
+        if (ok_parts && flags.count) {
+            phase_post(app, "writing what to remember");
+            Str prompt = str_fmt(a, "%s\n\nReturn JSON. %s", flags_material(a, flags).ptr, REMEMBER_RULE);
+            Json got = {};
+            ok_parts = llm_json(&llm, a, system, prompt, str(REMEMBER_SCHEMA), &got, error, cap);
+            remember = *json_get(&got, "remember");
+        }
+        if (!ok_parts) goto done;
     }
     // The server has exited here, so the graphics card is free again.
     llm_close(&llm);
     gpu_give_back(app);
 
     {
-        Str summary = strip_never(a, str_trim(json_text(json_get(&result, "summary"))), never_low.items, never_low.count);
+        Str summary = strip_never(a, str_trim(written), never_low.items, never_low.count);
         if (!summary.len && !flags.count) {
             snprintf(error, cap, "the model returned an empty summary");
             goto done;
         }
-        Str section = remember_section(a, flags, json_get(&result, "remember"));
+        Str section = remember_section(a, flags, &remember);
         while (section.len && isspace((u8)section.ptr[section.len - 1])) section.len--;
         summary = str_trim(str_fmt(a, "%.*s%.*s", (int)summary.len, summary.ptr, (int)section.len, section.ptr));
-        Json reminders = keep_real_reminders(a, json_get(&result, "reminders"), mine);
+        Json reminders = {};
+        reminders.type = JSON_ARRAY;
+        reminders.items = candidates.items;
+        reminders.count = candidates.count;
         f64 saved_ts = now_ts();
         bool stored = tx(db, "BEGIN IMMEDIATE");
         stored = stored && save(db, day, "done", saved_ts, cfg->model, summary, json_string_of(a, &reminders)) &&
@@ -1939,6 +1969,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
 
 done:
     llm_close(&llm);
+    list_free(&candidates);
     list_free(&never);
     list_free(&never_low);
     arena_release(&work);
