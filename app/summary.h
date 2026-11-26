@@ -79,6 +79,32 @@ struct Notify {
     HWND window;             // the notify thread's message window, which links are sent to
 };
 
+// What a summary can be for. Its text says what to keep and what matters most; it goes into the
+// prompts in place of the general one. The rules about who said what stay the same for all.
+#define FOCUS_LEAD "What to keep, most important first:"  // the words before the focus text in the prompts
+struct SummaryFocus {
+    const char* key;   // in config.toml
+    const char* name;  // in Settings
+    const char* text;
+};
+static const SummaryFocus SUMMARY_FOCUSES[] = {
+    {"general", "General",
+     "what you did, made, planned, promised or decided, what you told people, and the main news or stories people "
+     "told you. Skip small talk and bare reactions."},
+    {"emotion", "Emotion",
+     "how the day felt: moments that made you or the people you talked with happy, stressed, proud, sad, annoyed or "
+     "close, and what caused them. Name a feeling only when someone's own words show it; never guess one."},
+    {"business", "Business",
+     "work and study: tasks done, problems and how they were solved, decisions, meetings, what people asked of you, "
+     "deadlines and next steps. Skip personal chat unless it affects the work."},
+    {"memory", "Memory",
+     "the details that are easy to forget: things to do, promises, dates, times, names, numbers, places, things to "
+     "buy or send, and what people asked you for. Keep each detail exact."},
+    {"mood", "Mood",
+     "what made the day good or bad: wins, setbacks, fun, stress, rest, arguments and kind moments, and whether this "
+     "part of the day leaned good, bad or mixed, judged only from what was said."},
+};
+
 // What the summary threads (and llm.cpp) need of the settings.
 struct SummaryOptions {
     u32 max_words;
@@ -87,6 +113,8 @@ struct SummaryOptions {
     char endpoint[512];
     char api_key[256];
     char ai_dir[MAX_PATH];
+    char focus[16];
+    char focus_text[1024];
 };
 
 struct Summary {
@@ -113,6 +141,12 @@ struct Summary {
     // The earliest moment a set reminder is due, in unix milliseconds (INT64_MAX: none). The
     // database thread lowers it when it sets one; the clock opens the database only then.
     volatile LONG64 next_alert_ms;
+    // Settings' "Write with the AI" (summary_write_focus): the wish it was given, then its draft or
+    // why it failed. The main thread's, except `wish` while `focus_writing` (the writer reads it).
+    bool focus_writing;
+    char focus_wish[512];
+    char focus_draft[1024];
+    char focus_error[256];
 };
 
 // What summary_act did.
@@ -155,11 +189,14 @@ void summary_set_ask_at(App* app, Str hhmm);
 void summary_set_max_words(App* app, u32 words);
 void summary_set_ask_reminders(App* app, bool on);
 
-// summary-prompt.txt next to config.toml: the AI's instructions (tone, what to focus on). No file,
-// or an empty one, means the built-in text. summary_prompt_file writes the built-in text there if
-// the file is missing, to edit; null (saying why) if it could not.
-const wchar_t* summary_prompt_path();
-const wchar_t* summary_prompt_file(App* app);
+// What the summary is for: a SUMMARY_FOCUSES key, or "custom" with `text` (made one paragraph).
+void summary_set_focus(App* app, Str key, Str text);
+// The focus text options `o` ask for: a preset's, or the custom one (General's while it is empty).
+const char* summary_focus_text(const SummaryOptions* o);
+// Settings' "Write with the AI": the summary AI turns `wish` ("I want to see if my days are
+// getting better") into a focus paragraph, on its own thread. It lands in Summary.focus_draft, or
+// focus_error says why not. The main thread.
+void summary_write_focus(App* app, Str wish);
 
 // One day's summary, with each reminder's notification state. Any thread.
 StoredSummary summary_get(sqlite3* db, Arena* a, const char* day);

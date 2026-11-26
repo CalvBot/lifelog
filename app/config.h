@@ -64,6 +64,8 @@ struct Config {
         char endpoint[512];  // an OpenAI-compatible ".../v1" to use instead of lifelog's own llama.cpp
         char api_key[256];
         bool ask_reminders;
+        char focus[16];         // what the summary is for: a SUMMARY_FOCUSES key, or "custom"
+        char focus_text[1024];  // the "custom" focus, one paragraph
     } summary;
 
     struct {

@@ -59,6 +59,10 @@ ask_at = "21:00"
 max_words = 250
 # After a summary, offer each reminder that said when ("tomorrow at 5") as a notification.
 ask_reminders = true
+# What the summary is for, which decides what it keeps: "general", "emotion", "business",
+# "memory", "mood", or "custom" with your own words in focus_text (one paragraph).
+focus = "general"
+focus_text = ""
 # The model file (<model>.gguf in the AI folder's llm). Its server runs only while a summary is written.
 model = "qwen3-14b"
 # Or use an AI you already run: any OpenAI-compatible endpoint, e.g. "http://127.0.0.1:11434/v1" for
@@ -360,6 +364,7 @@ static void config_defaults(Config* cfg) {
     cfg->summary.max_words = 250;
     SET(cfg->summary.model, str("qwen3-14b"));
     cfg->summary.ask_reminders = true;
+    SET(cfg->summary.focus, str("general"));
     SET(cfg->worker.model, str("large-v3-turbo"));
     SET(cfg->worker.language, str("en"));
     cfg->chimes.volume = 60;
@@ -436,6 +441,8 @@ bool config_load(Config* cfg, char* error, i32 error_cap) {
             if (str_eq(k, str("endpoint"))) take_string(cfg->summary.endpoint, sizeof(cfg->summary.endpoint), &v);
             if (str_eq(k, str("api_key"))) take_string(cfg->summary.api_key, sizeof(cfg->summary.api_key), &v);
             if (str_eq(k, str("ask_reminders"))) take_bool(&cfg->summary.ask_reminders, &v);
+            if (str_eq(k, str("focus"))) take_string(cfg->summary.focus, sizeof(cfg->summary.focus), &v);
+            if (str_eq(k, str("focus_text"))) take_string(cfg->summary.focus_text, sizeof(cfg->summary.focus_text), &v);
         } else if (str_eq(tb, str("worker"))) {
             if (str_eq(k, str("model"))) take_string(cfg->worker.model, sizeof(cfg->worker.model), &v);
             if (str_eq(k, str("language"))) take_string(cfg->worker.language, sizeof(cfg->worker.language), &v);

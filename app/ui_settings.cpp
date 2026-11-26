@@ -20,6 +20,7 @@ enum UndoKind : u8 {
     UNDO_ASK_AT,
     UNDO_WORDS,
     UNDO_REMINDERS,
+    UNDO_FOCUS,      // the purpose picked before: its key in `text`
     UNDO_PAUSE_GAMES,
     UNDO_NEVER,      // a never-mention topic that was allowed again: add it back
     UNDO_CHIME_STYLE,
@@ -66,6 +67,9 @@ struct SettingsState {
     i32 gpu;
     i32 chime_volume;
     bool ask_at_active;
+    char focus_text[1024];  // the custom purpose
+    bool focus_text_active;
+    char focus_wish[512];   // what to ask the AI to write a purpose for
     char wendpoint[512];  // transcription's own server
     bool wendpoint_active;
     char wmodel[128];
@@ -246,6 +250,7 @@ static void undo_last(App* app, SettingsState* s) {
     case UNDO_ASK_AT: summary_set_ask_at(app, str(u.text)); break;
     case UNDO_WORDS: summary_set_max_words(app, u.n); break;
     case UNDO_REMINDERS: summary_set_ask_reminders(app, u.on); break;
+    case UNDO_FOCUS: summary_set_focus(app, str(u.text), str(app->config.summary.focus_text)); break;
     case UNDO_PAUSE_GAMES: worker_set_pause_for_games(app, u.on); break;
     case UNDO_NEVER: summary_add_never(app, str(u.text), 0, 0); break;
     case UNDO_CHIME_STYLE: chime_set_style(app, (ChimeStyle)u.n); break;
@@ -1290,6 +1295,84 @@ static void commands_card(App* app, SettingsState* s, f32 width, bool opened) {
 // ---------------------------------------------------------------------------------------------
 // Daily summary
 
+// Wrapped weak text in the rows' right column.
+static void weak_wrapped(const char* text) {
+    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+    ImGui::PushStyleColor(ImGuiCol_Text, weak_text());
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+// What the summary is for: a preset, whose text shows below it, or the person's own words, which
+// the summary AI can write from a short wish.
+static void purpose_rows(App* app, SettingsState* s) {
+    Config* c = &app->config;
+    Summary* sum = &app->summary;
+    bool custom = strcmp(c->summary.focus, "custom") == 0;
+    const SummaryFocus* preset = 0;
+    for (i32 i = 0; i < COUNT(SUMMARY_FOCUSES); i++)
+        if (strcmp(c->summary.focus, SUMMARY_FOCUSES[i].key) == 0) preset = &SUMMARY_FOCUSES[i];
+    if (!custom && !preset) preset = &SUMMARY_FOCUSES[0];
+
+    row_label("Purpose");
+    ImGui::SetNextItemWidth(px(160));
+    const char* chosen = 0;
+    if (ImGui::BeginCombo("##focus", custom ? "Custom" : preset->name)) {
+        for (i32 i = 0; i < COUNT(SUMMARY_FOCUSES); i++)
+            if (ImGui::Selectable(SUMMARY_FOCUSES[i].name, preset == &SUMMARY_FOCUSES[i])) chosen = SUMMARY_FOCUSES[i].key;
+        if (ImGui::Selectable("Custom", custom)) chosen = "custom";
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the summary is for: it decides what the summary keeps");
+    if (chosen && strcmp(chosen, c->summary.focus) != 0) {
+        SettingsUndo* u = remember(s, UNDO_FOCUS, "purpose back to %s", custom ? "Custom" : preset->name);
+        SET(u->text, str(c->summary.focus));
+        // Custom starts from the preset it was on, to change.
+        bool fresh = strcmp(chosen, "custom") == 0 && !c->summary.focus_text[0];
+        summary_set_focus(app, str(chosen), str(fresh ? preset->text : c->summary.focus_text));
+        return;
+    }
+
+    if (!custom) {
+        weak_wrapped(tmp("Keeps %s", preset->text));
+        return;
+    }
+
+    if (!s->focus_text_active) SET(s->focus_text, str(c->summary.focus_text));
+    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+    ImGui::InputTextMultiline("##focus_text", s->focus_text, sizeof(s->focus_text), ImVec2(-FLT_MIN, px(84)),
+                              ImGuiInputTextFlags_WordWrap);
+    s->focus_text_active = ImGui::IsItemActive();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("What to keep, most important first. Who said what, the length and reminders are handled for you.");
+    if (ImGui::IsItemDeactivatedAfterEdit()) summary_set_focus(app, str("custom"), str(s->focus_text));
+
+    // Write it with the AI, from a few words.
+    ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+    const char* write = sum->focus_writing ? "Writing..." : "Write with AI";
+    f32 write_w = ImGui::CalcTextSize(write).x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - write_w - ImGui::GetStyle().ItemSpacing.x);
+    bool enter = ImGui::InputTextWithHint("##wish", "Or say what you want, like: see if my days are getting better", s->focus_wish,
+                                          sizeof(s->focus_wish), ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(sum->focus_writing || !str_trim(str(s->focus_wish)).len);
+    if (ImGui::Button(write) || (enter && !sum->focus_writing)) summary_write_focus(app, str(s->focus_wish));
+    ImGui::EndDisabled();
+    if (sum->focus_writing) weak_wrapped("The AI is starting; this can take a minute.");
+    if (sum->focus_error[0]) weak_wrapped(sum->focus_error);
+    if (sum->focus_draft[0]) {
+        ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+        ImGui::TextWrapped("%s", sum->focus_draft);
+        ImGui::SetCursorPosX(ImGui::GetStyle().WindowPadding.x + px(ROW_LABEL_W));
+        if (ImGui::Button("Use this")) {
+            summary_set_focus(app, str("custom"), str(sum->focus_draft));
+            sum->focus_draft[0] = 0;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) sum->focus_draft[0] = 0;
+    }
+}
+
 static void summary_card(App* app, SettingsState* s, f32 width) {
     Config* c = &app->config;
     settings_card("summary", width);
@@ -1303,24 +1386,12 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
     ImGui::SameLine();
     title("Daily summary");
 
-    // Edit prompt at the right of the title, and how it is doing between, cut to fit.
-    const char* edit = label(ICON_FILE_TEXT, "Edit prompt");
-    f32 edit_w = ImGui::CalcTextSize(edit).x + ImGui::GetStyle().FramePadding.x * 2;
-    f32 buttons_x = ImGui::GetContentRegionMax().x - edit_w;
+    // How it is doing, beside the title, cut to fit.
     if (app->summary.phase[0]) {
         ImGui::SameLine(0, px(10));
-        f32 room = buttons_x - ImGui::GetCursorPosX() - px(10);
+        f32 room = ImGui::GetContentRegionAvail().x;
         if (room > px(40)) weak(fit(app->summary.phase, room));
     }
-    ImGui::SameLine(buttons_x);
-    // Opened from the pool, as the other files are: the shell may not open it from this thread.
-    if (ImGui::Button(edit)) {
-        const wchar_t* path = summary_prompt_file(app);
-        if (path) settings_open_path(app, path, false);
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The AI's instructions for the summary, in summary-prompt.txt.\n"
-                          "Changes count from the next summary. Delete the file to go back to the built-in text.");
 
     row_label("Ask at");
     if (!s->ask_at_active) SET(s->ask_at, str(c->summary.ask_at));
@@ -1351,6 +1422,7 @@ static void summary_card(App* app, SettingsState* s, f32 width) {
         summary_set_max_words(app, (u32)s->max_words);
     }
     if (!ImGui::IsItemActive()) s->max_words = (i32)c->summary.max_words;
+    purpose_rows(app, s);
 
     // lifelog's own llama.cpp, or any OpenAI-compatible server (Ollama, LM Studio, a cloud one).
     model_row(app, s, SETUP_SUMMARY_AI);

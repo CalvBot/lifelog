@@ -18,7 +18,8 @@ Build it yourself: `app\build.bat` (Visual Studio 2022). `scripts\build-msi.ps1`
 
 - **Tray:** left-click for the menu (pause, copy the last few minutes as text or audio); right-click to pause or quit.
 - **Timeline:** one page per day, searchable. Lines from the last 7 days can be played back.
-- **Journal:** daily summaries and reminders.
+- **Journal:** daily summaries and reminders. Settings → Daily summary → Purpose picks what a summary keeps: General,
+  Emotion, Business, Memory, Mood, or your own words, which the summary AI can write from a short wish.
 - **Settings:** which apps to record, which are games, when to transcribe, and voice commands.
 - **Voice commands:** "lifelog, summarise the last 30 minutes", "lifelog, remind me in 10 minutes to check the
   oven", "lifelog, open Spotify", "lifelog, skip". The wake word can be changed.

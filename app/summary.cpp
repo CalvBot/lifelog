@@ -901,7 +901,8 @@ static i64 my_words(Str chunk) {
 static const char* quiet_summary(i64 words) { return words == 0 ? "You were quiet all day." : "You were quiet most of the day."; }
 
 // ---------------------------------------------------------------------------------------------
-// The prompts. SYSTEM is only the default: summary-prompt.txt replaces it (summary_prompt_path).
+// The prompts. SYSTEM is the same for every summary; the focus (SUMMARY_FOCUSES, or the person's
+// own) says what to keep.
 // The rules and schemas below stay in code, as the parsing depends on them.
 
 static const char* SYSTEM =
@@ -970,7 +971,7 @@ static Str never_rule(Arena* a, Str* never, i32 count) {
 
 // Step 1, for each chunk: notes on it, each saying whose lines it came from, so another person's
 // story is never written as mine.
-static Str notes_prompt(Arena* a, const char* day, const Chunk* c, Str never) {
+static Str notes_prompt(Arena* a, const char* day, const Chunk* c, const char* focus, Str never) {
     char t0[6], t1[6];
     hm_of(c->first, t0);
     hm_of(c->last, t1);
@@ -982,11 +983,11 @@ static Str notes_prompt(Arena* a, const char* day, const Chunk* c, Str never) {
              "thing); a short or quiet part needs only one or two. For each: who = whose lines the topic came from: 'You' "
              "only when the 'You' lines tell it (your story, your plan, your work), or the name of the person whose lines "
              "tell it, even when you replied ('yeah', questions, jokes); note = one sentence with its concrete details "
-             "(names, things, numbers, what was decided), written as 'You …' or 'Sam told you …' to match who. Keep what "
-             "matters for a diary: what you did, made, planned, promised or decided, what you told people, and the main "
-             "news or stories people told you. Leave out small talk, bare reactions and media you only watched or "
-             "listened to; the plot of a film or video is never a note (at most: \"Watched Avatar with friends on "
-             "Discord\").");
+             "(names, things, numbers, what was decided), written as 'You …' or 'Sam told you …' to match who. " FOCUS_LEAD " ");
+    buf_cstr(&b, focus);
+    buf_cstr(&b,
+             " Leave out media you only watched or listened to; the plot of a film or video is never a note (at most: "
+             "\"Watched Avatar with friends on Discord\").");
     buf_add(&b, never);
     buf_cstr(&b, " ");
     buf_cstr(&b, REMINDERS_RULE);
@@ -995,7 +996,8 @@ static Str notes_prompt(Arena* a, const char* day, const Chunk* c, Str never) {
 
 // Step 2, for each part of the day: its notes (`notes`, under each chunk's times) cut down to at
 // most `points` bullets.
-static Str points_prompt(Arena* a, const char* day, i32 part, f64 first, f64 last, Str notes, i32 points, Str never) {
+static Str points_prompt(Arena* a, const char* day, i32 part, f64 first, f64 last, Str notes, i32 points, const char* focus,
+                         Str never) {
     char t0[6], t1[6];
     hm_of(first, t0);
     hm_of(last, t1);
@@ -1008,11 +1010,10 @@ static Str points_prompt(Arena* a, const char* day, i32 part, f64 first, f64 las
             "naming the story or subject, like 'dog at the vet' or 'new laptop') and text (one plain sentence of at "
             "most 30 words with its concrete details: names, things, numbers). Every bullet has a different topic: notes "
             "about the same story, even from different times, become one bullet. Cover the whole span, from the first "
-            "time range to the last, not just its start. Most important first: plans, promises and decisions, then what "
-            "you did, made or told people, then the main things people told you. Drop small talk and bare reactions; "
-            "fewer bullets rather than padding. Each note starts with [who] it came from; keep that exactly: 'you …' only "
-            "for your own words, 'Sam told you …' for what someone else said. No list of songs or videos.",
-            points);
+            "time range to the last, not just its start. Fewer bullets rather than padding. Each note starts with [who] it "
+            "came from; keep that exactly: 'you …' only for your own words, 'Sam told you …' for what someone else said. "
+            "No list of songs or videos. " FOCUS_LEAD " %s",
+            points, focus);
     buf_add(&b, never);
     return buf_take(&b, a);
 }
@@ -1704,6 +1705,8 @@ void summary_options_publish(App* app) {
     SET(o->endpoint, str(c->summary.endpoint));
     SET(o->api_key, str(c->summary.api_key));
     SET(o->ai_dir, str(c->ai.dir));
+    SET(o->focus, str(c->summary.focus));
+    SET(o->focus_text, str(c->summary.focus_text));
     ReleaseSRWLockExclusive(&s->options_lock);
     if (s->wake) SetEvent(s->wake);
 }
@@ -1733,38 +1736,6 @@ void summary_set_ask_at(App* app, Str hhmm) {
     summary_options_publish(app);
 }
 
-const wchar_t* summary_prompt_path() {
-    static wchar_t path[MAX_PATH];
-    if (!path[0]) {
-        wchar_t dir[MAX_PATH];
-        swprintf(dir, MAX_PATH, L"%s", config_path());
-        wchar_t* slash = wcsrchr(dir, L'\\');
-        if (slash) *slash = 0;
-        swprintf(path, MAX_PATH, L"%s\\summary-prompt.txt", dir);
-    }
-    return path;
-}
-
-const wchar_t* summary_prompt_file(App* app) {
-    const wchar_t* path = summary_prompt_path();
-    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !write_file(path, str(SYSTEM))) {
-        ui_say(app, "Could not write summary-prompt.txt");
-        return 0;
-    }
-    return path;
-}
-
-// The system prompt: summary-prompt.txt if it has any text, else the built-in one. Read for each
-// summary, so an edit counts from the next one.
-static Str system_prompt(Arena* a) {
-    Str text = read_file(a, summary_prompt_path());
-    if (text.ptr) {
-        if (str_starts(text, str("\xEF\xBB\xBF"))) text = {text.ptr + 3, text.len - 3};  // Notepad's UTF-8 mark
-        text = str_trim(text);
-        if (text.len) return text;
-    }
-    return str(SYSTEM);
-}
 
 void summary_set_max_words(App* app, u32 words) {
     words = words < 50 ? 50 : words > 2000 ? 2000 : words;
@@ -1862,7 +1833,8 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
     Str written = {};          // the summary, in Markdown
     Json remember = {};        // the model's points for the flagged moments
     List<Json> candidates = {};  // reminders from the notes
-    Str system = system_prompt(a);
+    Str system = str(SYSTEM);
+    const char* focus = summary_focus_text(cfg);
 
     if (!chunks.count) {
         snprintf(error, cap, "nothing was transcribed that day");
@@ -1886,7 +1858,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
             phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
             Json part = {};
             Str schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr);
-            if (!llm_json(&llm, a, system, notes_prompt(a, day, c, rule), schema, &part, error, cap)) {
+            if (!llm_json(&llm, a, system, notes_prompt(a, day, c, focus, rule), schema, &part, error, cap)) {
                 ok_parts = false;
                 break;
             }
@@ -1920,7 +1892,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
             points = points < 2 ? 2 : points > 8 ? 8 : points;
             phase_post(app, "writing the %s", str_lower(a, str(PARTS[p])).ptr);
             Json got = {};
-            Str prompt = points_prompt(a, day, p, first[p], last[p], buf_take(&notes[p], a), points, rule);
+            Str prompt = points_prompt(a, day, p, first[p], last[p], buf_take(&notes[p], a), points, focus, rule);
             if (!llm_json(&llm, a, system, prompt, str_fmt(a, POINTS_SCHEMA, points), &got, error, cap)) {
                 ok_parts = false;
                 break;
@@ -2305,6 +2277,115 @@ void summary_start(App* app) {
     if (app->config.summary.enabled) phase_set(app, "asks at %s", app->config.summary.ask_at);
     start_thread(app, "notify", notify_main);
     start_thread(app, "summary", summary_main);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The focus
+
+void summary_set_focus(App* app, Str key, Str text) {
+    Config* cfg = &app->config;
+    bool known = str_eq(key, str("custom"));
+    for (i32 i = 0; i < COUNT(SUMMARY_FOCUSES) && !known; i++) known = str_eq(key, str(SUMMARY_FOCUSES[i].key));
+    if (!known) return;
+    SET(cfg->summary.focus, key);
+    config_save_string("summary", "focus", cfg->summary.focus);
+    if (str_eq(key, str("custom"))) {
+        // One paragraph: config.toml keeps it on one line.
+        char one[sizeof(cfg->summary.focus_text)];
+        SET(one, str_trim(text));
+        for (char* p = one; *p; p++)
+            if (*p == '\r' || *p == '\n' || *p == '\t') *p = ' ';
+        SET(cfg->summary.focus_text, str_trim(str(one)));
+        config_save_string("summary", "focus_text", cfg->summary.focus_text);
+    }
+    summary_options_publish(app);
+}
+
+const char* summary_focus_text(const SummaryOptions* o) {
+    if (strcmp(o->focus, "custom") == 0 && o->focus_text[0]) return o->focus_text;
+    for (i32 i = 0; i < COUNT(SUMMARY_FOCUSES); i++)
+        if (strcmp(o->focus, SUMMARY_FOCUSES[i].key) == 0) return SUMMARY_FOCUSES[i].text;
+    return SUMMARY_FOCUSES[0].text;
+}
+
+// What the focus writer hands the main thread.
+struct FocusDraft {
+    bool ok;
+    char text[512];  // the draft, or why there is none
+};
+
+static void focus_draft_apply(App* app, Event* e) {
+    FocusDraft* d = event_record<FocusDraft>(e);
+    Summary* s = &app->summary;
+    s->focus_writing = false;
+    if (d->ok) {
+        SET(s->focus_draft, str(d->text));
+        s->focus_error[0] = 0;
+    } else {
+        SET(s->focus_error, str(d->text));
+    }
+    wake_window(app);
+}
+
+static DWORD WINAPI focus_writer_main(void* p) {
+    App* app = (App*)p;
+    SummaryOptions options = summary_options(app);
+    Llm llm = {};
+    char error[512] = {};
+    FocusDraft d = {};
+    bool ok = gpu_take(app);
+    if (!ok) snprintf(error, sizeof(error), "lifelog is closing");
+    ok = ok && llm_open(app, &options, 4096, &llm, error, sizeof(error));
+    Arena a = {};
+    Json reply = {};
+    if (ok) {
+        Buf b = {};
+        buf_cstr(&b, "Someone keeps an automatic diary, written each evening by an AI from a transcript of what they said "
+                     "and heard that day. They said what they want from it: \"");
+        buf_cstr(&b, app->summary.focus_wish);
+        buf_cstr(&b, "\"\n\nWrite the instruction that tells the diary AI what to keep for them. It follows the words "
+                     "\"" FOCUS_LEAD "\", so start straight with the things to keep, in lower case, and never repeat "
+                     "those words. Name the kinds of moments, topics and details that fit this wish, made concrete for "
+                     "it, then at most one sentence on what to leave out. At most 60 words. The diary only hears talk, so "
+                     "never ask for what was not said, such as what was forgotten or skipped. Nothing about who said "
+                     "what, the format, the length or reminders: those are set elsewhere.\n\n");
+        buf_fmt(&b, "Example. Wish: \"help me with work\". Instruction: \"%s\"\n\nReturn JSON.", SUMMARY_FOCUSES[2].text);
+        ok = llm_json(&llm, &a, str("You write short, precise instructions for another AI."), buf_take(&b, &a),
+                      str("{\"type\":\"object\",\"properties\":{\"focus\":{\"type\":\"string\",\"maxLength\":500}},"
+                          "\"required\":[\"focus\"]}"),
+                      &reply, error, sizeof(error));
+    }
+    llm_close(&llm);
+    gpu_give_back(app);
+    Str text = ok ? str_trim(json_text(json_get(&reply, "focus"))) : Str{};
+    // It often starts with the words it follows anyway.
+    Str lead = str(FOCUS_LEAD);
+    if (str_starts_nocase(text, lead)) text = str_trim(str_sub(text, lead.len));
+    if (ok && !text.len) {
+        ok = false;
+        snprintf(error, sizeof(error), "the AI gave back nothing");
+    }
+    d.ok = ok;
+    if (ok) SET(d.text, text);
+    else SET(d.text, str(error));
+    LOG("summary focus: %s", ok ? "written" : error);
+    arena_release(&a);
+    event_send_wait(app, focus_draft_apply, d);
+    return 0;
+}
+
+void summary_write_focus(App* app, Str wish) {
+    Summary* s = &app->summary;
+    wish = str_trim(wish);
+    if (!wish.len || s->focus_writing) return;
+    if (s->writing) {
+        SET(s->focus_error, str("The summary is being written: try again when it is done."));
+        return;
+    }
+    s->focus_writing = true;
+    s->focus_draft[0] = s->focus_error[0] = 0;
+    SET(s->focus_wish, wish);
+    start_thread(app, "summary-focus", focus_writer_main);
 }
 
 // ---------------------------------------------------------------------------------------------
