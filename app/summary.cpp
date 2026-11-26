@@ -1946,21 +1946,13 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         LOG("summary for %s done (%lld words, %d reminders)", day, count_words(summary), count);
         phase_post(app, "done");
 
-        Buf plain = {};
-        Str rest = summary, line = {};
-        i32 taken = 0;
-        while (taken < 3 && next_line(&rest, &line)) {
-            if (!str_trim(line).len) continue;
-            if (taken++) buf_cstr(&plain, " ");
-            buf_add(&plain, strip_md(a, line));
-        }
-        Str text = buf_take(&plain, a);
+        // Nothing from the summary itself: a toast can pop up while someone else is looking at the screen.
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("Your day, summed up"));
-        if (count == 0) set(t.body, sizeof(t.body), text);
-        else if (count == 1) set(t.body, sizeof(t.body), str_fmt(a, "1 reminder. %s", text.ptr));
-        else set(t.body, sizeof(t.body), str_fmt(a, "%d reminders. %s", count, text.ptr));
+        if (count == 0) SET(t.body, str("Open it when you're ready."));
+        else if (count == 1) SET(t.body, str("1 reminder. Open it when you're ready."));
+        else set(t.body, sizeof(t.body), str_fmt(a, "%d reminders. Open it when you're ready.", count));
         char open[160];
         make_link(open, sizeof(open), "summary/open?day=%s", day);
         toast_button(&t, "Read it", open);

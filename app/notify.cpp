@@ -640,9 +640,7 @@ bool notify_preview(const wchar_t* path, f32 scale) {
     toast_button(&jobs[1], "Remind me", "");
     toast_button(&jobs[1], "No thanks", "");
     SET(jobs[2].title, str("Your day, summed up"));
-    SET(jobs[2].body, str("1 reminder. Evening: Sam told you about her job interview and the new laptop she wants. You fixed "
-                          "the build and planned to call the dentist tomorrow. Alex said the dog at the vet is fine and "
-                          "coming home on Friday, and that the trip is off."));
+    SET(jobs[2].body, str("1 reminder. Open it when you're ready."));
     toast_button(&jobs[2], "Read it", "");
     jobs[3].icon = TOAST_ICON_ERROR;
     SET(jobs[3].title, str("The summary could not be written"));
