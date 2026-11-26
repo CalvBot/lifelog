@@ -1,0 +1,2 @@
+// The exe's icon: what Explorer, the Start menu and Windows search show.
+1 ICON "..\\assets\\lifelog.ico"

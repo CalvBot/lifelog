@@ -32,8 +32,11 @@ for %%f in (imgui imgui_draw imgui_tables imgui_widgets imgui_impl_win32 imgui_i
 copy /y ..\schema.sql build\ >nul
 copy /y ..\assets\lucide.ttf build\assets\ >nul
 
+rem The logo as the exe's own icon, for Explorer, Start and search (the windows draw theirs).
+rc /nologo /fo build\lifelog.res lifelog.rc || exit /b 1
+
 cl /nologo /std:c++20 /MT /W4 /wd4100 /wd4201 /wd4505 /GR- /EHa- /utf-8 %OPT% /DUNICODE /D_UNICODE ^
-    lifelog.cpp build\vendor\*.obj /Fobuild\ /Fdbuild\ /Febuild\lifelog.exe ^
+    lifelog.cpp build\vendor\*.obj build\lifelog.res /Fobuild\ /Fdbuild\ /Febuild\lifelog.exe ^
     /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS ^
     user32.lib gdi32.lib shell32.lib ole32.lib d3d11.lib dxgi.lib dwmapi.lib winmm.lib crypt32.lib ^
     || exit /b 1
