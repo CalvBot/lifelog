@@ -23,9 +23,14 @@ static const char* TOAST_TAG = "summary";
 static const i64 CHUNK_CHARS = 16000;
 // What one call app (the other side of a conversation) adds after each time I speak.
 static const i64 APP_RUN_CHARS = 800;
-// What media (a film, a video, music) adds after each time I speak: just enough to know what I
-// was reacting to.
-static const i64 MEDIA_RUN_CHARS = 200;
+// Media (a film, a video, music, a game) is not in the transcript the model reads first. It can
+// ask for what was playing at up to MEDIA_LOOKS moments, and gets the media lines from
+// MEDIA_BEFORE before to MEDIA_AFTER after each, at most MEDIA_LOOK_CHARS in all.
+static const i32 MEDIA_LOOKS = 3;
+static const f64 MEDIA_BEFORE = 120, MEDIA_AFTER = 60;
+static const i64 MEDIA_LOOK_CHARS = 3000;
+// A part of the day lists an app's media only when it played at least this long.
+static const f64 MEDIA_LIST_SECS = 5 * 60;
 static const f64 COUNTDOWN_SECS = 5 * 60;
 // After a game, wait this long before asking, so it never pops up between two matches.
 static const f64 AFTER_GAME_SECS = 10 * 60;
@@ -693,6 +698,8 @@ struct SLine {
 };
 
 static bool is_mic(const SLine* l) { return str_eq(l->source, str("mic")); }
+// Audio playing on the PC: neither my mic nor someone on a call.
+static bool is_media(const SLine* l) { return !is_mic(l) && !str_eq(l->source, str("call")) && !is_call_app(l->speaker); }
 
 // Each line's speaker as the app list shows it, as app_label does.
 static void name_lines(AppLabels* labels, Arena* a, Slice<SLine> lines) {
@@ -746,10 +753,10 @@ static bool talk_secs(sqlite3* db, const char* day, f64* mine, f64* apps) {
 }
 
 // The summary is about what I said: a call only goes in within a minute of me speaking (the other
-// side of the conversation), media only within seconds of it (what I was reacting to), and
-// never a film or album playing on its own.
+// side of the conversation). Media never does: the model asks for it when it needs it
+// (media_around).
 static Slice<SLine> context_only(Arena* a, Slice<SLine> lines) {
-    const f64 CALL_NEAR = 60.0, MEDIA_NEAR = 10.0;
+    const f64 CALL_NEAR = 60.0;
     List<i32> mine = {};  // indexes of my lines, in start order
     for (i32 i = 0; i < lines.count; i++)
         if (is_mic(&lines.items[i])) list_push(&mine, i);
@@ -757,8 +764,8 @@ static Slice<SLine> context_only(Arena* a, Slice<SLine> lines) {
     for (i32 i = 0; i < lines.count; i++) {
         SLine* l = &lines.items[i];
         bool keep = is_mic(l);
-        if (!keep) {
-            f64 close_secs = (str_eq(l->source, str("call")) || is_call_app(l->speaker)) ? CALL_NEAR : MEDIA_NEAR;
+        if (!keep && !is_media(l)) {
+            f64 close_secs = CALL_NEAR;
             // My lines near this one: start the scan at the first that starts after (start - close_secs - 120).
             i32 lo = 0, hi = mine.count;
             while (lo < hi) {
@@ -814,8 +821,8 @@ static void chunk_end(Arena* a, List<Chunk>* chunks, Buf* text, f64 first, f64 l
 }
 
 // The day's lines as compact text, cut into pieces that fit one request and never span two parts
-// of the day. Long stretches of one app (a film, an album) are shortened; what I said is always
-// kept in full.
+// of the day: what I said, in full, and the other side of my calls, shortened when one person
+// talks for long.
 static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
     Slice<SLine> lines = context_only(a, all);
     struct OutLine {
@@ -840,15 +847,12 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
             continue;
         }
         // "call" lines come one person per stream (lifelog-vencord) and are named after the speaker.
-        bool call = str_eq(line->source, str("call")) || is_call_app(line->speaker);
-        // Media is marked as such, so it is never read as someone talking.
-        Str name = line->name;
-        Str who = call ? str_copy(a, name) : str_fmt(a, "media in %.*s", (int)name.len, name.ptr);
+        Str who = str_copy(a, line->name);
         RunCount* run = 0;
         for (i32 k = 0; k < since_me.count; k++)
             if (str_eq(since_me.items[k].who, who)) run = &since_me.items[k];
         if (!run) run = list_push(&since_me, {who, 0});
-        if (run->chars >= (call ? APP_RUN_CHARS : MEDIA_RUN_CHARS)) continue;
+        if (run->chars >= APP_RUN_CHARS) continue;
         run->chars += text.len;
         // Name the window once per change of app or title.
         bool same = have_last && str_eq(last_who, who) && str_eq(last_title, line->title);
@@ -857,7 +861,7 @@ static Slice<Chunk> transcript_chunks(Arena* a, Slice<SLine> all) {
         last_title = line->title;
         have_last = true;
         list_push(&out_lines, {line->start_ts, line->end_ts,
-                               str_fmt(a, "[%s] %.*s: %.*s", at, (int)label.len, label.ptr, (int)text.len, text.ptr), call ? who : Str{}});
+                               str_fmt(a, "[%s] %.*s: %.*s", at, (int)label.len, label.ptr, (int)text.len, text.ptr), who});
     }
     list_free(&since_me);
 
@@ -895,6 +899,63 @@ static i64 my_words(Str chunk) {
         if (at >= 0) n += count_words(str_sub(line, at + 7));
     }
     return n;
+}
+
+// What was playing on the PC around each of `times`, for the model that asked for it: "[HH:MM]
+// media in <app> (title): text", each line once, at most MEDIA_LOOK_CHARS.
+static Str media_around(Arena* a, Slice<SLine> lines, const f64* times, i32 time_count) {
+    Buf b = {};
+    Str last_who = {}, last_title = {};
+    for (i32 i = 0; i < lines.count; i++) {
+        SLine* l = &lines.items[i];
+        if (!is_media(l)) continue;
+        bool close = false;
+        for (i32 k = 0; k < time_count && !close; k++)
+            close = l->end_ts >= times[k] - MEDIA_BEFORE && l->start_ts <= times[k] + MEDIA_AFTER;
+        Str text = str_trim(l->text);
+        if (!close || !text.len) continue;
+        char at[6];
+        hm_of(l->start_ts, at);
+        bool same = str_eq(last_who, l->name) && str_eq(last_title, l->title);
+        Str label = (l->title.len && !same) ? str_fmt(a, "media in %.*s (%.*s)", (int)l->name.len, l->name.ptr, (int)l->title.len, l->title.ptr)
+                                            : str_fmt(a, "media in %.*s", (int)l->name.len, l->name.ptr);
+        last_who = l->name;
+        last_title = l->title;
+        Str line = str_fmt(a, "[%s] %.*s: %.*s\n", at, (int)label.len, label.ptr, (int)text.len, text.ptr);
+        if (buf_len(&b) + line.len > MEDIA_LOOK_CHARS) break;
+        buf_add(&b, line);
+    }
+    return buf_take(&b, a);
+}
+
+// The media in a part of the day, from the apps' own names and how long each played, never from
+// what was said in it: "Brave (40 min), Spotify (1 h 5 min)". Empty when nothing played long.
+static Str media_list(Arena* a, Slice<SLine> lines, i32 part) {
+    struct Played {
+        Str name;
+        f64 secs;
+    };
+    List<Played> played = {};
+    for (i32 i = 0; i < lines.count; i++) {
+        SLine* l = &lines.items[i];
+        if (!is_media(l) || part_of(l->start_ts) != part) continue;
+        Played* p = 0;
+        for (i32 k = 0; k < played.count && !p; k++)
+            if (str_eq(played.items[k].name, l->name)) p = &played.items[k];
+        if (!p) p = list_push(&played, {l->name, 0});
+        p->secs += l->end_ts - l->start_ts;
+    }
+    Buf b = {};
+    for (i32 k = 0; k < played.count; k++) {
+        Played* p = &played.items[k];
+        if (p->secs < MEDIA_LIST_SECS) continue;
+        i32 mins = (i32)(p->secs / 60 + 0.5);
+        if (buf_len(&b)) buf_cstr(&b, ", ");
+        if (mins >= 60) buf_fmt(&b, "%.*s (%d h %d min)", (int)p->name.len, p->name.ptr, mins / 60, mins % 60);
+        else buf_fmt(&b, "%.*s (%d min)", (int)p->name.len, p->name.ptr, mins);
+    }
+    list_free(&played);
+    return buf_take(&b, a);
 }
 
 // What a quiet day's summary says, without asking the model.
@@ -942,11 +1003,16 @@ static const char* REMINDERS_RULE =
     "{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"time\":{\"type\":\"string\"},\"said\":" \
     "{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"when\":{\"type\":\"string\"}},\"required\":"          \
     "[\"time\",\"said\",\"text\",\"when\"]}}"
-// A part of the transcript: notes, each named after whose lines it came from (%s: Chunk.who).
+// A part of the transcript: notes, each named after whose lines it came from (the first %s:
+// Chunk.who), and reminders. The second %s is LOOK_SCHEMA on the first read, or "".
 static const char* NOTES_SCHEMA =
     "{\"type\":\"object\",\"properties\":{\"notes\":{\"type\":\"array\",\"maxItems\":6,\"items\":{\"type\":\"object\","
     "\"properties\":{\"who\":{\"type\":\"string\",\"enum\":[%s]},\"note\":{\"type\":\"string\"}},\"required\":[\"who\",\"note\"]}},"
-    "\"reminders\":" REMINDERS_SCHEMA "},\"required\":[\"notes\",\"reminders\"]}";
+    "%s\"reminders\":" REMINDERS_SCHEMA "},\"required\":[\"notes\",\"reminders\"]}";
+// The moments the model wants to know what was playing at.
+#define LOOK_SCHEMA_MAX "3"
+static const char* LOOK_SCHEMA =
+    "\"look\":{\"type\":\"array\",\"maxItems\":" LOOK_SCHEMA_MAX ",\"items\":{\"type\":\"string\"}},";
 // A part of the day in the summary: up to %d points, each on its own topic.
 static const char* POINTS_SCHEMA =
     "{\"type\":\"object\",\"properties\":{\"points\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":%d,\"items\":{\"type\":"
@@ -971,13 +1037,20 @@ static Str never_rule(Arena* a, Str* never, i32 count) {
 
 // Step 1, for each chunk: notes on it, each saying whose lines it came from, so another person's
 // story is never written as mine.
-static Str notes_prompt(Arena* a, const char* day, const Chunk* c, const char* focus, Str never) {
+// `media` is what was playing at the moments it asked about, on the second read; on the first it
+// can ask (look).
+static Str notes_prompt(Arena* a, const char* day, const Chunk* c, const char* focus, Str never, Str media) {
     char t0[6], t1[6];
     hm_of(c->first, t0);
     hm_of(c->last, t1);
     Buf b = {};
     buf_fmt(&b, "Transcript from %s to %s on %s (times after midnight are the next morning):\n\n", t0, t1, day_long(a, day, true).ptr);
     buf_add(&b, c->text);
+    if (media.len) {
+        buf_cstr(&b, "\n\nWhat was playing on the PC around some of those moments, only to explain what was being reacted "
+                     "to. It is never anyone talking to you, never your words and never a note of its own:\n\n");
+        buf_add(&b, media);
+    }
     buf_cstr(&b,
              "\n\nReturn JSON. notes = up to 6 notes on this part of the day, one per topic (never two notes on the same "
              "thing); a short or quiet part needs only one or two. For each: who = whose lines the topic came from: 'You' "
@@ -991,6 +1064,10 @@ static Str notes_prompt(Arena* a, const char* day, const Chunk* c, const char* f
     buf_add(&b, never);
     buf_cstr(&b, " ");
     buf_cstr(&b, REMINDERS_RULE);
+    if (!media.len)
+        buf_cstr(&b, " look = up to " LOOK_SCHEMA_MAX " times (HH:MM, from the lines above) where a line only makes sense "
+                     "with what was playing on the PC, like a reaction to a video, a game or a song; empty when the talk "
+                     "makes sense on its own, as it usually does.");
     return buf_take(&b, a);
 }
 
@@ -1857,10 +1934,30 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
             if (n < QUIET_PART_WORDS) continue;
             phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
             Json part = {};
-            Str schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr);
-            if (!llm_json(&llm, a, system, notes_prompt(a, day, c, focus, rule), schema, &part, error, cap)) {
+            Str schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr, LOOK_SCHEMA);
+            if (!llm_json(&llm, a, system, notes_prompt(a, day, c, focus, rule, {}), schema, &part, error, cap)) {
                 ok_parts = false;
                 break;
+            }
+            // It asked what was playing at some moments: read the part again with that media.
+            const Json* look = json_get(&part, "look");
+            f64 times[MEDIA_LOOKS];
+            i32 time_count = 0;
+            for (i32 k = 0; k < json_len(look) && time_count < MEDIA_LOOKS; k++) {
+                Str hm = str_trim(json_text(json_at(look, k)));
+                i32 h, mi;
+                if (parse_hhmm(hm, &h, &mi)) times[time_count++] = said_ts(day, hm);
+            }
+            Str media = time_count ? media_around(a, lines, times, time_count) : Str{};
+            if (media.len) {
+                LOG("summary: part %d asked for media at %d moments", i + 1, time_count);
+                phase_post(app, "reading the day (part %d of %d, with what was playing)", i + 1, chunks.count);
+                part = {};
+                schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr, "");
+                if (!llm_json(&llm, a, system, notes_prompt(a, day, c, focus, rule, media), schema, &part, error, cap)) {
+                    ok_parts = false;
+                    break;
+                }
             }
             const Json* list = json_get(&part, "notes");
             if (!json_len(list)) continue;
@@ -1909,6 +2006,8 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
                 if (!shown++) buf_fmt(&out, "%s**%s**\n", buf_len(&out) ? "\n" : "", PARTS[p]);
                 buf_fmt(&out, "- %.*s\n", (int)text.len, text.ptr);
             }
+            Str played = media_list(a, lines, p);
+            if (shown && played.len) buf_fmt(&out, "- Media: %.*s\n", (int)played.len, played.ptr);
         }
         for (i32 p = 0; p < PART_COUNT; p++) buf_free(&notes[p]);
         written = buf_take(&out, a);
