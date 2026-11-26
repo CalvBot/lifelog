@@ -932,7 +932,9 @@ static const char* REMINDERS_RULE =
     "\"let's… tomorrow\". For each: time (HH:MM), said (your exact words from a 'You' line), text (a short to-do, "
     "like \"Call the dentist\"), when (\"YYYY-MM-DD HH:MM\" if you said when to do it: \"tomorrow\", \"tonight\", "
     "\"at 5\", \"on Monday\", \"in an hour\"; counted from the time you said it, using the date given; tomorrow with no "
-    "time is 09:00, tonight is 20:00; \"\" if you did not say when). Comments, questions, feelings, game chatter and anything from videos or songs are NOT "
+    "time is 09:00, tonight is 20:00; \"\" if you did not say when). Your words must say on their own what you will do: a quick "
+    "reply to what someone else just said (agreeing, joking, reassuring) is NOT a reminder unless it names the thing you'll "
+    "do, and text uses only your own words, never filling in what you'd do from what others said. Comments, questions, feelings, game chatter and anything from videos or songs are NOT "
     "reminders. Most days have none or one or two; an empty list is right when nothing qualifies.";
 
 #define REMINDERS_SCHEMA                                                                                          \
@@ -1155,13 +1157,13 @@ static Slice<Str> word_set(Arena* a, Str s) {
     return out;
 }
 
-// Whether `said` is really (most of) one of my lines, not words the model made up or took from
-// a film or a friend.
-static bool said_by_me(Str said, Slice<Slice<Str>> mine) {
+// Which of my lines `said` really is (most of), or -1: words the model made up or took from a film
+// or a friend.
+static i32 said_by_me(Str said, Slice<Slice<Str>> mine) {
     Mark m = mark(scratch());
     Slice<Str> words = word_set(scratch(), said);
-    bool found = false;
-    for (i32 l = 0; l < mine.count && words.count && !found; l++) {
+    i32 found = -1;
+    for (i32 l = 0; l < mine.count && words.count && found < 0; l++) {
         i64 hits = 0;
         for (i32 w = 0; w < words.count; w++)
             for (i32 k = 0; k < mine.items[l].count; k++)
@@ -1169,10 +1171,47 @@ static bool said_by_me(Str said, Slice<Slice<Str>> mine) {
                     hits++;
                     break;
                 }
-        found = hits * 10 >= (i64)words.count * 7;
+        if (hits * 10 >= (i64)words.count * 7) found = l;
     }
     rewind(m);
     return found;
+}
+
+// The same word, give or take an ending: "leg" and "legs", "call" and "calling".
+static bool same_word(Str a, Str b) {
+    if (a.len > b.len) {
+        Str t = a;
+        a = b;
+        b = t;
+    }
+    return b.len - a.len <= 3 && str_eq(a, str_sub(b, 0, a.len));
+}
+
+// Whether the to-do is made of my own words: at least half of its words are in what I said or my
+// lines just before and after it. A vague "I'll sort it" is not a to-do the model wrote from what
+// someone else said around it.
+static bool todo_in_my_words(Str text, Str said, i32 line, Slice<Slice<Str>> mine) {
+    static const char* SKIP[] = {"the", "and", "for", "with", "her", "his", "him", "them", "their", "about",
+                                 "from", "into", "that", "this", "you", "your", "some", "out"};
+    Mark m = mark(scratch());
+    Slice<Str> words = word_set(scratch(), text);
+    Slice<Str> heard = word_set(scratch(), said);
+    i64 counted = 0, hits = 0;
+    for (i32 w = 0; w < words.count; w++) {
+        bool skip = false;
+        for (i32 s = 0; s < COUNT(SKIP) && !skip; s++) skip = str_eq(words.items[w], str(SKIP[s]));
+        if (skip) continue;
+        counted++;
+        bool hit = false;
+        for (i32 k = 0; k < heard.count && !hit; k++) hit = same_word(words.items[w], heard.items[k]);
+        for (i32 l = line - 1; l <= line + 1 && !hit; l++) {
+            if (l < 0 || l >= mine.count) continue;
+            for (i32 k = 0; k < mine.items[l].count && !hit; k++) hit = same_word(words.items[w], mine.items[l].items[k]);
+        }
+        hits += hit;
+    }
+    rewind(m);
+    return counted && hits * 2 >= counted;
 }
 
 // The reminders worth keeping, as a JSON array in `a`.
@@ -1186,7 +1225,9 @@ static Json keep_real_reminders(Arena* a, const Json* list, Slice<Slice<Str>> mi
         Str said = json_text(json_get(r, "said"));
         Mark m = mark(scratch());
         Str text = lower_quote(scratch(), str_trim(json_text(json_get(r, "text"))));
-        bool keep = is_commitment(said) && said_by_me(said, mine) && count_words(text) >= 2 && !has(text, "something");
+        i32 line = said_by_me(said, mine);
+        bool keep = is_commitment(said) && line >= 0 && count_words(text) >= 2 && !has(text, "something") &&
+                    todo_in_my_words(text, said, line, mine);
         rewind(m);
         if (keep) out.items[out.count++] = *r;
     }
