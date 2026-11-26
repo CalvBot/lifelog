@@ -29,8 +29,9 @@ static const i64 APP_RUN_CHARS = 800;
 static const i32 MEDIA_LOOKS = 3;
 static const f64 MEDIA_BEFORE = 120, MEDIA_AFTER = 60;
 static const i64 MEDIA_LOOK_CHARS = 3000;
-// A part of the day lists an app's media only when it played at least this long.
-static const f64 MEDIA_LIST_SECS = 5 * 60;
+// A part of the day lists an app's media only when this much of it was heard, so a few seconds
+// of a notification sound do not count.
+static const f64 MEDIA_LIST_SECS = 60;
 static const f64 COUNTDOWN_SECS = 5 * 60;
 // After a game, wait this long before asking, so it never pops up between two matches.
 static const f64 AFTER_GAME_SECS = 10 * 60;
@@ -928,8 +929,8 @@ static Str media_around(Arena* a, Slice<SLine> lines, const f64* times, i32 time
     return buf_take(&b, a);
 }
 
-// The media in a part of the day, from the apps' own names and how long each played, never from
-// what was said in it: "Brave (40 min), Spotify (1 h 5 min)". Empty when nothing played long.
+// The media in a part of the day, from the apps' own names, never from what was said in it:
+// "Brave, Spotify". Empty when nothing played.
 static Str media_list(Arena* a, Slice<SLine> lines, i32 part) {
     struct Played {
         Str name;
@@ -949,10 +950,8 @@ static Str media_list(Arena* a, Slice<SLine> lines, i32 part) {
     for (i32 k = 0; k < played.count; k++) {
         Played* p = &played.items[k];
         if (p->secs < MEDIA_LIST_SECS) continue;
-        i32 mins = (i32)(p->secs / 60 + 0.5);
         if (buf_len(&b)) buf_cstr(&b, ", ");
-        if (mins >= 60) buf_fmt(&b, "%.*s (%d h %d min)", (int)p->name.len, p->name.ptr, mins / 60, mins % 60);
-        else buf_fmt(&b, "%.*s (%d min)", (int)p->name.len, p->name.ptr, mins);
+        buf_add(&b, p->name);
     }
     list_free(&played);
     return buf_take(&b, a);
@@ -1849,11 +1848,22 @@ static void gpu_give_back(App* app) {
     worker_wake(app);
 }
 
+// The writer stops when a game starts after it did, so the two never share the graphics card;
+// the day is asked about again once the game is over. A game already running when it started
+// (Write now during one) does not stop it.
+static bool game_started(App* app, bool game_at_start, bool* for_game, char* error, i32 cap) {
+    if (game_at_start || !atomic_get(&app->apps.game_on)) return false;
+    *for_game = true;
+    snprintf(error, cap, "a game started");
+    return true;
+}
+
 // On the writer thread. `labels` are the apps' names, from its job.
-// `saved`: the day's row, once it is saved.
-static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* saved, char* error, i32 cap) {
+// `saved`: the day's row, once it is saved. `for_game`: it stopped because a game started.
+static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* saved, bool* for_game, char* error, i32 cap) {
     SummaryOptions options = summary_options(app);  // as they are now: a change counts from the next summary
     const SummaryOptions* cfg = &options;
+    bool game_at_start = atomic_get(&app->apps.game_on) != 0;
     LOG("writing the summary for %s with %s", day, cfg->model);
 
     // 1. Let transcription catch up, so the end of the day is in it. The supervisor says when its
@@ -1868,9 +1878,13 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         f64 until = started + 20 * 60;
         if (!atomic_get(&app->worker.live_running) && idle_since + 60 < until) until = idle_since + 60;
         if (now >= until || !app->worker.live_changed) break;
+        if (game_started(app, game_at_start, for_game, error, cap)) return false;
         HANDLE waits[2] = {app->stop, app->worker.live_changed};
-        if (WaitForMultipleObjects(2, waits, FALSE, (DWORD)((until - now) * 1000) + 1) == WAIT_OBJECT_0) break;
+        // Woken at least every 15 s to look for a game.
+        f64 wait = until - now < 15 ? until - now : 15;
+        if (WaitForMultipleObjects(2, waits, FALSE, (DWORD)(wait * 1000) + 1) == WAIT_OBJECT_0) break;
     }
+    if (game_started(app, game_at_start, for_game, error, cap)) return false;
 
     // 2. Take the GPU from the worker.
     if (!gpu_take(app)) {
@@ -1922,7 +1936,7 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         // Barely a word said: that is the summary; the apps' audio is not the day.
         written = str(quiet_summary(words));
     } else {
-        if (!llm_open(app, cfg, 12288, &llm, error, cap)) goto done;
+        if (!llm_open(app, cfg, 12288, &llm, error, cap) || game_started(app, game_at_start, for_game, error, cap)) goto done;
         // 1. Notes on each chunk, filed under its part of the day with its times and whose they are.
         Buf notes[PART_COUNT] = {};
         i64 said[PART_COUNT] = {};
@@ -1932,6 +1946,10 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
             Chunk* c = &chunks.items[i];
             i64 n = my_words(c->text);
             if (n < QUIET_PART_WORDS) continue;
+            if (game_started(app, game_at_start, for_game, error, cap)) {
+                ok_parts = false;
+                break;
+            }
             phase_post(app, "reading the day (part %d of %d)", i + 1, chunks.count);
             Json part = {};
             Str schema = str_fmt(a, NOTES_SCHEMA, c->who.ptr, LOOK_SCHEMA);
@@ -1949,6 +1967,10 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
                 if (parse_hhmm(hm, &h, &mi)) times[time_count++] = said_ts(day, hm);
             }
             Str media = time_count ? media_around(a, lines, times, time_count) : Str{};
+            if (media.len && game_started(app, game_at_start, for_game, error, cap)) {
+                ok_parts = false;
+                break;
+            }
             if (media.len) {
                 LOG("summary: part %d asked for media at %d moments", i + 1, time_count);
                 phase_post(app, "reading the day (part %d of %d, with what was playing)", i + 1, chunks.count);
@@ -1985,6 +2007,10 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         Buf out = {};
         for (i32 p = 0; p < PART_COUNT && ok_parts; p++) {
             if (!buf_len(&notes[p])) continue;
+            if (game_started(app, game_at_start, for_game, error, cap)) {
+                ok_parts = false;
+                break;
+            }
             i32 points = (i32)((cfg->max_words / 20.0) * (f64)said[p] / (f64)(total ? total : 1) + 0.5);
             points = points < 2 ? 2 : points > 8 ? 8 : points;
             phase_post(app, "writing the %s", str_lower(a, str(PARTS[p])).ptr);
@@ -2013,14 +2039,14 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         written = buf_take(&out, a);
 
         // 3. The flagged moments, in my own words around each.
-        if (ok_parts && flags.count) {
+        if (ok_parts && flags.count && !game_started(app, game_at_start, for_game, error, cap)) {
             phase_post(app, "writing what to remember");
             Str prompt = str_fmt(a, "%s\n\nReturn JSON. %s", flags_material(a, flags).ptr, REMEMBER_RULE);
             Json got = {};
             ok_parts = llm_json(&llm, a, system, prompt, str(REMEMBER_SCHEMA), &got, error, cap);
             remember = *json_get(&got, "remember");
         }
-        if (!ok_parts) goto done;
+        if (!ok_parts || *for_game) goto done;
     }
     // The server has exited here, so the graphics card is free again.
     llm_close(&llm);
@@ -2090,6 +2116,7 @@ struct WriterJob {
     char day[11];
     AppLabels labels;
     bool ok;
+    bool for_game;     // it stopped because a game started
     SummaryDay saved;  // the day's row, if it was saved
     char error[512];
 };
@@ -2103,12 +2130,18 @@ static void writer_done(App* app, Job* job) {
         day_put(app, &w->saved);
         app->summary.version++;
     }
-    if (!w->ok) {
+    if (w->for_game) {
+        // Asked about again once the game has been over for a while (summary_tick), not an hour on.
+        LOG("summary for %s: stopped, a game started; it starts again after the game", w->day);
+        phase_set(app, "waiting until you stop playing");
+        app->summary.last_game_ts = now_ts();
+        app->summary.snooze_ts = 0;
+    } else if (!w->ok) {
         ERR("summary for %s: %s", w->day, w->error);
         phase_set(app, "failed: %s", w->error);
     }
     wake_window(app);
-    if (!w->ok && !stopping(app)) {
+    if (!w->ok && !w->for_game && !stopping(app)) {
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("The summary could not be written"));
@@ -2125,7 +2158,7 @@ static DWORD WINAPI writer_main(void* param) {
     Job* job = (Job*)param;
     WriterJob* w = (WriterJob*)job->data;
     App* app = w->app;
-    w->ok = write_day(app, w->day, &w->labels, &w->saved, w->error, sizeof(w->error));
+    w->ok = write_day(app, w->day, &w->labels, &w->saved, &w->for_game, w->error, sizeof(w->error));
     gpu_give_back(app);  // write_day closed the server on every path
     job_post_wait(app, job);
     return 0;
