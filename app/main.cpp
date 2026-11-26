@@ -626,8 +626,10 @@ static LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (cmd == CMD_PAUSE) {
                 capture_set_paused(&g_app, !g_app.capture.paused);
             } else if (cmd == CMD_RESTART) {
+                LOG("tray: restart");
                 app_restart(&g_app);
             } else if (cmd == CMD_QUIT) {
+                LOG("tray: quit");
                 app_quit(&g_app);
             }
             return 0;
@@ -792,8 +794,13 @@ static i32 run_app() {
         // Handle everything waiting, then draw what needs it, then sleep until the next message.
         bool quit = false;
         while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_APP_QUIT || msg.message == WM_QUIT) quit = true;
-            if (msg.message == WM_APP_SHOW) {
+            // Only our own thread messages: a window message with the same number, from anywhere, is not a quit.
+            if (!msg.hwnd && msg.message == WM_APP_QUIT) quit = true;
+            if (msg.message == WM_QUIT) {
+                LOG("quitting: Windows asked");
+                quit = true;
+            }
+            if (!msg.hwnd && msg.message == WM_APP_SHOW) {
                 bool open = app->ui.want_window;
                 Popup popup = app->ui.want_popup;
                 app->ui.want_window = false;
