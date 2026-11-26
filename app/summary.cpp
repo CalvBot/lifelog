@@ -192,9 +192,6 @@ static bool parse_hhmm(Str s, i32* h, i32* m) {
 // The local date `n` days after `day` (noon, so a clock change cannot move it).
 static LocalTime day_plus(i32 y, i32 m, i32 d, i32 n) { return local_time(local_ts(y, m, d + n, 12, 0)); }
 
-static void day_text(LocalTime t, char out[11]) { snprintf(out, 11, "%04d-%02d-%02d", t.year, t.month, t.day); }
-
-
 // The next time the clock shows h:m: today, or tomorrow if that has passed.
 static f64 next_at(i32 h, i32 m) {
     f64 now = now_ts();
