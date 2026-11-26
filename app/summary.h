@@ -138,6 +138,7 @@ struct Summary {
     SRWLOCK options_lock;
     SummaryOptions options;
     HANDLE wake;                // auto-reset: the summary's clock looks again
+    HANDLE game_changed;        // auto-reset: a game started or ended (apps_seen), for the writer
     // The earliest moment a set reminder is due, in unix milliseconds (INT64_MAX: none). The
     // database thread lowers it when it sets one; the clock opens the database only then.
     volatile LONG64 next_alert_ms;

@@ -1879,10 +1879,10 @@ static bool write_day(App* app, const char* day, AppLabels* labels, SummaryDay* 
         if (!atomic_get(&app->worker.live_running) && idle_since + 60 < until) until = idle_since + 60;
         if (now >= until || !app->worker.live_changed) break;
         if (game_started(app, game_at_start, for_game, error, cap)) return false;
-        HANDLE waits[2] = {app->stop, app->worker.live_changed};
-        // Woken at least every 15 s to look for a game.
-        f64 wait = until - now < 15 ? until - now : 15;
-        if (WaitForMultipleObjects(2, waits, FALSE, (DWORD)(wait * 1000) + 1) == WAIT_OBJECT_0) break;
+        // Woken as well when a game starts.
+        HANDLE waits[3] = {app->stop, app->worker.live_changed, app->summary.game_changed};
+        DWORD count = waits[2] ? 3 : 2;
+        if (WaitForMultipleObjects(count, waits, FALSE, (DWORD)((until - now) * 1000) + 1) == WAIT_OBJECT_0) break;
     }
     if (game_started(app, game_at_start, for_game, error, cap)) return false;
 
@@ -2401,6 +2401,8 @@ void summary_start(App* app) {
     app->summary.options_lock = SRWLOCK_INIT;
     app->summary.wake = CreateEventW(0, FALSE, FALSE, 0);
     CHECK(app->summary.wake, "the summary's wake event (error %lu)", GetLastError());
+    app->summary.game_changed = CreateEventW(0, FALSE, FALSE, 0);
+    CHECK(app->summary.game_changed, "the summary's game event (error %lu)", GetLastError());
     summary_options_publish(app);
     db_post(job_new(0), items_migrate_run);
     Job* job = job_new(lists_apply);

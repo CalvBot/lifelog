@@ -680,6 +680,7 @@ void apps_seen(App* app, Procs* procs, SeenPath* fresh, i32 fresh_count) {
         SET(app->apps.game_running, str(game));
         atomic_set(&app->apps.game_on, game[0] != 0);
         worker_wake(app);
+        if (app->summary.game_changed) SetEvent(app->summary.game_changed);
         changed = true;
     }
     if (changed) wake_window(app);
