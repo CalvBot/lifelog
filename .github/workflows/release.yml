@@ -1,0 +1,44 @@
+# Builds the installer and publishes it as a GitHub release. Runs only for a release: a v* tag, or
+# by hand from the Actions tab. Never on pushes or pull requests.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the MSI version counts the commits
+
+      - name: Install WiX 3
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin\candle.exe")) {
+            choco install wixtoolset --no-progress -y
+          }
+
+      - name: Build the MSI
+        shell: pwsh
+        run: scripts\build-msi.ps1
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $msi = Get-ChildItem dist\lifelog-*.msi | Select-Object -First 1
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v' + ($msi.BaseName -replace '^lifelog-', '') }
+          gh release create $tag $msi.FullName --title "lifelog $tag" --generate-notes --target $env:GITHUB_SHA
