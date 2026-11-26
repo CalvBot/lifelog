@@ -202,14 +202,6 @@ static void gpu_shutdown() {
     g_gpu = {};
 }
 
-// Whether Windows' apps are set to dark (Settings > Personalisation > Colours).
-static bool system_dark() {
-    DWORD light = 1, size = sizeof(light);
-    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                 L"AppsUseLightTheme", RRF_RT_REG_DWORD, 0, &light, &size);
-    return light == 0;
-}
-
 static void style_init(f32 scale) {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();

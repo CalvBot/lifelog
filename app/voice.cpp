@@ -834,6 +834,7 @@ static DWORD WINAPI voice_summarise_main(void* p) {
         if (!clipboard_set_text(out)) WARN("voice: summarise: the clipboard is busy");
         ToastJob t = {};
         SET(t.tag, str("voice-summary"));
+        t.icon = TOAST_ICON_VOICE;
         SET(t.title, str(s->title));
         set(t.body, sizeof(t.body), out);
         notify_show(app, &t);

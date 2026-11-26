@@ -7,9 +7,9 @@
 // and shown when due. Settings live in App.config.summary; the functions below change them there
 // and in config.toml.
 //
-// Notifications (notify.cpp) are Windows toasts. Their buttons open `lifelog:` links, a link type
-// registered to run lifelog.exe with the link; that second copy hands the link to the running one
-// (notify_forward) and exits, and the running one acts on it (notify_open_link).
+// Notifications (notify.cpp) are lifelog's own toast windows. Their buttons open `lifelog:` links,
+// which the running app acts on (notify_open_link). The link type is also registered to run
+// lifelog.exe with the link; that second copy hands it to the running one (notify_forward) and exits.
 
 #pragma once
 
@@ -60,6 +60,7 @@ struct ToastButton {
     char text[64];
     char link[160];
 };
+enum ToastIcon { TOAST_ICON_SUMMARY, TOAST_ICON_REMINDER, TOAST_ICON_ERROR, TOAST_ICON_VOICE };
 struct ToastJob {
     bool remove;          // take away the toast with `tag` instead of showing one
     char tag[32];         // the same tag replaces the earlier toast
@@ -68,7 +69,8 @@ struct ToastJob {
     ToastButton buttons[4];
     i32 button_count;
     char launch[160];     // the link clicking the toast itself opens; "" for none
-    bool sticky;          // stays on screen until answered
+    bool question;        // asks something: stays up longer before it goes
+    ToastIcon icon;       // the tile's icon; an error's is red and stays a little longer
 };
 
 struct Notify {
@@ -196,3 +198,5 @@ void notify_remove(App* app, const char* tag);
 bool notify_open_link(App* app, Str link);
 // In a second copy of lifelog started with a link: hands it to the running one. False if none runs.
 bool notify_forward(const wchar_t* link);
+// Every kind of toast drawn into a .bmp at `path`, dark and light, at `scale` (1 = 100%).
+bool notify_preview(const wchar_t* path, f32 scale);

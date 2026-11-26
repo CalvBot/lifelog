@@ -1237,7 +1237,8 @@ static void alerts_offer(App* app, sqlite3* db, const char* day, const Json* rem
         remind_link(no, sizeof(no), "no", id);
         toast_button(&t, "Remind me", yes);
         toast_button(&t, "No thanks", no);
-        t.sticky = true;
+        t.question = true;
+        t.icon = TOAST_ICON_REMINDER;
         rewind(m);
         notify_show(app, &t);
         asked++;
@@ -1288,7 +1289,8 @@ static void alerts_show_due(App* app, sqlite3* db) {
         toast_button(&t, "Done", done);
         toast_button(&t, "In an hour", snooze);
         make_link(t.launch, sizeof(t.launch), "summary/open?day=%s", d->day);
-        t.sticky = true;
+        t.question = true;
+        t.icon = TOAST_ICON_REMINDER;
         notify_show(app, &t);
         LOG("reminder shown: %s", d->text.ptr);
     }
@@ -2006,6 +2008,7 @@ static void writer_done(App* app, Job* job) {
         ToastJob t = {};
         SET(t.tag, str(TOAST_TAG));
         SET(t.title, str("The summary could not be written"));
+        t.icon = TOAST_ICON_ERROR;
         set(t.body, sizeof(t.body), str(w->error));
         char again[160];
         make_link(again, sizeof(again), "summary/now?day=%s", w->day);
@@ -2057,7 +2060,7 @@ static void ask(App* app, const char* day, f64 mine, f64 apps) {
         make_link(link, sizeof(link), "summary/%s?day=%s", ACTIONS[i][1], day);
         toast_button(&t, ACTIONS[i][0], link);
     }
-    t.sticky = true;
+    t.question = true;
     rewind(m);
     char at[6];
     hm_of(now_ts() + COUNTDOWN_SECS, at);

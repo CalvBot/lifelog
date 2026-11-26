@@ -18,6 +18,7 @@ static const char* CLI_USAGE =
     "  lifelog launch APP      start an installed app or game (spotify, \"visual studio code\")\n"
     "  lifelog summary [now | later | skip] [DAY]       the daily summary (DAY = YYYY-MM-DD, default today)\n"
     "  lifelog check-ai        start the summary AI, ask it one thing, stop it\n"
+    "  lifelog toast-preview FILE   every kind of notification drawn into FILE (.bmp), without showing them\n"
     "  lifelog summarise [RANGE]   a few sentences about the last 15m (default), 1h or today, from the summary AI\n"
     "  lifelog status          what the running service is doing\n"
     "  lifelog quit            stop the running service\n"
@@ -358,6 +359,12 @@ static i32 cli_main(i32 argc, wchar_t** argv) {
         return cli_call("POST", str_fmt(a, "/summary?do=%s&day=%s", action.ptr, day.ptr));
     }
     if (str_eq(cmd, str("check-ai"))) return cli_check_ai();
+    if (str_eq(cmd, str("toast-preview"))) {
+        if (!has_arg) return cli_error("say where: lifelog toast-preview toasts.bmp");
+        if (!notify_preview(wide(a, args[1]), GetDpiForSystem() / 96.f)) return cli_error("could not write the picture");
+        cli_print("wrote %.*s\n", (int)args[1].len, args[1].ptr);
+        return 0;
+    }
     if (str_eq(cmd, str("summarise")) || str_eq(cmd, str("summarize"))) return cli_summarise(has_arg ? args[1] : str("15m"));
     if (str_eq(cmd, str("status"))) return cli_call("GET", str("/status"));
     if (str_eq(cmd, str("voice"))) return cli_voice(has_arg ? args[1] : str(""));
